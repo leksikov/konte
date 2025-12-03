@@ -1,0 +1,16 @@
+<segment>
+{segment}
+</segment>
+
+Here is a chunk from the segment above that we want to situate for improved retrieval:
+
+<chunk>
+{chunk}
+</chunk>
+
+This document relates to tariffs, customs duties, import/export regulations, or trade policy. Provide a brief context (2-3 sentences) that situates this chunk within the segment. Include relevant details such as:
+- The specific tariff code, duty rate, or regulation being discussed
+- The product category or trade agreement involved
+- Any country-specific or temporal information that clarifies the chunk
+
+Answer only with the succinct context and nothing else.

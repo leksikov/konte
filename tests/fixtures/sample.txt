@@ -1,0 +1,46 @@
+Tariff Classification Guidelines
+
+Chapter 1: Introduction to Tariff Systems
+
+A tariff is a tax imposed on imported goods and services. Tariffs are used by governments to generate revenue, protect domestic industries, and regulate international trade. The classification of goods for tariff purposes is governed by the Harmonized System (HS), an international nomenclature developed by the World Customs Organization.
+
+The Harmonized System is organized into 21 sections, each covering different categories of products. These sections are further divided into chapters, headings, and subheadings. Each product is assigned a unique HS code that determines the applicable tariff rate.
+
+Chapter 2: Classification Principles
+
+The General Rules for the Interpretation (GRI) of the Harmonized System provide a systematic approach to classifying goods. There are six GRI rules that must be applied in sequence:
+
+Rule 1: Classification is determined by the terms of headings and relevant section or chapter notes.
+
+Rule 2: Incomplete or unfinished articles are classified as complete articles if they have the essential character of the complete article. Mixtures and composite goods are classified according to the component that gives them their essential character.
+
+Rule 3: When goods are classifiable under two or more headings, the most specific heading takes precedence. If no single heading is more specific, the heading that occurs last in numerical order applies.
+
+Rule 4: Goods that cannot be classified under Rules 1-3 shall be classified under the heading appropriate to the goods to which they are most akin.
+
+Rule 5: Cases, containers, and packing materials are classified with the goods if they are of a kind normally used for such purposes.
+
+Rule 6: Classification of goods in subheadings follows the same principles as classification in headings.
+
+Chapter 3: Tariff Rate Determination
+
+Once a product is classified, the applicable tariff rate is determined by consulting the tariff schedule of the importing country. Tariff rates may vary based on:
+
+- Country of origin
+- Trade agreements (preferential rates)
+- Product specifications
+- End-use requirements
+
+Most Favored Nation (MFN) rates apply to WTO member countries. Preferential rates under Free Trade Agreements (FTAs) may offer reduced or zero tariff rates.
+
+Chapter 4: Special Provisions
+
+Certain goods are subject to special tariff provisions:
+
+Anti-dumping duties: Additional duties imposed on goods sold below fair market value.
+
+Countervailing duties: Duties applied to offset foreign government subsidies.
+
+Safeguard measures: Temporary duties to protect domestic industries from import surges.
+
+Tariff-rate quotas: A two-tier system where a lower rate applies within a quota and a higher rate applies to imports exceeding the quota.
