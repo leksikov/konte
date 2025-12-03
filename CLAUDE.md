@@ -15,10 +15,10 @@ pip install -e .
 # Run all tests
 pytest
 
-# Run unit tests only
+# Run unit tests only (70 tests, no API calls)
 pytest tests/unit/
 
-# Run integration tests (requires OPENAI_API_KEY)
+# Run integration tests (42 tests, requires OPENAI_API_KEY)
 pytest tests/integration/
 
 # Run single test file
@@ -32,24 +32,80 @@ pytest tests/unit/test_chunker.py::test_segment_splitting -v
 
 ```
 konte/
+├── __init__.py      # Public API exports
 ├── settings.py      # pydantic-settings, env vars, SSoT for config
 ├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig
-├── loader.py        # Document loading (PDF, TXT, MD)
+├── loader.py        # Document loading (PDF, TXT, MD) - sync and async
 ├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap
-├── context.py       # LLM context generation (async, batched)
-├── faiss_store.py   # FAISS index operations
-├── bm25_store.py    # BM25 index operations
+├── context.py       # Async LLM context generation (batched, 10 parallel)
+├── faiss_store.py   # FAISS index: build, save, load, query
+├── bm25_store.py    # BM25 index: build, save, load, query
 ├── retriever.py     # Hybrid retrieval + reciprocal rank fusion
-├── project.py       # Main interface: add_documents(), build(), query()
-└── manager.py       # Project CRUD operations
+├── project.py       # Main interface: Project class
+└── manager.py       # Project CRUD: create, list, get, delete
 
 prompts/
 └── context_prompt.txt   # Tariff-domain context generation prompt
 
 tests/
-├── unit/           # Mocks allowed here only
-├── integration/    # Real API calls
-└── fixtures/       # Test documents
+├── unit/           # Mocks allowed here only (70 tests)
+├── integration/    # Real API calls (42 tests)
+└── fixtures/       # Test documents (sample.txt, sample.md)
+```
+
+## Public API
+
+```python
+from konte import (
+    # Main class
+    Project,
+
+    # Manager functions
+    create_project,
+    list_projects,
+    get_project,
+    delete_project,
+    project_exists,
+
+    # Models
+    Chunk,
+    ContextualizedChunk,
+    RetrievalResult,
+    RetrievalResponse,
+    ProjectConfig,
+
+    # Settings
+    settings,
+)
+```
+
+## Usage Examples
+
+### Create and Build Project
+```python
+project = Project.create("my_project")
+project.add_documents([Path("doc.pdf"), Path("doc.txt")])
+await project.build()  # async - generates context, builds indexes
+project.save()
+```
+
+### Query Project
+```python
+response = project.query("search query", mode="hybrid", top_k=20)
+# mode: "hybrid" (default), "semantic", "lexical"
+
+for result in response.results:
+    print(f"[{result.score:.2f}] {result.content}")
+
+# Agent hints
+print(response.suggested_action)  # "deliver", "query_more", "refine_query"
+```
+
+### Load Existing Project
+```python
+project = Project.open("my_project")
+# or
+project = get_project("my_project")
 ```
 
 ## System Flowcharts
@@ -65,6 +121,20 @@ tests/
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
 
+## Storage Structure
+
+```
+{STORAGE_PATH}/
+└── {project_name}/
+    ├── config.json       # ProjectConfig
+    ├── chunks.json       # ContextualizedChunk list
+    ├── faiss.index       # FAISS index (if enabled)
+    ├── faiss_ids.json    # ID mapping
+    ├── faiss_chunks.json # Chunk data for FAISS
+    ├── bm25.pkl          # BM25 index (if enabled)
+    └── bm25_chunks.json  # Chunk data for BM25
+```
+
 ## Configuration
 
 All config via pydantic-settings in `settings.py`. Key settings:
@@ -73,6 +143,9 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - `EMBEDDING_MODEL`: text-embedding-3-small
 - `CONTEXT_MODEL`: gpt-4.1
 - `DEFAULT_TOP_K`: 20
+- `SEGMENT_SIZE`: 8000 tokens
+- `CHUNK_SIZE`: 800 tokens
+- `MAX_CONCURRENT_CALLS`: 10
 
 ## Dependencies
 

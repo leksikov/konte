@@ -16,51 +16,123 @@ Konte implements [Anthropic's Contextual Retrieval](https://www.anthropic.com/ne
 
 This achieves up to **49% reduction** in failed retrievals (67% with reranking).
 
-## Architecture
-
-See the system flowcharts for detailed architecture:
-- [High-level flowchart](high_level_system_flowchart.md) - Overview of ingestion, context generation, indexing, and retrieval
-- [Low-level flowchart](low_level_system_flowchart.md) - Detailed implementation flow including token counting, error handling, and score calculation
-
 ## Installation
 
 ```bash
 pip install -e .
 ```
 
+Set your OpenAI API key:
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
 ## Quick Start
 
 ```python
-from konte import ProjectManager
+import asyncio
+from pathlib import Path
+from konte import Project
 
-# Create a project
-manager = ProjectManager()
-project = manager.create_project("my_knowledge_base")
+async def main():
+    # Create a project
+    project = Project.create("my_knowledge_base")
 
-# Add documents
-await project.add_documents(["doc1.pdf", "doc2.txt", "doc3.md"])
+    # Add documents
+    project.add_documents([
+        Path("doc1.pdf"),
+        Path("doc2.txt"),
+        Path("doc3.md"),
+    ])
 
-# Build indexes (generates context, creates FAISS + BM25 indexes)
-await project.build()
+    # Build indexes (generates context, creates FAISS + BM25 indexes)
+    await project.build()
 
-# Query
-response = await project.query("What was the revenue growth?")
+    # Save project for later use
+    project.save()
 
-for result in response.results:
-    print(f"[{result.score:.2f}] {result.content[:200]}...")
+    # Query
+    response = project.query("What was the revenue growth?")
+
+    for result in response.results:
+        print(f"[{result.score:.2f}] {result.content[:200]}...")
+
+    # Check agent hints
+    print(f"Suggested action: {response.suggested_action}")
+    print(f"High confidence: {response.has_high_confidence}")
+
+asyncio.run(main())
+```
+
+## Loading Existing Projects
+
+```python
+from konte import Project, get_project
+
+# Option 1: Using Project.open()
+project = Project.open("my_knowledge_base")
+
+# Option 2: Using manager function
+project = get_project("my_knowledge_base")
+
+# Query immediately
+response = project.query("your query here")
+```
+
+## Project Management
+
+```python
+from konte import (
+    create_project,
+    list_projects,
+    get_project,
+    delete_project,
+    project_exists,
+)
+
+# Create new project
+project = create_project("my_project")
+
+# List all projects
+projects = list_projects()  # Returns: ["my_project", ...]
+
+# Check if project exists
+if project_exists("my_project"):
+    project = get_project("my_project")
+
+# Delete project
+delete_project("my_project")
 ```
 
 ## Retrieval Modes
 
 ```python
 # Hybrid (default) - FAISS + BM25 with rank fusion
-response = await project.query("query", mode="hybrid")
+response = project.query("query", mode="hybrid")
 
-# Semantic only - FAISS
-response = await project.query("query", mode="semantic")
+# Semantic only - FAISS embeddings
+response = project.query("query", mode="semantic")
 
-# Lexical only - BM25
-response = await project.query("query", mode="lexical")
+# Lexical only - BM25 keyword matching
+response = project.query("query", mode="lexical")
+```
+
+## Skip Context Generation
+
+For standard RAG without LLM-generated context (faster, cheaper):
+
+```python
+await project.build(skip_context=True)
+```
+
+## Index Options
+
+```python
+# FAISS only (no BM25)
+project = Project.create("semantic_only", enable_bm25=False)
+
+# BM25 only (no FAISS) - no embeddings needed
+project = Project.create("lexical_only", enable_faiss=False)
 ```
 
 ## Configuration
@@ -80,13 +152,49 @@ DEFAULT_TOP_K=20
 Konte returns retrieval responses with decision hints for agent workflows:
 
 ```python
-response = await project.query("query")
+response = project.query("query")
 
-print(response.suggested_action)  # "deliver", "query_more", or "refine_query"
+# Suggested action based on confidence
+print(response.suggested_action)
+# "deliver" (score >= 0.7), "query_more" (0.4-0.7), or "refine_query" (< 0.4)
+
 print(response.has_high_confidence)  # True if top_score >= 0.7
-print(response.top_score)  # Highest result score
-print(response.score_spread)  # Difference between top and bottom scores
+print(response.top_score)            # Highest result score (0-1)
+print(response.score_spread)         # Difference between top and bottom scores
+
+# Use as callable for Agno
+retriever = project.as_retriever()
+response = retriever("my query")
 ```
+
+## RetrievalResponse Schema
+
+```python
+@dataclass
+class RetrievalResponse:
+    results: list[RetrievalResult]  # Ranked results
+    query: str                       # Original query
+    total_found: int                 # Number of results
+    top_score: float                 # Highest score (0-1)
+    score_spread: float              # Score range
+    has_high_confidence: bool        # top_score >= 0.7
+    suggested_action: str            # "deliver", "query_more", "refine_query"
+
+@dataclass
+class RetrievalResult:
+    content: str      # Original chunk text
+    context: str      # LLM-generated context
+    score: float      # Relevance score (0-1)
+    source: str       # Source filename
+    chunk_id: str     # Unique chunk identifier
+    metadata: dict    # Additional metadata
+```
+
+## Architecture
+
+See the system flowcharts for detailed architecture:
+- [High-level flowchart](high_level_system_flowchart.md)
+- [Low-level flowchart](low_level_system_flowchart.md)
 
 ## License
 
