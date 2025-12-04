@@ -88,4 +88,12 @@ Thumbs.db
 # Project specific
 *.pkl
 *.index
+*.faiss
 .konte/
+
+# Large files and data
+*.pdf
+example_knowledge_base/
+debug/
+scripts/output/
+*.log
