@@ -125,6 +125,12 @@ For standard RAG without LLM-generated context (faster, cheaper):
 await project.build(skip_context=True)
 ```
 
+## Performance Optimizations
+
+- **LLM Instance Caching**: Reuses ChatOpenAI instance to enable OpenAI prompt caching
+- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls
+- **Prompt Structure**: Segment (~8000 tokens) comes first enabling prefix caching across chunks
+
 ## Index Options
 
 ```python

@@ -63,6 +63,8 @@ For documents larger than 8000 tokens, split into overlapping 8000-token segment
 
 **Cost reduction via prompt caching**: Structure the prompt so the segment (8000 tokens) comes first, then the chunk. OpenAI automatically caches repeated prompt prefixes. When processing 10 chunks from same segment, the segment portion is cached after first call. Estimated ~$1 per million document tokens with caching.
 
+**Batch processing**: We use LangChain's `abatch()` method for parallel LLM calls with immediate results. This is different from OpenAI's Batch API which provides 50% cost savings but has 24-hour latency - not suitable for interactive use cases.
+
 ## Modularity
 
 All components are optional and can be enabled/disabled:
@@ -126,7 +128,8 @@ For tariff domain, we customize this prompt with domain-specific instructions.
 - Optional (can skip for standard RAG behavior)
 - Generate 100-200 token context per chunk
 - Use the entire 8000 token segment as reference for context generation
-- Batch processing for cost efficiency
+- Parallel processing via LangChain `abatch()` for efficiency
+- Reuse LLM instance (module-level cache) to enable OpenAI prompt caching
 - Custom prompt support per project
 
 ### Indexing

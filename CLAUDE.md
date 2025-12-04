@@ -37,7 +37,7 @@ konte/
 ├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig
 ├── loader.py        # Document loading (PDF, TXT, MD) - sync and async
 ├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap
-├── context.py       # Async LLM context generation (batched, 10 parallel)
+├── context.py       # Async LLM context generation (LangChain abatch, cached LLM instance)
 ├── faiss_store.py   # FAISS index: build, save, load, query
 ├── bm25_store.py    # BM25 index: build, save, load, query
 ├── retriever.py     # Hybrid retrieval + reciprocal rank fusion
@@ -120,6 +120,7 @@ project = get_project("my_project")
 - **Contextual Chunk**: Original chunk + LLM-generated context (100-200 tokens) prepended
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
+- **Batch Processing**: Uses LangChain `abatch()` (immediate results), not OpenAI Batch API (24hr latency)
 
 ## Storage Structure
 
@@ -128,9 +129,8 @@ project = get_project("my_project")
 └── {project_name}/
     ├── config.json       # ProjectConfig
     ├── chunks.json       # ContextualizedChunk list
-    ├── faiss.index       # FAISS index (if enabled)
-    ├── faiss_ids.json    # ID mapping
-    ├── faiss_chunks.json # Chunk data for FAISS
+    ├── faiss.faiss       # FAISS index (LangChain format)
+    ├── faiss.pkl         # FAISS docstore (LangChain format)
     ├── bm25.pkl          # BM25 index (if enabled)
     └── bm25_chunks.json  # Chunk data for BM25
 ```

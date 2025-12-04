@@ -125,9 +125,10 @@ Use pydantic-settings with env file support.
 - Async LLM calls via LangChain
 - Context is plain text output (no structured parsing needed)
 - Prompt structure: segment first (cacheable), then chunk (variable) - enables OpenAI prompt caching
-- 10 parallel calls max
+- Use LangChain `abatch()` for parallel processing (not OpenAI Batch API which has 24hr latency)
+- Module-level ChatOpenAI cache to reuse instances (enables prompt caching)
 - Timeout handling
-- Rate limit handling with exponential backoff
+- Rate limit handling with exponential backoff (via LangChain max_retries)
 - Load prompt template from prompts/ directory
 - Skip option for standard RAG mode
 - Integration tests with real OpenAI calls
@@ -180,10 +181,11 @@ Use pydantic-settings with env file support.
 2. **Segment overlap**: 800 tokens (10%), no word breakage
 3. **Embedding model**: text-embedding-3-small
 4. **Context model**: gpt-4.1
-5. **Concurrency**: 10 parallel LLM calls with timeout and rate limit handling
-6. **Hybrid fallback**: Warn and fallback to available index
-7. **Adding documents**: Full rebuild (append later)
-8. **Prompts**: Stored in prompts/ directory, tariff-domain focused
+5. **Batch processing**: LangChain `abatch()` for parallel LLM calls (immediate results). Note: OpenAI Batch API is different - 24hr latency for 50% cost savings, not used here.
+6. **LLM instance caching**: Module-level cache for ChatOpenAI to enable OpenAI prompt caching
+7. **Hybrid fallback**: Warn and fallback to available index
+8. **Adding documents**: Full rebuild (append later)
+9. **Prompts**: Stored in prompts/ directory, tariff-domain focused
 
 ## Test Strategy
 
