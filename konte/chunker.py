@@ -2,6 +2,7 @@
 
 import tiktoken
 
+from konte.config import settings
 from konte.models import Chunk
 
 # Use cl100k_base encoding (used by text-embedding-3-small and GPT-4)
@@ -83,15 +84,12 @@ def _split_by_tokens(
 
         # Adjust to word boundary if not at the end
         if end < len(tokens):
-            # Find the character position we're at
-            prefix_text = _ENCODING.decode(tokens[:end])
-            boundary = _find_word_boundary(prefix_text, len(prefix_text), "backward")
+            # Find word boundary within the chunk
+            boundary = _find_word_boundary(chunk_text, len(chunk_text), "backward")
 
-            # Only adjust if we found a reasonable boundary
-            if boundary > len(_ENCODING.decode(tokens[:start])) + 10:
-                chunk_text = prefix_text[:boundary].strip()
-                # Recalculate end based on actual chunk
-                end = start + len(_ENCODING.encode(chunk_text))
+            # Only adjust if we found a reasonable boundary (at least 10 chars in)
+            if boundary > 10:
+                chunk_text = chunk_text[:boundary].strip()
 
         chunks.append(chunk_text.strip())
 
@@ -111,48 +109,52 @@ def _split_by_tokens(
 
 def segment_document(
     text: str,
-    segment_size: int = 8000,
-    overlap: int = 800,
+    segment_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[str]:
     """Split document into segments of approximately segment_size tokens.
 
     Args:
         text: Document text to segment.
-        segment_size: Target size in tokens for each segment.
-        overlap: Number of tokens to overlap between segments.
+        segment_size: Target size in tokens for each segment. Defaults to settings.SEGMENT_SIZE.
+        overlap: Number of tokens to overlap between segments. Defaults to settings.SEGMENT_OVERLAP.
 
     Returns:
         List of text segments.
     """
-    return _split_by_tokens(text, segment_size, overlap)
+    size = segment_size if segment_size is not None else settings.SEGMENT_SIZE
+    ovlp = overlap if overlap is not None else settings.SEGMENT_OVERLAP
+    return _split_by_tokens(text, size, ovlp)
 
 
 def chunk_segment(
     text: str,
-    chunk_size: int = 800,
-    overlap: int = 80,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[str]:
     """Split segment into chunks of approximately chunk_size tokens.
 
     Args:
         text: Segment text to chunk.
-        chunk_size: Target size in tokens for each chunk.
-        overlap: Number of tokens to overlap between chunks.
+        chunk_size: Target size in tokens for each chunk. Defaults to settings.CHUNK_SIZE.
+        overlap: Number of tokens to overlap between chunks. Defaults to settings.CHUNK_OVERLAP.
 
     Returns:
         List of text chunks.
     """
-    return _split_by_tokens(text, chunk_size, overlap)
+    size = chunk_size if chunk_size is not None else settings.CHUNK_SIZE
+    ovlp = overlap if overlap is not None else settings.CHUNK_OVERLAP
+    return _split_by_tokens(text, size, ovlp)
 
 
 def create_chunks(
     text: str,
     source: str,
-    segment_size: int = 8000,
-    segment_overlap: int = 800,
-    chunk_size: int = 800,
-    chunk_overlap: int = 80,
-) -> list[Chunk]:
+    segment_size: int | None = None,
+    segment_overlap: int | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> tuple[list[Chunk], dict[int, str]]:
     """Create Chunk objects from document text.
 
     First segments the document, then chunks each segment.
@@ -160,18 +162,20 @@ def create_chunks(
     Args:
         text: Document text.
         source: Source filename for metadata.
-        segment_size: Target size in tokens for segments.
-        segment_overlap: Overlap between segments in tokens.
-        chunk_size: Target size in tokens for chunks.
-        chunk_overlap: Overlap between chunks in tokens.
+        segment_size: Target size in tokens for segments. Defaults to settings.SEGMENT_SIZE.
+        segment_overlap: Overlap between segments in tokens. Defaults to settings.SEGMENT_OVERLAP.
+        chunk_size: Target size in tokens for chunks. Defaults to settings.CHUNK_SIZE.
+        chunk_overlap: Overlap between chunks in tokens. Defaults to settings.CHUNK_OVERLAP.
 
     Returns:
-        List of Chunk objects.
+        Tuple of (List of Chunk objects, Dict mapping segment_idx to segment text).
     """
     chunks = []
+    segments_map: dict[int, str] = {}
     segments = segment_document(text, segment_size, segment_overlap)
 
     for seg_idx, segment in enumerate(segments):
+        segments_map[seg_idx] = segment
         segment_chunks = chunk_segment(segment, chunk_size, chunk_overlap)
 
         for chunk_idx, chunk_text in enumerate(segment_chunks):
@@ -185,4 +189,4 @@ def create_chunks(
             )
             chunks.append(chunk)
 
-    return chunks
+    return chunks, segments_map

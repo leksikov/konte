@@ -1,5 +1,6 @@
 """Konte - Contextual RAG library with hybrid retrieval."""
 
+from konte.config import settings
 from konte.manager import (
     create_project,
     delete_project,
@@ -15,7 +16,6 @@ from konte.models import (
     RetrievalResult,
 )
 from konte.project import Project
-from konte.settings import settings
 
 __version__ = "0.1.0"
 __all__ = [

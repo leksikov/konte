@@ -5,9 +5,9 @@ from pathlib import Path
 
 import structlog
 
+from konte.config import settings
 from konte.models import ProjectConfig
 from konte.project import Project
-from konte.settings import settings
 
 logger = structlog.get_logger()
 

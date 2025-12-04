@@ -6,14 +6,12 @@ from typing import Callable
 
 import structlog
 
-from konte.bm25_store import BM25Store
 from konte.chunker import create_chunks
+from konte.config import settings
 from konte.context import generate_contexts_batch
-from konte.faiss_store import FAISSStore
 from konte.loader import load_document
 from konte.models import Chunk, ContextualizedChunk, ProjectConfig, RetrievalResponse
-from konte.retriever import Retriever, RetrievalMode
-from konte.settings import settings
+from konte.stores import BM25Store, FAISSStore, Retriever, RetrievalMode
 
 logger = structlog.get_logger()
 
@@ -64,7 +62,7 @@ class Project:
 
             content = load_document(file_path)
 
-            chunks = create_chunks(
+            chunks, segments_map = create_chunks(
                 text=content,
                 source=file_path.name,
                 segment_size=self._config.segment_size,
@@ -74,11 +72,7 @@ class Project:
             )
 
             # Store segment text for context generation
-            for chunk in chunks:
-                if chunk.segment_idx not in self._segments:
-                    # Extract segment from content (approximate)
-                    # In practice, we should store segments during chunking
-                    self._segments[chunk.segment_idx] = content
+            self._segments.update(segments_map)
 
             all_chunks.extend(chunks)
             logger.info(
@@ -131,7 +125,6 @@ class Project:
                 segment=segment_text,
                 chunks=segment_chunks,
                 model=self._config.context_model,
-                max_concurrent=settings.MAX_CONCURRENT_CALLS,
                 skip_context=skip_context,
             )
             self._contextualized_chunks.extend(ctx_chunks)
@@ -253,7 +246,7 @@ class Project:
             self._chunks = [c.chunk for c in self._contextualized_chunks]
 
         # Load indexes
-        faiss_path = project_dir / "faiss.index"
+        faiss_path = project_dir / "faiss.faiss"
         if faiss_path.exists() and self._config.enable_faiss:
             self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
             self._faiss.load(project_dir)
@@ -292,8 +285,21 @@ class Project:
         Returns:
             New Project instance.
         """
-        path = storage_path or settings.STORAGE_PATH
-        config = ProjectConfig(name=name, storage_path=path, **kwargs)
+        # Build defaults from settings (SSoT)
+        defaults = {
+            "storage_path": storage_path or settings.STORAGE_PATH,
+            "segment_size": settings.SEGMENT_SIZE,
+            "segment_overlap": settings.SEGMENT_OVERLAP,
+            "chunk_size": settings.CHUNK_SIZE,
+            "chunk_overlap": settings.CHUNK_OVERLAP,
+            "context_min_tokens": settings.CONTEXT_MIN_TOKENS,
+            "context_max_tokens": settings.CONTEXT_MAX_TOKENS,
+            "embedding_model": settings.EMBEDDING_MODEL,
+            "context_model": settings.CONTEXT_MODEL,
+        }
+        # Allow kwargs to override defaults
+        defaults.update(kwargs)
+        config = ProjectConfig(name=name, **defaults)
         return cls(config)
 
     @classmethod
