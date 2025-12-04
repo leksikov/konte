@@ -39,7 +39,7 @@ class TestBM25StoreBuild:
 
     def test_build_index_creates_index(self, sample_chunks):
         """Test that build_index creates a searchable index."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -48,7 +48,7 @@ class TestBM25StoreBuild:
 
     def test_build_empty_chunks(self):
         """Test building index with empty chunks list."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index([])
@@ -62,7 +62,7 @@ class TestBM25StoreQuery:
 
     def test_query_returns_results(self, sample_chunks):
         """Test that query returns relevant results."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -75,7 +75,7 @@ class TestBM25StoreQuery:
 
     def test_query_scores_in_range(self, sample_chunks):
         """Test that query scores are between 0 and 1."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -87,7 +87,7 @@ class TestBM25StoreQuery:
 
     def test_query_exact_match_scores_high(self, sample_chunks):
         """Test that exact keyword matches score higher."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -100,7 +100,7 @@ class TestBM25StoreQuery:
 
     def test_query_empty_index(self):
         """Test querying empty index returns empty list."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         results = store.query("test query")
@@ -109,7 +109,7 @@ class TestBM25StoreQuery:
 
     def test_query_no_matches(self, sample_chunks):
         """Test query with no matching terms still returns results (ranked by BM25)."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -127,7 +127,7 @@ class TestBM25StorePersistence:
 
     def test_save_and_load(self, sample_chunks, tmp_path):
         """Test that saved index can be loaded and queried."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         # Build and save
         store1 = BM25Store()
@@ -146,7 +146,7 @@ class TestBM25StorePersistence:
 
     def test_load_nonexistent_raises(self, tmp_path):
         """Test that loading from nonexistent path raises error."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store = BM25Store()
         with pytest.raises(FileNotFoundError):
@@ -154,7 +154,7 @@ class TestBM25StorePersistence:
 
     def test_saved_chunks_preserved(self, sample_chunks, tmp_path):
         """Test that chunk data is preserved after save/load."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store1 = BM25Store()
         store1.build_index(sample_chunks)
@@ -172,7 +172,7 @@ class TestBM25StorePersistence:
 
     def test_query_results_same_after_reload(self, sample_chunks, tmp_path):
         """Test that query results are consistent before and after reload."""
-        from konte.bm25_store import BM25Store
+        from konte.stores import BM25Store
 
         store1 = BM25Store()
         store1.build_index(sample_chunks)

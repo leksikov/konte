@@ -12,11 +12,11 @@ class TestSettings:
     def test_default_values(self):
         """Test that default settings are applied correctly."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.settings import Settings
+            from konte.config import Settings
 
             s = Settings()
             assert s.EMBEDDING_MODEL == "text-embedding-3-small"
-            assert s.CONTEXT_MODEL == "gpt-4.1"
+            assert s.CONTEXT_MODEL == "gpt-4.1-mini"
             assert s.SEGMENT_SIZE == 8000
             assert s.SEGMENT_OVERLAP == 800
             assert s.CHUNK_SIZE == 800
@@ -24,7 +24,7 @@ class TestSettings:
             assert s.CONTEXT_MIN_TOKENS == 100
             assert s.CONTEXT_MAX_TOKENS == 200
             assert s.DEFAULT_TOP_K == 20
-            assert s.MAX_CONCURRENT_CALLS == 10
+            assert s.MAX_CONCURRENT_CALLS == 1  # Sequential to avoid rate limits
             assert s.CONFIDENCE_THRESHOLD == 0.7
 
     def test_storage_path_expansion(self):
@@ -34,7 +34,7 @@ class TestSettings:
             {"OPENAI_API_KEY": "test-key", "STORAGE_PATH": "~/.konte"},
             clear=False,
         ):
-            from konte.settings import Settings
+            from konte.config import Settings
 
             s = Settings()
             assert "~" not in str(s.STORAGE_PATH)
@@ -43,7 +43,7 @@ class TestSettings:
     def test_prompt_path_is_path(self):
         """Test that PROMPT_PATH is a Path object."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.settings import Settings
+            from konte.config import Settings
 
             s = Settings()
             assert isinstance(s.PROMPT_PATH, Path)
@@ -52,7 +52,7 @@ class TestSettings:
     def test_openai_api_key_required(self):
         """Test that OPENAI_API_KEY is required."""
         with patch.dict("os.environ", {}, clear=True):
-            from konte.settings import Settings
+            from konte.config import Settings
 
             with pytest.raises(Exception):
                 Settings()
@@ -60,7 +60,7 @@ class TestSettings:
     def test_overlap_less_than_size(self):
         """Test segment overlap is less than segment size."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.settings import Settings
+            from konte.config import Settings
 
             s = Settings()
             assert s.SEGMENT_OVERLAP < s.SEGMENT_SIZE

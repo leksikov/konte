@@ -126,7 +126,6 @@ class TestGenerateContextsBatch:
         results = await generate_contexts_batch(
             segment=sample_segment,
             chunks=sample_chunks,
-            max_concurrent=2,
         )
 
         assert len(results) == len(sample_chunks)

@@ -248,3 +248,68 @@ class TestProjectAsRetriever:
         response = retriever("tariff classification")
 
         assert response.total_found > 0
+
+
+@pytest.mark.integration
+class TestProjectSegmentStorage:
+    """Test that segments are stored correctly (not full document)."""
+
+    def test_segments_stored_not_full_document(self, tmp_path):
+        """Verify segments map contains segment text, not full document."""
+        from konte.project import Project
+        from konte.chunker import count_tokens
+
+        project = Project.create(
+            name="segment_test",
+            storage_path=tmp_path,
+            segment_size=200,  # Small segment size for testing
+            segment_overlap=20,
+        )
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        # Check that segments are properly sized (not full document)
+        # Read the document to know full size
+        doc_content = (FIXTURES_DIR / "sample.txt").read_text()
+        doc_tokens = count_tokens(doc_content)
+
+        for seg_idx, segment_text in project._segments.items():
+            segment_tokens = count_tokens(segment_text)
+            # Segment should be around segment_size, not the full document
+            # Allow 2x margin for word boundary adjustments
+            assert segment_tokens <= 200 * 2, (
+                f"Segment {seg_idx} has {segment_tokens} tokens, "
+                f"expected <= 400 (200 * 2)"
+            )
+            # Segment should be smaller than full document
+            assert segment_tokens < doc_tokens, (
+                f"Segment {seg_idx} has {segment_tokens} tokens, "
+                f"which is >= full document ({doc_tokens} tokens)"
+            )
+
+    def test_each_chunk_maps_to_valid_segment(self, tmp_path):
+        """Verify each chunk's segment_idx maps to correct segment."""
+        from konte.project import Project
+
+        project = Project.create(
+            name="chunk_map_test",
+            storage_path=tmp_path,
+            segment_size=200,
+            segment_overlap=20,
+            chunk_size=50,
+            chunk_overlap=5,
+        )
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        # Each chunk should have a corresponding segment
+        for chunk in project._chunks:
+            assert chunk.segment_idx in project._segments, (
+                f"Chunk {chunk.chunk_id} has segment_idx {chunk.segment_idx} "
+                f"not in segments map"
+            )
+            # Chunk content should appear in its segment
+            segment_text = project._segments[chunk.segment_idx]
+            # Due to overlap, chunk might be in adjacent segments too,
+            # but should be findable in declared segment
+            assert chunk.content[:50] in segment_text or segment_text[:50] in chunk.content, (
+                f"Chunk content not found in segment {chunk.segment_idx}"
+            )

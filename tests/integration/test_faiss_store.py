@@ -47,7 +47,7 @@ class TestFAISSStoreBuild:
 
     def test_build_index_creates_index(self, sample_chunks):
         """Test that build_index creates a searchable index."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         store.build_index(sample_chunks)
@@ -56,7 +56,7 @@ class TestFAISSStoreBuild:
 
     def test_build_empty_chunks(self):
         """Test building index with empty chunks list."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         store.build_index([])
@@ -70,7 +70,7 @@ class TestFAISSStoreQuery:
 
     def test_query_returns_results(self, sample_chunks):
         """Test that query returns relevant results."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         store.build_index(sample_chunks)
@@ -83,7 +83,7 @@ class TestFAISSStoreQuery:
 
     def test_query_scores_in_range(self, sample_chunks):
         """Test that query scores are between 0 and 1."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         store.build_index(sample_chunks)
@@ -95,7 +95,7 @@ class TestFAISSStoreQuery:
 
     def test_query_returns_relevant_first(self, sample_chunks):
         """Test that most relevant result comes first."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         store.build_index(sample_chunks)
@@ -108,7 +108,7 @@ class TestFAISSStoreQuery:
 
     def test_query_empty_index(self):
         """Test querying empty index returns empty list."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         results = store.query("test query")
@@ -122,7 +122,7 @@ class TestFAISSStorePersistence:
 
     def test_save_and_load(self, sample_chunks, tmp_path):
         """Test that saved index can be loaded and queried."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         # Build and save
         store1 = FAISSStore()
@@ -141,7 +141,7 @@ class TestFAISSStorePersistence:
 
     def test_load_nonexistent_raises(self, tmp_path):
         """Test that loading from nonexistent path raises error."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store = FAISSStore()
         with pytest.raises(FileNotFoundError):
@@ -149,7 +149,7 @@ class TestFAISSStorePersistence:
 
     def test_saved_chunks_preserved(self, sample_chunks, tmp_path):
         """Test that chunk data is preserved after save/load."""
-        from konte.faiss_store import FAISSStore
+        from konte.stores import FAISSStore
 
         store1 = FAISSStore()
         store1.build_index(sample_chunks)
