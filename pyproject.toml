@@ -57,4 +57,5 @@ testpaths = ["tests"]
 markers = [
     "unit: Unit tests (mocks allowed)",
     "integration: Integration tests (real API calls)",
+    "e2e: End-to-end tests (slow, real API calls, full workflows)",
 ]
