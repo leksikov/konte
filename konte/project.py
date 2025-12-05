@@ -205,7 +205,16 @@ class Project:
             encoding="utf-8",
         )
 
-        # Save chunks
+        # Save raw chunks (before build)
+        raw_chunks_path = project_dir / "raw_chunks.json"
+        raw_chunks_data = [c.model_dump() for c in self._chunks]
+        raw_chunks_path.write_text(json.dumps(raw_chunks_data, indent=2), encoding="utf-8")
+
+        # Save segments (before build)
+        segments_path = project_dir / "segments.json"
+        segments_path.write_text(json.dumps(self._segments, indent=2), encoding="utf-8")
+
+        # Save contextualized chunks (after build)
         chunks_path = project_dir / "chunks.json"
         chunks_data = [
             {
@@ -232,18 +241,31 @@ class Project:
         if not project_dir.exists():
             raise FileNotFoundError(f"Project not found: {project_dir}")
 
-        # Load chunks
+        # Load raw chunks (before build)
+        raw_chunks_path = project_dir / "raw_chunks.json"
+        if raw_chunks_path.exists():
+            raw_chunks_data = json.loads(raw_chunks_path.read_text(encoding="utf-8"))
+            self._chunks = [Chunk(**item) for item in raw_chunks_data]
+
+        # Load segments (before build)
+        segments_path = project_dir / "segments.json"
+        if segments_path.exists():
+            segments_data = json.loads(segments_path.read_text(encoding="utf-8"))
+            # JSON keys are strings, convert to int
+            self._segments = {int(k): v for k, v in segments_data.items()}
+
+        # Load contextualized chunks (after build)
         chunks_path = project_dir / "chunks.json"
         if chunks_path.exists():
             chunks_data = json.loads(chunks_path.read_text(encoding="utf-8"))
-            self._contextualized_chunks = [
-                ContextualizedChunk(
-                    chunk=Chunk(**item["chunk"]),
-                    context=item["context"],
-                )
-                for item in chunks_data
-            ]
-            self._chunks = [c.chunk for c in self._contextualized_chunks]
+            if chunks_data:  # Only load if not empty
+                self._contextualized_chunks = [
+                    ContextualizedChunk(
+                        chunk=Chunk(**item["chunk"]),
+                        context=item["context"],
+                    )
+                    for item in chunks_data
+                ]
 
         # Load indexes
         faiss_path = project_dir / "faiss.faiss"
@@ -265,7 +287,7 @@ class Project:
         logger.info(
             "project_loaded",
             path=str(project_dir),
-            num_chunks=len(self._contextualized_chunks),
+            num_chunks=len(self._chunks),
         )
 
     @classmethod
