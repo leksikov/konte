@@ -27,6 +27,33 @@ Set your OpenAI API key:
 export OPENAI_API_KEY=sk-...
 ```
 
+## CLI
+
+Konte includes a command-line interface:
+
+```bash
+# Create a project
+konte create my_project
+
+# Add documents
+konte add my_project doc1.pdf doc2.md
+
+# Build indexes
+konte build my_project
+
+# Query
+konte query my_project "What is the HS code for memory chips?"
+
+# List projects
+konte list
+
+# Project info
+konte info my_project
+
+# Delete project
+konte delete my_project
+```
+
 ## Quick Start
 
 ```python
@@ -195,6 +222,44 @@ class RetrievalResult:
     chunk_id: str     # Unique chunk identifier
     metadata: dict    # Additional metadata
 ```
+
+## Multi-Project Retrieval
+
+Query multiple knowledge bases in parallel:
+
+```python
+from konte import Project
+
+projects = [
+    Project.open("hs_codes"),
+    Project.open("gri_rules"),
+    Project.open("precedents"),
+]
+
+# Query all projects
+results = {}
+for project in projects:
+    results[project._config.name] = project.query("memory chip classification")
+
+# Merge and rank
+all_results = []
+for name, response in results.items():
+    for r in response.results:
+        all_results.append((name, r))
+
+all_results.sort(key=lambda x: x[1].score, reverse=True)
+```
+
+See [examples/parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) for a complete example.
+
+## Agent Integration
+
+Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integration Guide](docs/AGENT_INTEGRATION_GUIDE.md) for:
+
+- LangChain RAG chains and custom retrievers
+- Agno tools and multi-project agents
+- Confidence-based agent decisions
+- Streaming responses
 
 ## Architecture
 
