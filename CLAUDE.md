@@ -33,23 +33,36 @@ pytest tests/unit/test_chunker.py::test_segment_splitting -v
 ```
 konte/
 ├── __init__.py      # Public API exports
-├── settings.py      # pydantic-settings, env vars, SSoT for config
 ├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig
 ├── loader.py        # Document loading (PDF, TXT, MD) - sync and async
 ├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap
 ├── context.py       # Async LLM context generation (LangChain abatch, cached LLM instance)
-├── faiss_store.py   # FAISS index: build, save, load, query
-├── bm25_store.py    # BM25 index: build, save, load, query
-├── retriever.py     # Hybrid retrieval + reciprocal rank fusion
 ├── project.py       # Main interface: Project class
-└── manager.py       # Project CRUD: create, list, get, delete
+├── manager.py       # Project CRUD: create, list, get, delete
+├── config/
+│   └── settings.py  # pydantic-settings, env vars, SSoT for config
+├── stores/
+│   ├── base.py      # Store protocol (common interface)
+│   ├── faiss_store.py   # FAISS index: build, save, load, query
+│   ├── bm25_store.py    # BM25 index: build, save, load, query
+│   └── retriever.py     # Hybrid retrieval + reciprocal rank fusion
+└── cli/
+    ├── app.py       # Typer CLI commands
+    └── __main__.py  # Module entry point
 
 prompts/
 └── context_prompt.txt   # Tariff-domain context generation prompt
 
+docs/
+└── AGENT_INTEGRATION_GUIDE.md  # LangChain/Agno integration guide
+
+examples/
+└── parallel_multi_project_retrieval.py  # Multi-project querying
+
 tests/
-├── unit/           # Mocks allowed here only (70 tests)
-├── integration/    # Real API calls (42 tests)
+├── unit/           # Mocks allowed here only
+├── integration/    # Real API calls
+├── e2e/            # End-to-end tests
 └── fixtures/       # Test documents (sample.txt, sample.md)
 ```
 
@@ -128,7 +141,9 @@ project = get_project("my_project")
 {STORAGE_PATH}/
 └── {project_name}/
     ├── config.json       # ProjectConfig
-    ├── chunks.json       # ContextualizedChunk list
+    ├── raw_chunks.json   # Raw chunks (before build)
+    ├── segments.json     # Segment data
+    ├── chunks.json       # ContextualizedChunk list (after build)
     ├── faiss.faiss       # FAISS index (LangChain format)
     ├── faiss.pkl         # FAISS docstore (LangChain format)
     ├── bm25.pkl          # BM25 index (if enabled)
@@ -157,6 +172,7 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - tiktoken for token counting
 - aiofiles for async file I/O
 - pypdf for PDF loading
+- typer + rich for CLI
 
 ## Development Guidelines
 
