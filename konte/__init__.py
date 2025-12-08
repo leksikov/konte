@@ -1,6 +1,7 @@
 """Konte - Contextual RAG library with hybrid retrieval."""
 
 from konte.config import settings
+from konte.generator import GeneratedAnswer, generate_answer
 from konte.manager import (
     create_project,
     delete_project,
@@ -27,6 +28,7 @@ __all__ = [
     "RetrievalResult",
     "RetrievalResponse",
     "ProjectConfig",
+    "GeneratedAnswer",
     # Project
     "Project",
     # Manager functions
@@ -35,4 +37,6 @@ __all__ = [
     "get_project",
     "delete_project",
     "project_exists",
+    # Generator
+    "generate_answer",
 ]

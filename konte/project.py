@@ -9,6 +9,7 @@ import structlog
 from konte.chunker import create_chunks
 from konte.config import settings
 from konte.context import generate_contexts_batch
+from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
 from konte.models import Chunk, ContextualizedChunk, ProjectConfig, RetrievalResponse
 from konte.stores import BM25Store, FAISSStore, Retriever, RetrievalMode
@@ -192,6 +193,51 @@ class Project:
             Callable that takes a query and returns RetrievalResponse.
         """
         return lambda q: self.query(q)
+
+    async def query_with_answer(
+        self,
+        query: str,
+        mode: RetrievalMode = "hybrid",
+        top_k: int | None = None,
+        max_chunks: int = 10,
+        prompt_template: str | None = None,
+        timeout: float = 60.0,
+    ) -> tuple[RetrievalResponse, GeneratedAnswer]:
+        """Query the project and generate an LLM answer from retrieved chunks.
+
+        This is the full RAG pipeline: retrieval + answer generation.
+
+        Args:
+            query: Query string.
+            mode: Retrieval mode - "hybrid", "semantic", or "lexical".
+            top_k: Number of results to retrieve. Defaults to settings.DEFAULT_TOP_K.
+            max_chunks: Maximum chunks to use for answer generation.
+            prompt_template: Custom prompt template with {context} and {question} placeholders.
+            timeout: LLM request timeout in seconds.
+
+        Returns:
+            Tuple of (RetrievalResponse, GeneratedAnswer).
+        """
+        # First, retrieve chunks
+        retrieval_response = self.query(query, mode=mode, top_k=top_k)
+
+        # Then, generate answer using LLM
+        answer = await generate_answer(
+            question=query,
+            retrieval_response=retrieval_response,
+            prompt_template=prompt_template,
+            max_chunks=max_chunks,
+            timeout=timeout,
+        )
+
+        logger.info(
+            "query_with_answer_complete",
+            query=query[:50],
+            chunks_retrieved=len(retrieval_response.results),
+            answer_length=len(answer.answer),
+        )
+
+        return retrieval_response, answer
 
     def save(self) -> None:
         """Save project state to disk."""
