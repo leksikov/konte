@@ -37,7 +37,8 @@ konte/
 ├── loader.py        # Document loading (PDF, TXT, MD) - sync and async
 ├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap
 ├── context.py       # Async LLM context generation (LangChain abatch, cached LLM instance)
-├── project.py       # Main interface: Project class
+├── generator.py     # RAG answer generation with LLM (BackendAI/OpenAI)
+├── project.py       # Main interface: Project class (query, query_with_answer)
 ├── manager.py       # Project CRUD: create, list, get, delete
 ├── config/
 │   └── settings.py  # pydantic-settings, env vars, SSoT for config
@@ -86,6 +87,10 @@ from konte import (
     RetrievalResult,
     RetrievalResponse,
     ProjectConfig,
+    GeneratedAnswer,
+
+    # Generator
+    generate_answer,
 
     # Settings
     settings,
@@ -121,6 +126,19 @@ project = Project.open("my_project")
 project = get_project("my_project")
 ```
 
+### Full RAG with Answer Generation
+```python
+# Query with LLM-generated answer
+response, answer = await project.query_with_answer(
+    query="What is the HS code for DDR5 RAM?",
+    mode="hybrid",
+    max_chunks=5,
+)
+print(answer.answer)       # LLM-generated answer
+print(answer.model)        # Model used
+print(answer.sources_used) # Number of chunks used
+```
+
 ## System Flowcharts
 
 - `high_level_system_flowchart.md` - Overview of ingestion → context → indexing → retrieval pipeline
@@ -134,6 +152,7 @@ project = get_project("my_project")
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
 - **Batch Processing**: Uses LangChain `abatch()` (immediate results), not OpenAI Batch API (24hr latency)
+- **RAG Answer Generation**: Optional LLM answer generation from retrieved chunks via `query_with_answer()`
 
 ## Storage Structure
 
@@ -161,6 +180,8 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - `SEGMENT_SIZE`: 8000 tokens
 - `CHUNK_SIZE`: 800 tokens
 - `MAX_CONCURRENT_CALLS`: 10
+- `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen25vl.asia03.app.backend.ai/v1`)
+- `BACKENDAI_MODEL_NAME`: Model for answer generation (default: `Qwen3-VL-8B-Instruct`)
 
 ## Dependencies
 

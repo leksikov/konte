@@ -41,8 +41,12 @@ konte add my_project doc1.pdf doc2.md
 # Build indexes
 konte build my_project
 
-# Query
+# Query (retrieval only)
 konte query my_project "What is the HS code for memory chips?"
+
+# Ask (full RAG with LLM answer)
+konte ask my_project "What is the HS code for memory chips?"
+konte ask my_project "What is the HS code for DDR5 RAM?" --show-sources
 
 # List projects
 konte list
@@ -178,7 +182,38 @@ STORAGE_PATH=~/.konte          # Project storage location
 EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1
 DEFAULT_TOP_K=20
+
+# BackendAI (default for answer generation)
+BACKENDAI_ENDPOINT=https://qwen25vl.asia03.app.backend.ai/v1
+BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
 ```
+
+## RAG Answer Generation
+
+Generate LLM-grounded answers from retrieved chunks:
+
+```python
+import asyncio
+from konte import Project
+
+async def main():
+    project = Project.open("my_project")
+
+    # Full RAG pipeline: retrieval + LLM answer
+    response, answer = await project.query_with_answer(
+        query="What is the HS code for DDR5 RAM?",
+        mode="hybrid",
+        max_chunks=5,
+    )
+
+    print(answer.answer)       # LLM-generated answer
+    print(answer.model)        # Model used (e.g., "Qwen3-VL-8B-Instruct")
+    print(answer.sources_used) # Number of chunks used
+
+asyncio.run(main())
+```
+
+By default uses BackendAI (Qwen3-VL-8B-Instruct), falls back to OpenAI if not configured.
 
 ## Agent Integration
 
