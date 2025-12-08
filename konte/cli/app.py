@@ -284,6 +284,87 @@ def query(
         raise typer.Exit(1)
 
 
+@app.command("ask")
+def ask(
+    name: str = typer.Argument(..., help="Project name"),
+    question: str = typer.Argument(..., help="Question to answer"),
+    storage_path: Optional[Path] = typer.Option(
+        None,
+        "--storage",
+        "-s",
+        help="Storage path (default: ~/.konte)",
+    ),
+    top_k: int = typer.Option(
+        10,
+        "--top-k",
+        "-k",
+        help="Number of chunks to retrieve",
+    ),
+    max_chunks: int = typer.Option(
+        10,
+        "--max-chunks",
+        help="Maximum chunks to use for answer generation",
+    ),
+    mode: str = typer.Option(
+        "hybrid",
+        "--mode",
+        "-m",
+        help="Retrieval mode: hybrid, semantic, lexical",
+    ),
+    show_sources: bool = typer.Option(
+        False,
+        "--show-sources",
+        help="Show retrieved sources",
+    ),
+) -> None:
+    """Ask a question and get an LLM-generated answer (full RAG pipeline)."""
+    path = storage_path or settings.STORAGE_PATH
+
+    if not project_exists(name, storage_path=path):
+        console.print(f"[red]Error:[/red] Project '{name}' not found")
+        raise typer.Exit(1)
+
+    if mode not in ("hybrid", "semantic", "lexical"):
+        console.print(f"[red]Error:[/red] Invalid mode: {mode}")
+        raise typer.Exit(1)
+
+    try:
+        project = get_project(name, storage_path=path)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Generating answer...", total=None)
+
+            async def run_query():
+                return await project.query_with_answer(
+                    query=question,
+                    mode=mode,
+                    top_k=top_k,
+                    max_chunks=max_chunks,
+                )
+
+            retrieval_response, answer = asyncio.run(run_query())
+
+        console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
+        console.print(f"\n[bold green]Answer:[/bold green]")
+        console.print(answer.answer)
+        console.print(f"\n[dim]Model: {answer.model} | Sources used: {answer.sources_used}[/dim]")
+
+        if show_sources:
+            console.print(f"\n[bold]Retrieved Sources ({retrieval_response.total_found}):[/bold]")
+            for i, result in enumerate(retrieval_response.results[:max_chunks], 1):
+                console.print(f"\n[cyan]--- Source {i} (score: {result.score:.3f}) ---[/cyan]")
+                console.print(f"[dim]File:[/dim] {result.source}")
+                console.print(f"{result.content[:300]}...")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @app.command("info")
 def info(
     name: str = typer.Argument(..., help="Project name"),
