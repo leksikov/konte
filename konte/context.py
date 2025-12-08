@@ -24,15 +24,43 @@ _llm_cache: dict[str, ChatOpenAI] = {}
 def get_llm(model: str | None = None, timeout: float = 30.0) -> ChatOpenAI:
     """Get or create a cached ChatOpenAI instance.
 
+    Supports custom backends (vLLM, BackendAI) via BACKENDAI_ENDPOINT.
+    When BACKENDAI_ENDPOINT and BACKENDAI_MODEL_NAME are set, uses
+    custom endpoint with OpenAI-compatible API schema.
+
     Args:
-        model: Model name. Defaults to settings.CONTEXT_MODEL.
+        model: Model name. Defaults to settings.CONTEXT_MODEL or BACKENDAI_MODEL_NAME.
         timeout: Request timeout in seconds.
 
     Returns:
         Cached ChatOpenAI instance.
     """
+    # Use BackendAI if configured and no specific model override
+    if settings.use_backendai and model is None:
+        model_name = settings.BACKENDAI_MODEL_NAME
+        base_url = settings.BACKENDAI_ENDPOINT
+        api_key = settings.BACKENDAI_API_KEY or "not-needed"
+        cache_key = f"backendai_{model_name}_{timeout}"
+
+        if cache_key not in _llm_cache:
+            logger.info(
+                "using_backendai",
+                endpoint=base_url,
+                model=model_name,
+            )
+            _llm_cache[cache_key] = ChatOpenAI(
+                model=model_name,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=0,
+                timeout=timeout,
+                max_retries=2,
+            )
+        return _llm_cache[cache_key]
+
+    # Default to OpenAI
     model_name = model or settings.CONTEXT_MODEL
-    cache_key = f"{model_name}_{timeout}"
+    cache_key = f"openai_{model_name}_{timeout}"
 
     if cache_key not in _llm_cache:
         _llm_cache[cache_key] = ChatOpenAI(

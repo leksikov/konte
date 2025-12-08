@@ -18,12 +18,22 @@ class Settings(BaseSettings):
     # API Keys
     OPENAI_API_KEY: str
 
+    # Custom Backend (vLLM with OpenAI schema)
+    BACKENDAI_ENDPOINT: str | None = None  # e.g., "https://xaas_model.asia03.app.backend.ai/v1"
+    BACKENDAI_MODEL_NAME: str | None = None  # e.g., "gemma-3-27b-it"
+    BACKENDAI_API_KEY: str | None = None  # Optional API key for BackendAI
+
     # Storage
     STORAGE_PATH: Path = Path("~/.konte")
 
     # Models
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     CONTEXT_MODEL: str = "gpt-4.1-mini"  # Supports OpenAI prompt caching
+
+    @property
+    def use_backendai(self) -> bool:
+        """Check if BackendAI custom endpoint should be used."""
+        return bool(self.BACKENDAI_ENDPOINT and self.BACKENDAI_MODEL_NAME)
 
     # Segmentation
     SEGMENT_SIZE: int = 8000  # tokens
