@@ -31,11 +31,16 @@ class FAISSStore:
         self._vectorstore: FAISS | None = None
         self._chunks: list[ContextualizedChunk] = []
 
-    def build_index(self, chunks: list[ContextualizedChunk]) -> None:
+    def build_index(
+        self,
+        chunks: list[ContextualizedChunk],
+        batch_size: int = 200,
+    ) -> None:
         """Build FAISS index from contextualized chunks.
 
         Args:
             chunks: List of contextualized chunks to index.
+            batch_size: Number of documents to embed per batch (default: 500).
         """
         if not chunks:
             logger.warning("faiss_build_empty_chunks")
@@ -59,11 +64,36 @@ class FAISSStore:
             )
             documents.append(doc)
 
-        # Build FAISS index using LangChain
-        self._vectorstore = FAISS.from_documents(
-            documents=documents,
-            embedding=self._embeddings,
-        )
+        # Build FAISS index in batches to avoid token limit errors
+        # OpenAI embedding API has 300K token limit per request
+        if len(documents) <= batch_size:
+            self._vectorstore = FAISS.from_documents(
+                documents=documents,
+                embedding=self._embeddings,
+            )
+        else:
+            # Build first batch
+            logger.info(
+                "faiss_building_batch",
+                batch=1,
+                total_batches=(len(documents) + batch_size - 1) // batch_size,
+            )
+            self._vectorstore = FAISS.from_documents(
+                documents=documents[:batch_size],
+                embedding=self._embeddings,
+            )
+
+            # Add remaining batches
+            for i in range(batch_size, len(documents), batch_size):
+                batch_num = (i // batch_size) + 1
+                total_batches = (len(documents) + batch_size - 1) // batch_size
+                logger.info(
+                    "faiss_building_batch",
+                    batch=batch_num,
+                    total_batches=total_batches,
+                )
+                batch_docs = documents[i : i + batch_size]
+                self._vectorstore.add_documents(batch_docs)
 
         logger.info(
             "faiss_index_built",
