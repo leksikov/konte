@@ -1,7 +1,12 @@
 """Build knowledge base projects from example_knowledge_base/ directory."""
 
 import asyncio
+import os
 from pathlib import Path
+
+# Set BackendAI endpoint for context generation
+os.environ["BACKENDAI_ENDPOINT"] = "https://qwen3vl.asia03.app.backend.ai/v1"
+os.environ["BACKENDAI_MODEL_NAME"] = "Qwen3-VL-8B-Instruct"
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -82,13 +87,22 @@ async def main():
         if f.name not in EXCLUDE_FILES
     ]
 
-    console.print(f"\nFound {len(md_files)} files to process:")
-    for f in md_files:
-        console.print(f"  - {f.name}")
+    # Sort by file size (smallest first)
+    md_files.sort(key=lambda f: f.stat().st_size)
 
-    # Build each project
+    console.print(f"\nFound {len(md_files)} files to process (smallest first):")
+    for f in md_files:
+        size_kb = f.stat().st_size / 1024
+        console.print(f"  - {f.name} ({size_kb:.1f} KB)")
+
+    # Build each project (skip if already exists)
     results = {}
     for file_path in md_files:
+        project_name = get_project_name(file_path)
+        if project_exists(project_name):
+            console.print(f"\n[dim]Skipping {project_name} (already exists)[/dim]")
+            results[file_path.name] = True
+            continue
         results[file_path.name] = await build_project(file_path, skip_context=False)
 
     # Summary
