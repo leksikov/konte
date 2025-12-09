@@ -97,3 +97,4 @@ example_knowledge_base/
 debug/
 scripts/output/
 *.log
+test_dataset/*
