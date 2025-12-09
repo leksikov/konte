@@ -5,7 +5,7 @@ from pathlib import Path
 
 import structlog
 from langchain_openai import ChatOpenAI
-from openai import RateLimitError
+from openai import RateLimitError, APIStatusError, APITimeoutError, APIConnectionError
 
 from konte.config import settings
 from konte.models import Chunk, ContextualizedChunk
@@ -13,9 +13,9 @@ from konte.models import Chunk, ContextualizedChunk
 logger = structlog.get_logger()
 
 # Rate limit retry configuration
-MAX_RETRIES = 5
-BASE_DELAY = 1.0  # seconds
-MAX_DELAY = 60.0  # seconds
+MAX_RETRIES = 10
+BASE_DELAY = 2.0  # seconds
+MAX_DELAY = 120.0  # seconds
 
 # Module-level LLM instance cache
 _llm_cache: dict[str, ChatOpenAI] = {}
@@ -171,7 +171,9 @@ async def generate_contexts_batch(
     # Format all prompts - segment stays the same (cacheable prefix)
     prompts = [_format_prompt(template, segment, chunk.content) for chunk in chunks]
 
-    # Retry with exponential backoff for rate limits
+    # Retry with exponential backoff for rate limits and API errors
+    retryable_errors = (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
+
     for attempt in range(MAX_RETRIES):
         try:
             # Use abatch for efficient parallel processing
@@ -184,25 +186,39 @@ async def generate_contexts_batch(
                 )
                 for chunk, response in zip(chunks, responses)
             ]
-        except RateLimitError as e:
+        except retryable_errors as e:
             delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
+            error_type = type(e).__name__
+            status_code = getattr(e, 'status_code', None)
             logger.warning(
-                "rate_limit_hit_retrying",
+                "api_error_retrying",
                 attempt=attempt + 1,
                 max_retries=MAX_RETRIES,
                 delay=delay,
+                error_type=error_type,
+                status_code=status_code,
                 error=str(e)
             )
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(delay)
             else:
-                logger.error("rate_limit_retries_exhausted", error=str(e))
+                logger.error(
+                    "api_retries_exhausted",
+                    error_type=error_type,
+                    status_code=status_code,
+                    error=str(e)
+                )
                 return [
                     ContextualizedChunk(chunk=chunk, context="")
                     for chunk in chunks
                 ]
         except Exception as e:
-            logger.error("batch_context_generation_failed", error=str(e))
+            # Non-retryable error - log and continue with empty context
+            logger.error(
+                "batch_context_generation_failed",
+                error_type=type(e).__name__,
+                error=str(e)
+            )
             return [
                 ContextualizedChunk(chunk=chunk, context="")
                 for chunk in chunks
