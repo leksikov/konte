@@ -35,7 +35,7 @@ class TestSaveAndReload:
             storage_path=tmp_path,
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
 
         # Query before save
         query = "tariff classification"
@@ -75,7 +75,7 @@ class TestSaveAndReload:
             segment_overlap=200,
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
         project1.save()
 
         # Reload
@@ -97,7 +97,7 @@ class TestSaveAndReload:
             storage_path=tmp_path,
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
 
         num_chunks_before = len(project1._contextualized_chunks)
         chunk_ids_before = {c.chunk.chunk_id for c in project1._contextualized_chunks}
@@ -131,7 +131,7 @@ class TestIndexPersistence:
             enable_bm25=False,  # FAISS only
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
 
         # Verify FAISS index file exists after save
         project1.save()
@@ -153,7 +153,7 @@ class TestIndexPersistence:
             enable_faiss=False,  # BM25 only
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
 
         # Verify BM25 index file exists after save
         project1.save()
@@ -174,7 +174,7 @@ class TestIndexPersistence:
             storage_path=tmp_path,
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
         project1.save()
 
         # Both files should exist

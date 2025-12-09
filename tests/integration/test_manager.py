@@ -60,11 +60,11 @@ class TestListProjects:
 
         # Add documents and save to create config files
         p1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await p1.build(skip_context=True)
+        await p1.build(skip_context=False)
         p1.save()
 
         p2.add_documents([FIXTURES_DIR / "sample.txt"])
-        await p2.build(skip_context=True)
+        await p2.build(skip_context=False)
         p2.save()
 
         projects = list_projects(storage_path=tmp_path)
@@ -91,7 +91,7 @@ class TestGetProject:
 
         project1 = create_project(name="test", storage_path=tmp_path)
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
         project1.save()
 
         project2 = get_project(name="test", storage_path=tmp_path)
@@ -116,7 +116,7 @@ class TestDeleteProject:
 
         project = create_project(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
         project.save()
 
         delete_project(name="test", storage_path=tmp_path)
@@ -142,7 +142,7 @@ class TestProjectExists:
 
         project = create_project(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
         project.save()
 
         assert project_exists(name="test", storage_path=tmp_path) is True

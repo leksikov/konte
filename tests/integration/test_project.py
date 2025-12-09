@@ -101,7 +101,7 @@ class TestProjectBuild:
         project = Project.create(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("tariff")
         assert response.total_found > 0
@@ -117,7 +117,7 @@ class TestProjectBuild:
         )
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("tariff", mode="semantic")
         assert response.total_found > 0
@@ -133,7 +133,7 @@ class TestProjectBuild:
         )
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("tariff", mode="lexical")
         assert response.total_found > 0
@@ -149,7 +149,7 @@ class TestProjectQuery:
 
         project = Project.create(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("Harmonized System classification", mode="hybrid")
 
@@ -162,7 +162,7 @@ class TestProjectQuery:
 
         project = Project.create(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("import duty rate percentage")
 
@@ -185,7 +185,7 @@ class TestProjectPersistence:
         # Create and build
         project1 = Project.create(name="persist_test", storage_path=tmp_path)
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
         project1.save()
 
         # Load into new instance
@@ -205,7 +205,7 @@ class TestProjectPersistence:
             chunk_size=400,
         )
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
         project1.save()
 
         project2 = Project.open(name="config_test", storage_path=tmp_path)
@@ -230,7 +230,7 @@ class TestProjectAsRetriever:
 
         project = Project.create(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         retriever = project.as_retriever()
 
@@ -242,7 +242,7 @@ class TestProjectAsRetriever:
 
         project = Project.create(name="test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         retriever = project.as_retriever()
         response = retriever("tariff classification")

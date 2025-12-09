@@ -137,7 +137,7 @@ class TestRetrievalQuality:
         )
 
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)  # Skip context for speed
+        await project.build(skip_context=False)  # Skip context for speed
 
         # Query for terms that should be in the document
         response = project.query("tariff duty import")
@@ -164,7 +164,7 @@ class TestRetrievalQuality:
         )
 
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         # Get results from all three modes
         hybrid_response = project.query("tariff classification", mode="hybrid")
@@ -202,7 +202,7 @@ class TestSuggestedAction:
         )
 
         project.add_documents([FIXTURES_DIR / "sample.txt"])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         response = project.query("tariff")
 

@@ -153,7 +153,7 @@ response = project.query("query", mode="lexical")
 For standard RAG without LLM-generated context (faster, cheaper):
 
 ```python
-await project.build(skip_context=True)
+await project.build(skip_context=False)
 ```
 
 ## Performance Optimizations
