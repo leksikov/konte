@@ -26,7 +26,7 @@ def get_project_name(file_path: Path) -> str:
     return name
 
 
-async def build_project(file_path: Path, skip_context: bool = True) -> bool:
+async def build_project(file_path: Path, skip_context: bool = False) -> bool:
     """Build a single project from a file.
 
     Args:
@@ -89,7 +89,7 @@ async def main():
     # Build each project
     results = {}
     for file_path in md_files:
-        results[file_path.name] = await build_project(file_path, skip_context=True)
+        results[file_path.name] = await build_project(file_path, skip_context=False)
 
     # Summary
     console.print("\n" + "=" * 60)
