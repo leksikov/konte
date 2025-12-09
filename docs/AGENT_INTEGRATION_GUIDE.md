@@ -1,29 +1,68 @@
 # Konte Agent Integration Guide
 
-This guide shows how to integrate Konte's contextual RAG retrieval into AI agent frameworks.
+This guide shows how to integrate Konte's contextual RAG into AI agent frameworks.
 
 ## Overview
 
-Konte is a **retrieval-only** library. It returns relevant chunks with scores, but does not generate answers. You integrate it with an LLM (via LangChain, Agno, or direct API calls) to build a complete RAG agent.
+Konte provides both **retrieval** and **full RAG** (retrieval + answer generation):
 
 ```
-User Query → Konte (retrieval) → Chunks → LLM → Answer
+# Retrieval only
+User Query → Konte (retrieval) → Chunks → Your LLM → Answer
+
+# Full RAG (built-in)
+User Query → Konte (retrieval + LLM) → Answer
 ```
 
 ## Quick Start
 
+### Option 1: Full RAG with Built-in Answer Generation
+
+```python
+import asyncio
+from konte import Project
+
+project = Project.open("my_project")
+
+async def main():
+    # Full RAG: retrieval + LLM answer generation
+    response, answer = await project.query_with_answer(
+        query="What is the HS code for RAM chips?",
+        mode="hybrid",
+        max_chunks=5,
+    )
+
+    print(answer.answer)        # LLM-generated answer
+    print(answer.model)         # e.g., "Qwen3-VL-8B-Instruct"
+    print(answer.sources_used)  # Number of chunks used
+
+asyncio.run(main())
+```
+
+### Option 2: Retrieval Only (BYO LLM)
+
 ```python
 from konte import Project
 
-# Load existing project
 project = Project.open("my_project")
 
 # Query returns RetrievalResponse with chunks
 response = project.query("What is the HS code for RAM chips?", mode="hybrid", top_k=10)
 
-# Use results with your LLM
+# Use results with your own LLM
 for result in response.results:
     print(f"[{result.score:.2f}] {result.content[:100]}...")
+```
+
+### CLI
+
+```bash
+# Full RAG with answer
+konte ask my_project "What is the HS code for DDR5 RAM?"
+konte ask my_project "What is the HS code for DDR5 RAM?" --show-sources --mode hybrid
+
+# Retrieval only
+konte query my_project "DDR5 RAM" --mode hybrid --top-k 10
 ```
 
 ## RetrievalResponse Structure
@@ -46,6 +85,78 @@ result.score      # Relevance score
 result.source     # Source document path
 result.chunk_id   # Unique identifier
 result.metadata   # Additional metadata dict
+```
+
+## GeneratedAnswer Structure
+
+```python
+response, answer = await project.query_with_answer(query)
+
+answer.answer        # LLM-generated answer text
+answer.model         # Model used (e.g., "Qwen3-VL-8B-Instruct")
+answer.sources_used  # Number of chunks used for generation
+```
+
+---
+
+## Built-in RAG Answer Generation
+
+Konte includes built-in LLM answer generation using BackendAI (Qwen3-VL-8B-Instruct by default):
+
+### Basic Usage
+
+```python
+import asyncio
+from konte import Project
+
+async def main():
+    project = Project.open("tariff_codes")
+
+    # Full RAG with default settings
+    response, answer = await project.query_with_answer(
+        query="What is the HS code for DDR5 RAM?",
+    )
+    print(answer.answer)
+
+asyncio.run(main())
+```
+
+### Advanced Options
+
+```python
+response, answer = await project.query_with_answer(
+    query="What is the HS code for DDR5 RAM?",
+    mode="hybrid",           # "hybrid", "semantic", or "lexical"
+    top_k=20,                # Chunks to retrieve
+    max_chunks=10,           # Chunks to use for answer generation
+    timeout=60.0,            # LLM timeout in seconds
+    prompt_template="""      # Custom prompt (optional)
+Context:
+{context}
+
+Question: {question}
+
+Answer based only on the context above:"""
+)
+```
+
+### Standalone Answer Generation
+
+```python
+from konte import generate_answer, Project
+
+project = Project.open("tariff_codes")
+
+# Get retrieval results first
+response = project.query("DDR5 RAM", mode="hybrid", top_k=10)
+
+# Generate answer separately
+answer = await generate_answer(
+    question="What is the HS code for DDR5 RAM?",
+    retrieval_response=response,
+    max_chunks=5,
+)
+print(answer.answer)
 ```
 
 ---
@@ -623,10 +734,23 @@ if __name__ == "__main__":
 
 ## Summary
 
-| Framework | Integration Method | Best For |
-|-----------|-------------------|----------|
-| **Direct** | `project.query()` | Simple scripts, custom pipelines |
+| Method | API | Best For |
+|--------|-----|----------|
+| **Full RAG** | `project.query_with_answer()` | Complete RAG with built-in LLM (BackendAI/OpenAI) |
+| **Retrieval Only** | `project.query()` | Custom LLM pipelines, agent tools |
 | **LangChain** | Custom Retriever class | Existing LangChain apps, LCEL chains |
 | **Agno** | `@tool` decorated functions | Autonomous agents, multi-tool workflows |
+| **CLI** | `konte ask` / `konte query` | Quick testing, scripts |
 
-Konte provides the retrieval layer. You bring the LLM and agent logic.
+### Configuration
+
+```bash
+# BackendAI (default for answer generation)
+BACKENDAI_ENDPOINT=https://qwen25vl.asia03.app.backend.ai/v1
+BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
+
+# Falls back to OpenAI if BackendAI not configured
+OPENAI_API_KEY=sk-...
+```
+
+Konte provides both retrieval and full RAG capabilities out of the box.
