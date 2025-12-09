@@ -96,7 +96,7 @@ Reasoning: Complete storage unit, not bare IC.
             storage_path=base_path,
         )
         project.add_documents([content_file])
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
         project.save()
 
         projects.append(project)

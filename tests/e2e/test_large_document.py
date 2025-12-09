@@ -99,7 +99,7 @@ class TestLargeDocumentProcessing:
         assert len(project._segments) > 5, f"Expected >5 segments, got {len(project._segments)}"
 
         # Build without context (skip LLM calls for speed)
-        await project.build(skip_context=True)
+        await project.build(skip_context=False)
 
         # Query should work
         response = project.query("tariff classification customs")
@@ -226,7 +226,7 @@ class TestLargeDocumentSaveLoad:
             storage_path=tmp_path,
         )
         project1.add_documents([large_doc_path])
-        await project1.build(skip_context=True)
+        await project1.build(skip_context=False)
 
         num_chunks = len(project1._contextualized_chunks)
         num_segments = len(project1._segments)
