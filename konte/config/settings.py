@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
     # Custom Backend (vLLM with OpenAI schema)
-    BACKENDAI_ENDPOINT: str | None = "https://qwen25vl.asia03.app.backend.ai/v1"
+    BACKENDAI_ENDPOINT: str | None = "https://qwen3vl.asia03.app.backend.ai/v1"
     BACKENDAI_MODEL_NAME: str | None = "Qwen3-VL-8B-Instruct"
     BACKENDAI_API_KEY: str | None = None  # Optional API key for BackendAI
 
