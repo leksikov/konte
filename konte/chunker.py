@@ -91,7 +91,10 @@ def _split_by_tokens(
             if boundary > 10:
                 chunk_text = chunk_text[:boundary].strip()
 
-        chunks.append(chunk_text.strip())
+        # Skip chunks that are too small (less than overlap size)
+        stripped = chunk_text.strip()
+        if len(_ENCODING.encode(stripped)) >= overlap_tokens:
+            chunks.append(stripped)
 
         # Move start position with overlap
         step = max_tokens - overlap_tokens
