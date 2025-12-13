@@ -60,6 +60,10 @@ docs/
 examples/
 └── parallel_multi_project_retrieval.py  # Multi-project querying
 
+scripts/
+├── build_knowledge_bases.py      # Build all projects from example_knowledge_base/
+└── build_combined_project.py     # Merge all projects into unified index
+
 tests/
 ├── unit/           # Mocks allowed here only
 ├── integration/    # Real API calls
@@ -148,11 +152,14 @@ print(answer.sources_used) # Number of chunks used
 
 - **Segment**: ~8000 token portion of document, 10% overlap (800 tokens)
 - **Chunk**: 800 token portion of segment, 10% overlap (80 tokens)
-- **Contextual Chunk**: Original chunk + LLM-generated context (100-200 tokens) prepended
+- **Contextual Chunk**: Original chunk + LLM-generated context (up to 300 tokens) prepended
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
 - **Batch Processing**: Uses LangChain `abatch()` (immediate results), not OpenAI Batch API (24hr latency)
 - **RAG Answer Generation**: Optional LLM answer generation from retrieved chunks via `query_with_answer()`
+- **Custom Metadata**: Chunks support custom metadata dict for filtering (e.g., document_name, page_no)
+- **Combined Projects**: Multiple projects can be merged into unified index via `scripts/build_combined_project.py`
+- **Tokenizer**: Uses gpt-4.1 (o200k_base) encoding - ~30% more efficient for Korean text
 
 ## Storage Structure
 
@@ -180,8 +187,19 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - `SEGMENT_SIZE`: 8000 tokens
 - `CHUNK_SIZE`: 800 tokens
 - `MAX_CONCURRENT_CALLS`: 10
-- `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen25vl.asia03.app.backend.ai/v1`)
-- `BACKENDAI_MODEL_NAME`: Model for answer generation (default: `Qwen3-VL-8B-Instruct`)
+- `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen3vl.asia03.app.backend.ai/v1`)
+- `BACKENDAI_MODEL_NAME`: Model for context/answer generation (default: `Qwen3-VL-8B-Instruct`)
+
+## Available Knowledge Base Projects
+
+| Project | Chunks | Description |
+|---------|--------|-------------|
+| `hs_machinery_electronics_guide` | 182 | HS Ch 84-85 machinery/electronics classification |
+| `korea_tariff_schedule` | 687 | Official Korean tariff rates (legal document) |
+| `tariff_terminology_bilingual` | 485 | Korean-English tariff terminology |
+| `tariff_terminology_dictionary` | 6,270 | Comprehensive tariff terminology dictionary |
+| `wco_hs_explanatory_notes` | 3,036 | WCO HS explanatory notes and GRI rules |
+| `all_tariff_documents` | 10,660 | Combined index of all above projects |
 
 ## Dependencies
 

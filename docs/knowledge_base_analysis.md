@@ -8,23 +8,23 @@ This report analyzes each Konte project to document their content, structure, an
 
 | Project | Chunks | HS Coverage | Language | Best Use Cases |
 |---------|--------|-------------|----------|----------------|
-| `관세율표_용어_가이드_qwen3` | 8,671 | **All chapters (01-97)** | Korean | Terminology lookup, species identification, comprehensive reference |
-| `별표__관세율표(제50조_관련)(관세법)` | 898 | **All chapters (01-97)** | Korean | Official tariff rates, HS code lookup, legal reference |
-| `2016년_관세율표_용어_따라잡기_qwen3` | 700 | **All chapters (01-97)** | Korean/English bilingual | Bilingual terminology, consumer-friendly explanations |
-| `품목분류_qwen3` | 257 | **Chapters 84-85 only** | Korean | Machinery/electronics classification only |
-
-**Note**: `tariff_legal_framework` project no longer exists in ~/.konte/
+| `tariff_terminology_dictionary` | 6,270 | **All chapters (01-97)** | Korean | Terminology lookup, species identification, comprehensive reference |
+| `korea_tariff_schedule` | 687 | **All chapters (01-97)** | Korean | Official tariff rates, HS code lookup, legal reference |
+| `tariff_terminology_bilingual` | 485 | **All chapters (01-97)** | Korean/English bilingual | Bilingual terminology, consumer-friendly explanations |
+| `hs_machinery_electronics_guide` | 182 | **Chapters 84-85 only** | Korean | Machinery/electronics classification only |
+| `wco_hs_explanatory_notes` | 3,036 | **All chapters (01-97)** | Korean | WCO HS explanatory notes, GRI rules |
+| `all_tariff_documents` | 10,660 | **All chapters (01-97)** | Korean | Combined unified index for all documents |
 
 ---
 
-## 1. 관세율표_용어_가이드_qwen3
+## 1. tariff_terminology_dictionary
 
 ### Document Information
 - **Title**: 펼쳐보는 관세율표 용어사전 (Comprehensive Tariff Schedule Terminology Dictionary)
 - **Publisher**: 관세청 중앙관세분석소 (Korea Customs Service Central Tariff Analysis Office)
 - **Publication Date**: November 2019
 - **Total Pages**: 3,318 pages
-- **Total Chunks**: 8,671 (largest knowledge base)
+- **Total Chunks**: 6,270 (largest knowledge base)
 
 ### Document Structure
 
@@ -86,7 +86,7 @@ This report analyzes each Konte project to document their content, structure, an
 
 ---
 
-## 2. 별표__관세율표(제50조_관련)(관세법)
+## 2. korea_tariff_schedule
 
 ### Document Information
 - **Title**: [별표] 관세율표(제50조 관련) - Official Tariff Schedule Annex
@@ -135,7 +135,7 @@ This report analyzes each Konte project to document their content, structure, an
 
 ---
 
-## 3. 2016년_관세율표_용어_따라잡기_qwen3
+## 3. tariff_terminology_bilingual
 
 ### Document Information
 - **Title**: 관세율표 용어 따라잡기 (Catching Up with Tariff Terminology)
@@ -187,7 +187,7 @@ This report analyzes each Konte project to document their content, structure, an
 
 ---
 
-## 4. 품목분류_qwen3
+## 4. hs_machinery_electronics_guide
 
 ### Document Information
 - **Title**: 누구나 알기 쉬운 품목분류 e-Guide Book (Everyone's Easy-to-Understand Classification e-Guide)
@@ -268,35 +268,70 @@ This report analyzes each Konte project to document their content, structure, an
 ## Retrieval Strategy by Product Type
 
 ### Seafood (HS 03, 16)
-1. **First**: `관세율표_용어_가이드_qwen3` - Species identification
-2. **Second**: `별표__관세율표` - HS code and tariff rate
-3. **Avoid**: `품목분류_qwen3` (no relevant content)
+1. **First**: `tariff_terminology_dictionary` - Species identification
+2. **Second**: `korea_tariff_schedule` - HS code and tariff rate
+3. **Avoid**: `hs_machinery_electronics_guide` (no relevant content)
 
 ### Machinery/Electronics (HS 84-85)
-1. **First**: `품목분류_qwen3` - Detailed classification rules
-2. **Second**: `별표__관세율표` - HS code and tariff rate
-3. **Third**: `관세율표_용어_가이드_qwen3` - Technical terminology
+1. **First**: `hs_machinery_electronics_guide` - Detailed classification rules
+2. **Second**: `korea_tariff_schedule` - HS code and tariff rate
+3. **Third**: `tariff_terminology_dictionary` - Technical terminology
 
 ### Consumer Products / 해외직구
-1. **First**: `2016년_관세율표_용어_따라잡기_qwen3` - Consumer-friendly, bilingual
-2. **Second**: `별표__관세율표` - Official rates
+1. **First**: `tariff_terminology_bilingual` - Consumer-friendly, bilingual
+2. **Second**: `korea_tariff_schedule` - Official rates
 
 ### Bilingual Queries (Korean ↔ English)
-1. **Only**: `2016년_관세율표_용어_따라잡기_qwen3` - Has English index
+1. **Only**: `tariff_terminology_bilingual` - Has English index
 
 ### Official Tariff Rates
-1. **Only**: `별표__관세율표` - Legal/binding rates
+1. **Only**: `korea_tariff_schedule` - Legal/binding rates
+
+### WCO HS Explanatory Notes / GRI Rules
+1. **Only**: `wco_hs_explanatory_notes` - Deep GRI guidance for all products
 
 ---
 
-## Missing Project: tariff_legal_framework
+## 5. wco_hs_explanatory_notes
 
-The project `tariff_legal_framework` referenced in previous testing **no longer exists** in ~/.konte/.
+### Document Information
+- **Title**: HS해석에 관한 통칙 (General Rules for the Interpretation of the HS)
+- **Source**: WCO HS Explanatory Notes (Korean translation)
+- **Total Chunks**: 3,036
 
-Based on earlier test results, it contained:
-- WCO HS explanatory notes
-- GRI (General Rules of Interpretation)
-- Chapter vs. heading classification rules
-- 4,363 chunks
+### Content Type
+**WCO Reference Document** - Contains:
+- General Rules of Interpretation (GRI 1-6)
+- Chapter Notes and Section Notes
+- Classification principles and examples
+- Detailed heading explanations
 
-**Recommendation**: Rebuild this project if GRI classification rules are needed. Currently, no existing project provides deep GRI guidance for non-machinery products.
+### Recommended Retrieval Use Cases
+| Query Type | Effectiveness | Example Queries |
+|------------|---------------|-----------------|
+| GRI rules | ⭐⭐⭐⭐⭐ | "통칙 제1호", "GRI 3(a) 분류원칙" |
+| Classification principles | ⭐⭐⭐⭐⭐ | "부분품 분류", "세트물품 분류" |
+| Chapter notes | ⭐⭐⭐⭐ | "제3류 주", "제16류 주" |
+
+**Best For**: Understanding classification rules, GRI application, and resolving ambiguous classifications.
+
+---
+
+## 6. all_tariff_documents
+
+### Document Information
+- **Type**: Combined unified index
+- **Total Chunks**: 10,660 (all 5 projects merged)
+
+### Content
+Combines all chunks from:
+- `tariff_terminology_dictionary` (6,270 chunks)
+- `wco_hs_explanatory_notes` (3,036 chunks)
+- `korea_tariff_schedule` (687 chunks)
+- `tariff_terminology_bilingual` (485 chunks)
+- `hs_machinery_electronics_guide` (182 chunks)
+
+### Metadata
+Each chunk includes `document_name` metadata for filtering by source document.
+
+**Best For**: General tariff queries when you don't know which document to search, or when you need results from multiple sources.
