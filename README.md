@@ -183,8 +183,8 @@ EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1
 DEFAULT_TOP_K=20
 
-# BackendAI (default for answer generation)
-BACKENDAI_ENDPOINT=https://qwen25vl.asia03.app.backend.ai/v1
+# BackendAI (for context/answer generation)
+BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
 BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
 ```
 
