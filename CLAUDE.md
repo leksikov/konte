@@ -241,3 +241,94 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - Example code: `examples/` or `scripts/`
 - Data check code: `data_check/`
 - Prefer updating existing files over creating new ones
+
+## Evaluation
+
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 90% accuracy** with LLM binary reranking on v2 test cases.
+
+### Structure
+```
+evaluation/
+├── custom_llm.py                # BackendAI LLM wrapper for DeepEval
+├── custom_metrics.py            # Custom FactualCorrectness GEval metric
+├── evaluate_modes.py            # Main evaluation script
+├── synthesize_korean_dataset.py # Generate Korean test cases
+├── EVALUATION_REPORT.md         # Detailed experiment results and methodology
+├── data/
+│   └── synthetic/
+│       ├── synthetic_goldens_korean_v2.json  # 120 Korean test cases (DEFAULT - 90% accuracy)
+│       ├── synthetic_goldens_korean_v4.json  # Segment-based test cases
+│       └── synthetic_goldens_korean_v5.json  # Gemma-3-27b generated
+├── experiments/
+│   ├── llm_reranking.py         # LLM reranking experiments (binary filter)
+│   ├── run_deepeval_full.py     # DeepEval correctness evaluation
+│   └── results/                 # Experiment results JSON files
+└── results/
+    ├── {project}/checkpoints/   # Per-project checkpoints
+    └── *.log                    # Evaluation logs
+```
+
+### Best Configuration (v2 - 90% Accuracy)
+
+| Setting | Value |
+|---------|-------|
+| Test Cases | `synthetic_goldens_korean_v2.json` |
+| Test Source | Chunks (~800 tokens, `--use-chunks` flag) |
+| Reranking | Binary filter with fallback |
+| Initial K | 100 |
+| Final K | 15 |
+| Model | Qwen3-VL-8B-Instruct |
+
+### Running Evaluation
+
+```bash
+# Generate test cases (use chunks for v2-style, best accuracy)
+python -m evaluation.synthesize_korean_dataset \
+  --project wco_hs_explanatory_notes_korean \
+  --output evaluation/data/synthetic/synthetic_goldens_korean_v2.json \
+  --num 120 \
+  --use-chunks
+
+# Run LLM reranking experiment
+nohup caffeinate -i python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_korean_v2.json \
+  --method binary \
+  --initial-k 100 \
+  --final-k 15 \
+  > evaluation/experiments/results/rerank.log 2>&1 &
+
+# Run DeepEval correctness metric
+nohup caffeinate -i python -m evaluation.experiments.run_deepeval_full binary v2 \
+  > evaluation/experiments/results/deepeval.log 2>&1 &
+```
+
+### Evaluation Results Summary
+
+| Version | Test Source | Model | Pass Rate |
+|---------|-------------|-------|-----------|
+| **v2** | **Chunks** | **Qwen3-VL-8B** | **90.0%** |
+| v3 | Chunks | Qwen3-VL-8B | 74.2% |
+| v4 | Segments | Qwen3-VL-8B | 78.3% |
+| v5 | Segments | Gemma-3-27b-it | 78.4% |
+
+### Why v2 is Best
+- Test cases generated from **chunks** match retrieval unit size
+- Segment-based tests (v4/v5) create harder questions that span multiple chunks
+- v2 provides reliable benchmark for RAG improvements
+
+### FactualCorrectness Metric
+Custom GEval metric (DeepEval) that focuses on factual accuracy:
+- Checks if key HS codes and facts from expected output appear in actual output
+- Ignores: length differences, format differences, language mixing, ordering
+- Score >= 0.5 = PASS
+
+### Failure Categories (v2, 12 failures)
+| Category | Count | Description |
+|----------|-------|-------------|
+| Retrieval failure | 3 | Didn't retrieve right chunks |
+| Wrong HS code | 4 | LLM output incorrect code |
+| Test data issue | 2 | Expected answer is wrong |
+| Interpretation | 3 | Multiple valid answers |
+
+See `evaluation/EVALUATION_REPORT.md` for detailed analysis.
