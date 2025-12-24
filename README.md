@@ -296,6 +296,50 @@ Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integr
 - Confidence-based agent decisions
 - Streaming responses
 
+## Evaluation
+
+RAG evaluation using DeepEval with LLM-as-judge metrics.
+
+### Best Configuration (v2 - 90% Accuracy)
+
+| Setting | Value |
+|---------|-------|
+| Test Cases | `synthetic_goldens_korean_v2.json` (120 cases) |
+| Test Source | Chunks (~800 tokens) |
+| Metric | DeepEval G-Eval FactualCorrectness |
+| Judge Model | Qwen3-VL-8B-Instruct |
+| Reranking | Binary filter with fallback |
+| Initial K | 100, Final K | 15 |
+
+### Running Evaluation
+
+```bash
+# Generate test cases from chunks (v2 style)
+python -m evaluation.synthesize_korean_dataset \
+  --project wco_hs_explanatory_notes_korean \
+  --use-chunks \
+  --output evaluation/data/synthetic/synthetic_goldens_korean_v2.json
+
+# Run evaluation
+caffeinate -i nohup python -u -m evaluation.evaluate_modes \
+  --modes hybrid \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_korean_v2.json \
+  --metrics correctness \
+  --output-dir evaluation/results/v2 \
+  > evaluation/results/v2/eval.log 2>&1 &
+```
+
+### Results Summary
+
+| Experiment | Pass Rate | Notes |
+|------------|-----------|-------|
+| v2 Binary + Fallback | **90.0%** | Best accuracy, uses chunks |
+| v4 Segments | 78.3% | Harder questions (8000 tokens) |
+| v5 Gemma-3-27b-it | 78.4% | Different test gen model |
+
+See [evaluation/EVALUATION_REPORT.md](evaluation/EVALUATION_REPORT.md) for detailed methodology and failure analysis.
+
 ## Architecture
 
 See the system flowcharts for detailed architecture:
