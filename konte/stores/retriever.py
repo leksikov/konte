@@ -8,6 +8,7 @@ from konte.config import settings
 from konte.models import ContextualizedChunk, RetrievalResponse, RetrievalResult
 from konte.stores.bm25_store import BM25Store
 from konte.stores.faiss_store import FAISSStore
+from konte.stores.reranker import rerank_chunks_with_score
 
 logger = structlog.get_logger()
 
@@ -250,3 +251,81 @@ class Retriever:
             return self.retrieve_lexical(query, top_k=top_k)
         else:
             return self.retrieve_hybrid(query, top_k=top_k)
+
+    async def retrieve_with_rerank(
+        self,
+        query: str,
+        mode: RetrievalMode = "hybrid",
+        top_k: int | None = None,
+        initial_k: int = 50,
+    ) -> RetrievalResponse:
+        """Retrieve with reranking using Qwen3-Reranker-8B.
+
+        First retrieves initial_k candidates, then reranks to get top_k.
+
+        Args:
+            query: Query string.
+            mode: Initial retrieval mode - "hybrid", "semantic", or "lexical".
+            top_k: Final number of results after reranking.
+            initial_k: Number of candidates to retrieve before reranking.
+
+        Returns:
+            RetrievalResponse with reranked results.
+        """
+        k = top_k or settings.DEFAULT_TOP_K
+
+        # Get initial candidates
+        if mode == "semantic":
+            initial_results = self._get_semantic_results(query, initial_k)
+        elif mode == "lexical":
+            initial_results = self._get_lexical_results(query, initial_k)
+        else:
+            initial_results = self._get_hybrid_results(query, initial_k)
+
+        if not initial_results:
+            return _build_retrieval_response(query, [], k)
+
+        # Rerank candidates using score endpoint (reliable individual scoring)
+        reranked = await rerank_chunks_with_score(query, initial_results, top_k=k)
+
+        return _build_retrieval_response(query, reranked, k)
+
+    def _get_semantic_results(
+        self, query: str, top_k: int
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw semantic results."""
+        if self._faiss is None or self._faiss.is_empty:
+            return []
+        return self._faiss.query(query, top_k=top_k)
+
+    def _get_lexical_results(
+        self, query: str, top_k: int
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw lexical results."""
+        if self._bm25 is None or self._bm25.is_empty:
+            return []
+        return self._bm25.query(query, top_k=top_k)
+
+    def _get_hybrid_results(
+        self, query: str, top_k: int
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw hybrid results with rank fusion."""
+        has_faiss = self._faiss is not None and not self._faiss.is_empty
+        has_bm25 = self._bm25 is not None and not self._bm25.is_empty
+
+        if not has_faiss and not has_bm25:
+            return []
+
+        if not has_faiss:
+            return self._get_lexical_results(query, top_k)
+
+        if not has_bm25:
+            return self._get_semantic_results(query, top_k)
+
+        # Get from both and fuse
+        fetch_k = top_k * 2
+        faiss_results = self._faiss.query(query, top_k=fetch_k)
+        bm25_results = self._bm25.query(query, top_k=fetch_k)
+
+        fused = reciprocal_rank_fusion([faiss_results, bm25_results])
+        return fused[:top_k]
