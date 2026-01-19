@@ -69,7 +69,7 @@ def get_llm(model: str | None = None, timeout: float = 30.0) -> ChatOpenAI:
             temperature=0,
             timeout=timeout,
             max_retries=2,
-            max_tokens=300,
+            max_tokens=400,
         )
 
     return _llm_cache[cache_key]

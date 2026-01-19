@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
     # Custom Backend (vLLM with OpenAI schema)
-    BACKENDAI_ENDPOINT: str | None = "https://qwen3vl.asia03.app.backend.ai/v1"
-    BACKENDAI_MODEL_NAME: str | None = "Qwen3-VL-8B-Instruct"
+    BACKENDAI_ENDPOINT: str | None = None  # Disabled - using OpenAI
+    BACKENDAI_MODEL_NAME: str | None = None
     BACKENDAI_API_KEY: str | None = None  # Optional API key for BackendAI
 
     # Storage
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # Models
     EMBEDDING_MODEL: str = "text-embedding-3-small"
-    CONTEXT_MODEL: str = "gpt-4.1-mini"  # Supports OpenAI prompt caching
+    CONTEXT_MODEL: str = "gpt-4.1-mini"  # OpenAI model for context/evaluation
 
     @property
     def use_backendai(self) -> bool:
