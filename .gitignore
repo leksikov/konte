@@ -77,3 +77,5 @@ evaluation/trials/*
 example_knowledge_base/*
 test_dataset/*
 checkpoints/*
+evaluation/debug/*
+evalaution/experiments/*
