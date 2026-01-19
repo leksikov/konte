@@ -23,9 +23,15 @@ from konte.models import RetrievalResult
 
 logger = structlog.get_logger()
 
-# LLM endpoint for reranking
-LLM_ENDPOINT = settings.BACKENDAI_ENDPOINT or "https://qwen3vl.asia03.app.backend.ai/v1"
-LLM_MODEL = settings.BACKENDAI_MODEL_NAME or "Qwen3-VL-8B-Instruct"
+# LLM endpoint for reranking (use BackendAI if configured, otherwise OpenAI)
+if settings.use_backendai:
+    LLM_ENDPOINT = settings.BACKENDAI_ENDPOINT
+    LLM_MODEL = settings.BACKENDAI_MODEL_NAME
+    LLM_API_KEY = settings.BACKENDAI_API_KEY or "placeholder"
+else:
+    LLM_ENDPOINT = "https://api.openai.com/v1"
+    LLM_MODEL = settings.CONTEXT_MODEL
+    LLM_API_KEY = settings.OPENAI_API_KEY
 
 # Concurrency for LLM calls
 LLM_CONCURRENCY = 10
@@ -91,7 +97,7 @@ async def binary_filter_chunk(
             response = await client.post(
                 f"{LLM_ENDPOINT}/chat/completions",
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"},
             )
             response.raise_for_status()
             data = response.json()
@@ -141,7 +147,7 @@ async def batch_score_chunks(
         response = await client.post(
             f"{LLM_ENDPOINT}/chat/completions",
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"},
         )
         response.raise_for_status()
         data = response.json()

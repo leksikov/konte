@@ -28,15 +28,24 @@ def evaluate_all(method: str = "binary", version: str = ""):
         name="FactualCorrectness",
         criteria="""Evaluate if the actual output contains the same KEY FACTUAL INFORMATION as the expected output.
 
-Focus on semantic equivalence - does the actual answer convey the same core information?
-- Score 1.0 if answers are semantically equivalent (same key facts)
-- Score 0.7-0.9 if mostly correct with minor differences
-- Score 0.4-0.6 if partially correct
-- Score 0.0-0.3 if contradictory or mostly wrong""",
+Focus on HS code accuracy and semantic equivalence:
+- The key information is the HS CODE (e.g., 2523.21, 제8540호, 8540.20)
+- Ignore format differences: "제2523.21호" = "2523.21" = "제2523호의 21" (all equivalent)
+- Ignore language mixing (Korean/English)
+- Ignore length differences or extra explanation
+
+Scoring:
+- Score 1.0 if the SAME HS CODE is mentioned (regardless of format)
+- Score 0.7-0.9 if mostly correct with minor code variations
+- Score 0.4-0.6 if partially correct (related but not exact code)
+- Score 0.0-0.3 if wrong HS code or contradictory information
+
+IMPORTANT: If actual output provides a DIFFERENT but MORE CORRECT HS code based on the question context, score 0.7+ (the expected output may be wrong).""",
         evaluation_steps=[
-            "Identify the key factual claims in the expected output",
-            "Check if these same facts appear in the actual output",
-            "Score based on factual agreement, ignoring format differences",
+            "Extract the HS code(s) from both expected and actual outputs",
+            "Normalize format differences (제2523호 = 2523 = 제2523.00호)",
+            "Compare if they refer to the same classification",
+            "Score based on code match, ignoring format/language differences",
         ],
         evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
         model=custom_model,
