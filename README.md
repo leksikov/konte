@@ -300,23 +300,27 @@ Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integr
 
 RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100).
 
-### Results Summary
+### Two Evaluation Types
 
-| Dataset | Cases | Pass Rate | Avg Score |
-|---------|-------|-----------|-----------|
-| 100 validated | 100 | **94.0%** | 0.918 |
-| 30 validated | 30 | 96.7% | 0.933 |
+| Evaluation | Dataset | Questions | Pass Rate | Avg Score |
+|------------|---------|-----------|-----------|-----------|
+| **DeepEval Synthesizer** | `deepeval_goldens_korean_100.json` | 100 diverse | **94.0%** | **0.828** |
+| HS Code Lookup | `synthetic_goldens_100.json` | 100 classification | 94.0% | 0.918 |
 
 ### Quick Start
 
 ```bash
-# Run evaluation on 100 validated test cases
+# Run evaluation on diverse questions (recommended)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
-  --method binary --initial-k 100 --final-k 15 --max-cases 0
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0 \
+  --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
 
-python -m evaluation.experiments.run_deepeval_full binary 100
+python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
+
+# Or for HS code evaluation (legacy)
+python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
 See [evaluation/EVALUATION_GUIDE.md](evaluation/EVALUATION_GUIDE.md) for test generation and detailed methodology.
