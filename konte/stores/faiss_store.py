@@ -34,7 +34,7 @@ class FAISSStore:
     def build_index(
         self,
         chunks: list[ContextualizedChunk],
-        batch_size: int = 200,
+        batch_size: int = 100,
     ) -> None:
         """Build FAISS index from contextualized chunks.
 
@@ -60,6 +60,7 @@ class FAISSStore:
                     "chunk_idx": chunk.chunk.chunk_idx,
                     "context": chunk.context,
                     "original_content": chunk.chunk.content,
+                    **chunk.chunk.metadata,  # Include custom metadata
                 },
             )
             documents.append(doc)
@@ -144,16 +145,19 @@ class FAISSStore:
 
         # Rebuild chunks from vectorstore docstore
         self._chunks = []
+        standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
         if self._vectorstore.docstore:
             for doc_id in self._vectorstore.index_to_docstore_id.values():
                 doc = self._vectorstore.docstore.search(doc_id)
                 if doc and hasattr(doc, "metadata"):
+                    custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
                     chunk = Chunk(
                         chunk_id=doc.metadata.get("chunk_id", ""),
                         content=doc.metadata.get("original_content", ""),
                         source=doc.metadata.get("source", ""),
                         segment_idx=doc.metadata.get("segment_idx", 0),
                         chunk_idx=doc.metadata.get("chunk_idx", 0),
+                        metadata=custom_metadata,
                     )
                     ctx_chunk = ContextualizedChunk(
                         chunk=chunk,
@@ -198,12 +202,17 @@ class FAISSStore:
             # Use exponential decay: score = exp(-distance/2)
             similarity = 1.0 / (1.0 + distance)
 
+            # Extract custom metadata (exclude standard fields)
+            standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
+            custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
+
             chunk = Chunk(
                 chunk_id=doc.metadata.get("chunk_id", ""),
                 content=doc.metadata.get("original_content", ""),
                 source=doc.metadata.get("source", ""),
                 segment_idx=doc.metadata.get("segment_idx", 0),
                 chunk_idx=doc.metadata.get("chunk_idx", 0),
+                metadata=custom_metadata,
             )
             ctx_chunk = ContextualizedChunk(
                 chunk=chunk,

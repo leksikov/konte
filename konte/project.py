@@ -161,7 +161,7 @@ class Project:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
     ) -> RetrievalResponse:
-        """Query the project.
+        """Query the project (sync, no reranking).
 
         Args:
             query: Query string.
@@ -186,6 +186,47 @@ class Project:
         k = top_k or settings.DEFAULT_TOP_K
         return self._retriever.retrieve(query, mode=mode, top_k=k)
 
+    async def query_async(
+        self,
+        query: str,
+        mode: RetrievalMode = "hybrid",
+        top_k: int | None = None,
+        rerank: bool = False,
+        rerank_initial_k: int = 50,
+    ) -> RetrievalResponse:
+        """Query the project (async, with optional reranking).
+
+        Args:
+            query: Query string.
+            mode: Retrieval mode - "hybrid", "semantic", or "lexical".
+            top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            rerank: If True, apply Qwen3-Reranker-8B reranking.
+            rerank_initial_k: Number of candidates to retrieve before reranking.
+
+        Returns:
+            RetrievalResponse with results.
+        """
+        if self._retriever is None:
+            logger.warning("query_no_retriever")
+            return RetrievalResponse(
+                results=[],
+                query=query,
+                total_found=0,
+                top_score=0.0,
+                score_spread=0.0,
+                has_high_confidence=False,
+                suggested_action="refine_query",
+            )
+
+        k = top_k or settings.DEFAULT_TOP_K
+
+        if rerank:
+            return await self._retriever.retrieve_with_rerank(
+                query, mode=mode, top_k=k, initial_k=rerank_initial_k
+            )
+        else:
+            return self._retriever.retrieve(query, mode=mode, top_k=k)
+
     def as_retriever(self) -> Callable[[str], RetrievalResponse]:
         """Return a callable retriever for Agno integration.
 
@@ -202,6 +243,8 @@ class Project:
         max_chunks: int = 10,
         prompt_template: str | None = None,
         timeout: float = 60.0,
+        rerank: bool = False,
+        rerank_initial_k: int = 50,
     ) -> tuple[RetrievalResponse, GeneratedAnswer]:
         """Query the project and generate an LLM answer from retrieved chunks.
 
@@ -214,12 +257,16 @@ class Project:
             max_chunks: Maximum chunks to use for answer generation.
             prompt_template: Custom prompt template with {context} and {question} placeholders.
             timeout: LLM request timeout in seconds.
+            rerank: If True, apply Qwen3-Reranker-8B reranking.
+            rerank_initial_k: Number of candidates to retrieve before reranking.
 
         Returns:
             Tuple of (RetrievalResponse, GeneratedAnswer).
         """
-        # First, retrieve chunks
-        retrieval_response = self.query(query, mode=mode, top_k=top_k)
+        # First, retrieve chunks (with optional reranking)
+        retrieval_response = await self.query_async(
+            query, mode=mode, top_k=top_k, rerank=rerank, rerank_initial_k=rerank_initial_k
+        )
 
         # Then, generate answer using LLM
         answer = await generate_answer(
@@ -235,6 +282,7 @@ class Project:
             query=query[:50],
             chunks_retrieved=len(retrieval_response.results),
             answer_length=len(answer.answer),
+            rerank=rerank,
         )
 
         return retrieval_response, answer

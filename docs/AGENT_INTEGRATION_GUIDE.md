@@ -746,11 +746,46 @@ if __name__ == "__main__":
 
 ```bash
 # BackendAI (default for answer generation)
-BACKENDAI_ENDPOINT=https://qwen25vl.asia03.app.backend.ai/v1
+BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
 BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
 
 # Falls back to OpenAI if BackendAI not configured
 OPENAI_API_KEY=sk-...
+```
+
+---
+
+## Combined Project with Metadata Filtering
+
+When you have multiple knowledge bases, you can create a combined project that includes all chunks with `document_name` metadata for filtering:
+
+```python
+from konte import Project
+
+# Query combined project
+project = Project.open("all_tariff_documents")
+response = project.query("DDR5 RAM classification", mode="hybrid", top_k=20)
+
+# Filter results by document source
+for result in response.results:
+    doc_name = result.metadata.get("document_name", "unknown")
+    print(f"[{result.score:.2f}] ({doc_name}) {result.content[:100]}...")
+
+# Filter to specific documents only
+hs_results = [r for r in response.results if r.metadata.get("document_name") == "hs_machinery_electronics_guide"]
+```
+
+### Available Metadata Fields
+
+When using combined projects, each result includes:
+
+```python
+result.metadata = {
+    "document_name": "hs_machinery_electronics_guide",  # Source project name
+    "original_chunk_id": "doc_s0_c1",                   # Original chunk ID
+    "original_segment_idx": 0,                           # Original segment index
+    "original_source": "doc.md",                         # Original source file
+}
 ```
 
 Konte provides both retrieval and full RAG capabilities out of the box.

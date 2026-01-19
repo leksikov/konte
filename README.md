@@ -183,8 +183,8 @@ EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1
 DEFAULT_TOP_K=20
 
-# BackendAI (default for answer generation)
-BACKENDAI_ENDPOINT=https://qwen25vl.asia03.app.backend.ai/v1
+# BackendAI (for context/answer generation)
+BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
 BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
 ```
 
@@ -295,6 +295,31 @@ Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integr
 - Agno tools and multi-project agents
 - Confidence-based agent decisions
 - Streaming responses
+
+## Evaluation
+
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100).
+
+### Results Summary
+
+| Dataset | Cases | Pass Rate | Avg Score |
+|---------|-------|-----------|-----------|
+| 100 validated | 100 | **94.0%** | 0.918 |
+| 30 validated | 30 | 96.7% | 0.933 |
+
+### Quick Start
+
+```bash
+# Run evaluation on 100 validated test cases
+python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0
+
+python -m evaluation.experiments.run_deepeval_full binary 100
+```
+
+See [evaluation/EVALUATION_GUIDE.md](evaluation/EVALUATION_GUIDE.md) for test generation and detailed methodology.
 
 ## Architecture
 
