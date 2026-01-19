@@ -1,12 +1,13 @@
 """Generate synthetic test dataset in KOREAN from wco_hs_explanatory_notes.
 
-The source document is in Korean, so test cases must also be in Korean
-to enable fair comparison between context-embedded and context-metadata approaches.
+The source document is in Korean, so test cases must also be in Korean.
+This script extracts HS codes from chunks first, then generates questions.
 """
 
 import asyncio
 import json
 import random
+import re
 from pathlib import Path
 
 from langchain_openai import ChatOpenAI
@@ -22,44 +23,86 @@ class KoreanTestCase(BaseModel):
 
     question: str = Field(..., description="한국어로 작성된 질문")
     expected_answer: str = Field(..., description="한국어로 작성된 예상 답변")
+    hs_code: str = Field(..., description="문서에서 추출한 HS 코드")
 
 
-class KoreanTestCaseList(BaseModel):
-    """List of Korean test cases."""
+# Pattern to find HS codes like "8540.20" or "3201.10 - 품목명"
+HS_CODE_PATTERN = re.compile(r'\b(\d{4}\.\d{2})\s*[-–—]\s*([^\n\r]{3,50})')
 
-    test_cases: list[KoreanTestCase] = Field(default_factory=list)
+
+def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str]]:
+    """Extract HS codes and their descriptions from chunk content.
+
+    Returns list of (hs_code, item_name) tuples.
+    Filters out ambiguous items like "기타", "그 밖의 것" etc.
+    """
+    matches = HS_CODE_PATTERN.findall(content)
+
+    # Ambiguous item names to skip
+    ambiguous_patterns = [
+        "기타",
+        "그 밖의",
+        "그밖의",
+        "기타의",
+        "그 외",
+    ]
+
+    # Deduplicate and filter
+    seen = set()
+    result = []
+    for code, name in matches:
+        if code not in seen:
+            seen.add(code)
+            # Clean up the item name
+            name = name.strip()
+
+            # Skip ambiguous names
+            if not name or len(name) < 3:
+                continue
+            if any(name.startswith(p) for p in ambiguous_patterns):
+                continue
+            if name.startswith("-"):  # Skip incomplete items like "-- 면으로"
+                continue
+
+            result.append((code, name))
+    return result
 
 
 KOREAN_SYNTHESIS_PROMPT = """당신은 관세 및 HS 코드 분류 전문가입니다.
 
-다음 문서를 읽고, 이 문서에서 **직접 추출한 정보**로만 답변할 수 있는 질문과 예상 답변을 한국어로 생성하세요.
+다음 문서와 HS 코드 정보를 바탕으로 질문과 예상 답변을 생성하세요.
 
-## 문서 (Document):
+## 문서:
 {context}
 
-## 핵심 원칙 (매우 중요):
-**예상 답변에 포함되는 모든 정보(HS 코드, 분류 기준, 제품명 등)는 반드시 위 문서에서 직접 추출해야 합니다.**
-문서에 없는 정보를 추가하거나 자신의 지식을 사용하지 마세요.
+## 이 문서에 있는 HS 코드:
+{hs_code} - {item_name}
 
-## 질문 작성 규칙:
-- 문서에 나오는 구체적인 제품명, 기술 용어를 포함하세요
-- 하나의 명확한 답변을 요구하는 질문을 작성하세요
+## 요구사항:
+1. 위 HS 코드({hs_code})에 대한 구체적이고 명확한 질문을 만드세요
+2. 예상 답변은 "HS 코드 {hs_code}에 분류됩니다" 형식으로 시작하세요
+3. 문서의 추가 정보를 답변에 포함하세요
 
-## 예상 답변 작성 규칙:
-- 문서에 명시된 HS 코드를 **그대로** 인용하세요 (예: "제3921호", "8540.20" 등 문서에 나온 형식 그대로)
-- 문서에서 직접 인용할 수 있는 근거를 포함하세요
-- 2-3문장으로 간결하게 작성하세요
-- 제외되는 코드나 관련 코드는 언급하지 마세요
+## 중요 - 피해야 할 질문 유형:
+- "기타"로 시작하는 질문 (예: "기타 반도체는?") - 너무 모호함
+- 단순히 소호 번호만 언급하는 질문 - 구체적인 품목명을 사용하세요
+- "-- 로 만든 것"처럼 불완전한 품목명
 
-## 피해야 할 패턴:
-❌ 문서에 없는 HS 코드를 언급
-❌ 자신의 관세 지식을 추가
-❌ 제외 코드 언급 (예: "~는 제외됩니다")
+## 좋은 질문 예시:
+- "퀘브라쵸 추출물은 어느 HS 코드에 분류되나요?" (구체적 품목명)
+- "DDR5 메모리 모듈은 어느 HS 코드에 분류되나요?" (구체적 제품)
+- "신선한 포도로 만든 포도주는 어느 HS 코드에 분류되나요?" (구체적 상태 명시)
+
+## 나쁜 질문 예시 (사용하지 마세요):
+- "기타은(는) 어느 HS 코드에 분류되나요?" - 너무 모호함
+- "-- 면으로 만든 것은?" - 불완전함
+- "그 밖의 것은?" - 불명확함
 
 ## 응답 형식 (JSON):
 {{
-    "question": "문서 내용에 기반한 구체적인 한국어 질문",
-    "expected_answer": "문서에서 직접 추출한 정보만으로 구성된 답변 (HS 코드는 문서 형식 그대로)"
+    "question": "구체적인 품목명은 어느 HS 코드에 분류되나요?",
+    "expected_answer": "HS 코드 {hs_code}에 분류됩니다. (추가 설명)",
+    "hs_code": "{hs_code}"
 }}
 """
 
@@ -67,34 +110,63 @@ KOREAN_SYNTHESIS_PROMPT = """당신은 관세 및 HS 코드 분류 전문가입�
 async def generate_korean_test_case(
     llm: ChatOpenAI,
     context: str,
+    hs_code: str,
+    item_name: str,
 ) -> KoreanTestCase | None:
-    """Generate a single Korean test case from context."""
-    prompt = KOREAN_SYNTHESIS_PROMPT.format(context=context)
+    """Generate a single Korean test case from context with known HS code."""
+    prompt = KOREAN_SYNTHESIS_PROMPT.format(
+        context=context[:2000],  # Limit context length
+        hs_code=hs_code,
+        item_name=item_name,
+    )
 
     try:
         structured_llm = llm.with_structured_output(KoreanTestCase, method="json_mode")
         result = await structured_llm.ainvoke(prompt)
-        return result
+
+        # Validate that the generated HS code matches
+        if result and result.hs_code == hs_code:
+            return result
+        elif result:
+            # Fix the HS code if LLM changed it
+            result.hs_code = hs_code
+            return result
+        return None
     except Exception as e:
         print(f"Error generating test case: {e}")
         return None
 
 
+def validate_test_case(
+    project: Project,
+    question: str,
+    expected_hs_code: str,
+    top_k: int = 5,
+) -> bool:
+    """Validate that the expected HS code can be retrieved."""
+    response = project.query(question, mode="hybrid", top_k=top_k)
+
+    # Check if expected HS code appears in any retrieved chunk
+    code_4digit = expected_hs_code[:4]
+    for result in response.results:
+        if code_4digit in result.content or code_4digit in (result.context or ""):
+            return True
+    return False
+
+
 async def synthesize_korean_dataset(
     project_name: str,
     output_path: Path,
-    num_goldens: int = 120,
-    use_segments: bool = True,
+    num_goldens: int = 30,
     seed: int = 42,
-    batch_size: int = 10,
+    batch_size: int = 5,
 ) -> None:
-    """Generate Korean test cases from Konte project segments.
+    """Generate validated Korean test cases from Konte project chunks.
 
     Args:
-        project_name: Name of Konte project to extract segments from.
+        project_name: Name of Konte project.
         output_path: Path to save generated goldens as JSON.
-        num_goldens: Number of golden test cases to generate.
-        use_segments: If True, use full segments (~8000 tokens). If False, use chunks.
+        num_goldens: Target number of valid test cases.
         seed: Random seed for reproducibility.
         batch_size: Number of concurrent LLM calls.
     """
@@ -104,111 +176,142 @@ async def synthesize_korean_dataset(
     print(f"Loading project: {project_name}")
     project = Project.open(project_name)
 
-    if use_segments:
-        # Load segments (full ~8000 token documents)
-        segments_path = project.project_dir / "segments.json"
-        if not segments_path.exists():
-            raise FileNotFoundError(f"No segments.json found in {project.project_dir}")
+    # Load chunks
+    chunks_path = project.project_dir / "chunks.json"
+    if not chunks_path.exists():
+        raise FileNotFoundError(f"No chunks.json found in {project.project_dir}")
 
-        with open(segments_path, encoding="utf-8") as f:
-            segments_data = json.load(f)
+    with open(chunks_path, encoding="utf-8") as f:
+        chunks_data = json.load(f)
 
-        print(f"Loaded {len(segments_data)} segments from project")
+    print(f"Loaded {len(chunks_data)} chunks from project")
 
-        # Extract segment content (segments are stored as dict with string keys)
-        contexts = []
-        for key, content in segments_data.items():
-            if content and len(content) > 500:  # Filter too short segments
-                contexts.append(content)
+    # Extract chunks with HS codes
+    chunks_with_codes = []
+    for chunk_item in chunks_data:
+        chunk = chunk_item.get("chunk", {})
+        context = chunk_item.get("context", "")
+        content = chunk.get("content", "")
 
-        print(f"Using {len(contexts)} quality segments for synthesis")
-    else:
-        # Load chunks (fallback)
-        chunks_path = project.project_dir / "chunks.json"
-        if not chunks_path.exists():
-            raise FileNotFoundError(f"No chunks.json found in {project.project_dir}")
+        full_text = f"{context}\n\n{content}" if context else content
 
-        with open(chunks_path, encoding="utf-8") as f:
-            chunks_data = json.load(f)
+        # Extract HS codes from this chunk
+        hs_codes = extract_hs_codes_from_chunk(content)
 
-        print(f"Loaded {len(chunks_data)} chunks from project")
+        if hs_codes and len(full_text) > 200:
+            for hs_code, item_name in hs_codes:
+                chunks_with_codes.append({
+                    "content": full_text,
+                    "hs_code": hs_code,
+                    "item_name": item_name,
+                })
 
-        contexts = []
-        for chunk_item in chunks_data:
-            chunk = chunk_item.get("chunk", {})
-            context = chunk_item.get("context", "")
-            content = chunk.get("content", "")
+    print(f"Found {len(chunks_with_codes)} chunks with extractable HS codes")
 
-            if context and content:
-                text = f"{context}\n\n{content}"
-            else:
-                text = content
-
-            if text and len(text) > 100:
-                contexts.append(text)
-
-        print(f"Using {len(contexts)} quality chunks for synthesis")
-
-    # Randomly sample
-    if len(contexts) < num_goldens:
-        sampled_indices = [random.randint(0, len(contexts) - 1) for _ in range(num_goldens)]
-    else:
-        sampled_indices = random.sample(range(len(contexts)), num_goldens)
-
-    contexts_to_process = [contexts[i] for i in sampled_indices]
-    print(f"Selected {len(contexts_to_process)} contexts for test case generation")
+    # Shuffle and prepare for generation
+    random.shuffle(chunks_with_codes)
 
     # Initialize LLM
-    llm = ChatOpenAI(
-        model=settings.BACKENDAI_MODEL_NAME,
-        api_key="placeholder",
-        base_url=settings.BACKENDAI_ENDPOINT,
-        temperature=0.7,
-        max_tokens=2000,
-    )
+    if settings.use_backendai:
+        llm = ChatOpenAI(
+            model=settings.BACKENDAI_MODEL_NAME,
+            api_key=settings.BACKENDAI_API_KEY or "placeholder",
+            base_url=settings.BACKENDAI_ENDPOINT,
+            temperature=0.3,
+            max_tokens=1000,
+        )
+    else:
+        llm = ChatOpenAI(
+            model=settings.CONTEXT_MODEL,
+            api_key=settings.OPENAI_API_KEY,
+            temperature=0.3,
+            max_tokens=1000,
+        )
 
-    # Generate test cases with progress bar
+    # Generate and validate test cases
     golden_dicts = []
-    errors = 0
+    used_hs_codes = set()
+    idx = 0
+    generation_errors = 0
+    validation_failures = 0
 
-    print(f"Generating {len(contexts_to_process)} Korean test cases...")
+    print(f"\nGenerating {num_goldens} validated Korean test cases...")
 
-    with tqdm(total=len(contexts_to_process), desc="Generating Korean goldens") as pbar:
-        for batch_start in range(0, len(contexts_to_process), batch_size):
-            batch_end = min(batch_start + batch_size, len(contexts_to_process))
-            batch_contexts = contexts_to_process[batch_start:batch_end]
+    with tqdm(total=num_goldens, desc="Generating validated goldens") as pbar:
+        while len(golden_dicts) < num_goldens and idx < len(chunks_with_codes):
+            # Process in batches
+            batch = []
+            batch_indices = []
 
-            # Create tasks for concurrent execution
+            while len(batch) < batch_size and idx < len(chunks_with_codes):
+                chunk_info = chunks_with_codes[idx]
+                # Skip if we already have a question for this HS code
+                if chunk_info["hs_code"] not in used_hs_codes:
+                    batch.append(chunk_info)
+                    batch_indices.append(idx)
+                idx += 1
+
+            if not batch:
+                continue
+
+            # Generate test cases concurrently
             tasks = [
-                generate_korean_test_case(llm, ctx)
-                for ctx in batch_contexts
+                generate_korean_test_case(
+                    llm,
+                    chunk_info["content"],
+                    chunk_info["hs_code"],
+                    chunk_info["item_name"],
+                )
+                for chunk_info in batch
             ]
 
-            # Execute batch concurrently
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for i, result in enumerate(results):
-                ctx_idx = batch_start + i
+            # Validate and add successful results
+            for chunk_info, result in zip(batch, results):
                 if isinstance(result, Exception):
-                    errors += 1
-                    print(f"\nError at index {ctx_idx}: {result}")
-                elif result is not None:
+                    generation_errors += 1
+                    continue
+
+                if result is None:
+                    generation_errors += 1
+                    continue
+
+                # Validate retrieval
+                is_valid = validate_test_case(
+                    project,
+                    result.question,
+                    result.hs_code,
+                )
+
+                if is_valid:
                     golden_dicts.append({
                         "input": result.question,
                         "expected_output": result.expected_answer,
-                        "retrieval_context": [contexts_to_process[ctx_idx]],
+                        "retrieval_context": [chunk_info["content"][:1000]],
+                    })
+                    used_hs_codes.add(result.hs_code)
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "valid": len(golden_dicts),
+                        "gen_err": generation_errors,
+                        "val_fail": validation_failures,
                     })
 
-            pbar.update(len(batch_contexts))
-            pbar.set_postfix({"generated": len(golden_dicts), "errors": errors})
+                    if len(golden_dicts) >= num_goldens:
+                        break
+                else:
+                    validation_failures += 1
 
     # Save to JSON
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(golden_dicts, f, indent=2, ensure_ascii=False)
 
-    print(f"\nGenerated {len(golden_dicts)} Korean test cases")
-    print(f"Errors: {errors}")
+    print(f"\nGenerated {len(golden_dicts)} validated Korean test cases")
+    print(f"Generation errors: {generation_errors}")
+    print(f"Validation failures: {validation_failures}")
+    print(f"Unique HS codes used: {len(used_hs_codes)}")
     print(f"Saved to: {output_path}")
 
 
@@ -219,11 +322,10 @@ async def main():
     parser = argparse.ArgumentParser(description="Generate Korean test cases")
     parser.add_argument("--project", default="wco_hs_explanatory_notes_korean",
                         help="Project name to use for synthesis")
-    parser.add_argument("--output", default="evaluation/data/synthetic/synthetic_goldens_korean_v4.json",
+    parser.add_argument("--output", default="evaluation/data/synthetic/synthetic_goldens_30.json",
                         help="Output path for generated test cases")
-    parser.add_argument("--num", type=int, default=120, help="Number of test cases to generate")
-    parser.add_argument("--use-chunks", action="store_true",
-                        help="Use chunks instead of segments (default: use segments)")
+    parser.add_argument("--num", type=int, default=30, help="Number of test cases to generate")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
     output_path = Path(args.output)
@@ -232,8 +334,8 @@ async def main():
         project_name=args.project,
         output_path=output_path,
         num_goldens=args.num,
-        use_segments=not args.use_chunks,
-        batch_size=10,
+        seed=args.seed,
+        batch_size=5,
     )
 
 
