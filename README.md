@@ -298,46 +298,28 @@ Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integr
 
 ## Evaluation
 
-RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 96.7% accuracy** (29/30).
-
-### Best Configuration
-
-| Setting | Value |
-|---------|-------|
-| Test Cases | `synthetic_goldens_30.json` (30 validated) |
-| Test Generation | HS code extraction + retrieval validation |
-| Metric | DeepEval G-Eval FactualCorrectness |
-| Reranking | Binary filter with fallback |
-| Initial K | 100, Final K | 15 |
-
-### Running Evaluation
-
-```bash
-# Generate 30 validated test cases
-python -m evaluation.synthesize_korean_dataset \
-  --project wco_hs_explanatory_notes_korean \
-  --output evaluation/data/synthetic/synthetic_goldens_30.json \
-  --num 30 \
-  --seed 123
-
-# Run LLM reranking + DeepEval
-python -m evaluation.experiments.llm_reranking \
-  --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_30.json \
-  --method binary --initial-k 100 --final-k 15
-
-python -m evaluation.experiments.run_deepeval_full binary 30_v2
-```
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100).
 
 ### Results Summary
 
-| Metric | Value |
-|--------|-------|
-| Pass Rate | **96.7%** |
-| Passed | 29/30 |
-| Avg Score | 0.933 |
+| Dataset | Cases | Pass Rate | Avg Score |
+|---------|-------|-----------|-----------|
+| 100 validated | 100 | **94.0%** | 0.918 |
+| 30 validated | 30 | 96.7% | 0.933 |
 
-See [evaluation/EVALUATION_REPORT.md](evaluation/EVALUATION_REPORT.md) for detailed methodology and failure analysis.
+### Quick Start
+
+```bash
+# Run evaluation on 100 validated test cases
+python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0
+
+python -m evaluation.experiments.run_deepeval_full binary 100
+```
+
+See [evaluation/EVALUATION_GUIDE.md](evaluation/EVALUATION_GUIDE.md) for test generation and detailed methodology.
 
 ## Architecture
 

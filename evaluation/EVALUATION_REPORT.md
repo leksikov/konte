@@ -1,14 +1,21 @@
 # RAG Evaluation Report
 
-## Final Results: 96.7% Accuracy (29/30)
+## Final Results: 94.0% Accuracy (94/100)
 
 | Metric | Value |
 |--------|-------|
-| Test Cases | 30 (validated) |
-| Pass Rate | **96.7%** |
-| Passed | 29/30 |
-| Failed | 1 |
-| Avg Score | 0.933 |
+| Test Cases | 100 (validated) |
+| Pass Rate | **94.0%** |
+| Passed | 94/100 |
+| Failed | 6 |
+| Avg Score | 0.918 |
+
+### Results by Dataset Size
+
+| Dataset | Cases | Pass Rate | Avg Score | Date |
+|---------|-------|-----------|-----------|------|
+| **100 validated** | **100** | **94.0%** | **0.918** | **Jan 2025** |
+| 30 validated | 30 | 96.7% | 0.933 | Jan 2025 |
 
 ---
 
@@ -37,93 +44,59 @@ Evaluates if the actual RAG output contains the same key factual information as 
 
 ---
 
-## Test Generation Methodology (Jan 2025)
+## Failure Analysis (6/100)
 
-### Problem: LLM Hallucination in Test Data
-Previous test generation allowed LLM to generate any HS code, leading to:
-- Hallucinated HS codes that didn't exist in source chunks
-- Ambiguous questions using "기타" (other) patterns
-- Low accuracy (83.3%) due to test data quality issues
+### Summary by Category
 
-### Solution: Validated Test Generation
+| Category | Count | Failure Rate |
+|----------|-------|--------------|
+| Textile subcode ambiguity | 4 | 4.0% |
+| Chemical classification | 1 | 1.0% |
+| Fabric type distinction | 1 | 1.0% |
 
-The improved `synthesize_korean_dataset.py` ensures high-quality test cases:
+### Detailed Failures
 
-#### 1. HS Code Extraction from Source
-```python
-HS_CODE_PATTERN = re.compile(r'(\d{4}\.\d{2})\s*[-–—]\s*(.+?)(?:\n|$)')
+| # | Question | Expected | Actual | Score | Root Cause |
+|---|----------|----------|--------|-------|------------|
+| 1 | 인조섬유로 만든 저지 풀오버 카디건 | 6110.30 | 6101/6102 | 0.2 | Knitwear vs coat chapter confusion |
+| 2 | 비스코스 레이온 꼬임 없는 필라멘트사 | 5403.10 | 5403.31 | 0.2 | Twist threshold subcode error |
+| 3 | 시아노겐 클로라이드(클로르시안) | 2853.10 | 2812 | 0.2 | Wrong chapter (inorganic compounds) |
+| 4 | 합성스테이플섬유 85%+ 인조스테이플섬유사 | 5511.20 | 5511.10 | 0.0 | Fiber content threshold ambiguity |
+| 5 | 제5602/5603호 직물 여성용 실내복 | 6210.10 | 6208 | 0.2 | Special fabric vs woven chapter |
+| 6 | 롱파일 면 메리야스 편물 | 6001.10 | 6001.21 | 0.0 | Looped vs long pile distinction |
 
-def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str]]:
-    """Extract HS codes directly from chunk content using regex."""
-    matches = HS_CODE_PATTERN.findall(content)
-    # Returns: [("2529.30", "백류석, 하석"), ("8435.90", "부분품"), ...]
-```
+### Analysis
 
-#### 2. Ambiguity Filtering
-```python
-AMBIGUOUS_PATTERNS = ["기타", "그 밖의", "그밖의", "기타의", "그 외"]
+**Textile Classification Complexity (4/6 failures)**:
+- HS chapters 54-62 cover textiles with complex subcode distinctions
+- Subcodes depend on: fiber content percentage, construction method, end-use
+- Similar products can fall into adjacent codes based on subtle criteria
 
-# Filter out ambiguous items before question generation
-if any(name.startswith(p) for p in AMBIGUOUS_PATTERNS):
-    continue  # Skip this HS code
-```
-
-#### 3. Retrieval Validation
-```python
-def validate_retrieval(query: str, expected_hs_code: str) -> bool:
-    """Check if expected HS code appears in top-5 retrieval results."""
-    response = project.query(query, mode="hybrid", top_k=5)
-    for result in response.results:
-        if expected_hs_code in result.content:
-            return True
-    return False
-```
-
-#### 4. Specific Question Prompting
-```python
-KOREAN_SYNTHESIS_PROMPT = """
-## 중요 - 피해야 할 질문 유형:
-- "기타"로 시작하는 질문 (예: "기타 반도체는?") - 너무 모호함
-- 단순히 소호 번호만 언급하는 질문 - 구체적인 품목명을 사용하세요
-
-## 좋은 질문 예시:
-- "퀘브라쵸 추출물은 어느 HS 코드에 분류되나요?" (구체적 품목명)
-- "DDR5 메모리 모듈은 어느 HS 코드에 분류되나요?" (구체적 제품)
-"""
-```
+**Chemical Classification (1/6 failures)**:
+- Inorganic compounds have specific placement rules
+- 시아노겐 클로라이드 could be interpreted as halogen compound (2812) or other inorganic (2853)
 
 ---
 
-## Detailed Results
+## Score Distribution (100 cases)
 
-### Pass Distribution
 | Score Range | Count | Percentage |
 |-------------|-------|------------|
-| 1.0 (perfect) | 19 | 63.3% |
-| 0.8-0.9 | 9 | 30.0% |
-| 0.7-0.8 | 1 | 3.3% |
-| < 0.5 (fail) | 1 | 3.3% |
-
-### Single Failure Analysis
-
-| Field | Value |
-|-------|-------|
-| Question | 합성스테이플섬유의 함유량이 전 중량의 85% 이상인 소매용 인조스테이플섬유사는 어느 HS 코드에 분류되나요? |
-| Expected | 5511.20 |
-| Actual | 5511.10 |
-| Score | 0.20 |
-| Reason | Both codes are in the same chapter (5511 - synthetic staple fiber yarns), different subcodes |
-
-**Root Cause**: Borderline HS code ambiguity where both 5511.10 and 5511.20 relate to similar products. The distinction depends on whether the fiber content threshold applies to the product category.
+| 1.0 (perfect) | 58 | 58.0% |
+| 0.8-0.99 | 25 | 25.0% |
+| 0.7-0.79 | 6 | 6.0% |
+| 0.5-0.69 | 5 | 5.0% |
+| < 0.5 (fail) | 6 | 6.0% |
 
 ---
 
 ## Configuration
 
-### Best Configuration
+### Best Configuration (94.0% Accuracy)
+
 | Setting | Value |
 |---------|-------|
-| Test Cases | `synthetic_goldens_30.json` |
+| Test Cases | `synthetic_goldens_100.json` |
 | Test Generation | HS code extraction + retrieval validation |
 | Reranking | Binary filter with fallback |
 | Initial K | 100 |
@@ -142,56 +115,33 @@ BACKENDAI_MODEL_NAME = "Qwen3-VL-8B-Instruct"
 
 ---
 
-## Running Evaluation
-
-```bash
-# Generate 30 validated test cases
-python -m evaluation.synthesize_korean_dataset \
-  --project wco_hs_explanatory_notes_korean \
-  --output evaluation/data/synthetic/synthetic_goldens_30.json \
-  --num 30 \
-  --seed 123
-
-# Run LLM reranking experiment
-python -m evaluation.experiments.llm_reranking \
-  --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_30.json \
-  --method binary \
-  --initial-k 100 \
-  --final-k 15
-
-# Run DeepEval correctness metric
-python -m evaluation.experiments.run_deepeval_full binary 30_v2
-```
-
----
-
 ## Output Files
 
 | File | Description |
 |------|-------------|
+| `data/synthetic/synthetic_goldens_100.json` | 100 validated test cases |
 | `data/synthetic/synthetic_goldens_30.json` | 30 validated test cases |
-| `experiments/results/llm_rerank_binary_30_v2.json` | Reranking results |
-| `experiments/results/binary_30_v2_deepeval_correctness.json` | DeepEval scores |
+| `experiments/results/llm_rerank_binary_100.json` | Reranking results (100) |
+| `experiments/results/binary_100_deepeval_correctness.json` | DeepEval scores (100) |
 
 ---
 
 ## Key Learnings
 
-### 1. Test Data Quality is Critical
-- Previous 90% accuracy was limited by test data quality (LLM hallucination)
-- With validated test generation, accuracy improved to 96.7%
-- Lesson: Always extract ground truth from source, never generate
+### 1. Scale Reveals Edge Cases
+- 30-case dataset: 96.7% accuracy (1 failure)
+- 100-case dataset: 94.0% accuracy (6 failures)
+- Larger datasets expose more challenging classification boundaries
 
-### 2. Ambiguity Filtering Matters
-- "기타" (other) style questions are inherently ambiguous
-- Filtering these out improves test reliability
-- Remaining failure is borderline ambiguity case
+### 2. Textile Classification is Hardest
+- 4/6 failures involve textile products (chapters 54-62)
+- HS code subcodes have subtle distinctions based on fiber content, construction
+- Consider domain-specific fine-tuning for textile questions
 
-### 3. Retrieval Validation Ensures Fair Evaluation
-- Only include questions where answer is retrievable
-- Separates retrieval issues from generation issues
-- Allows focused improvement on each component
+### 3. Test Data Quality Remains Critical
+- Validated test generation (HS code extraction + retrieval validation) essential
+- Previous LLM-generated test data had hallucination issues
+- Ground truth must come from source documents
 
 ---
 
@@ -203,6 +153,7 @@ python -m evaluation.experiments.run_deepeval_full binary 30_v2
 | v3 | 120 | Chunks | 74.2% | Bad prompt caused hallucination |
 | v4 | 120 | Segments | 78.3% | Different questions |
 | v5 | 120 | Segments | 78.4% | Gemma-3-27b generated |
-| **30_v2** | **30** | **Validated** | **96.7%** | **Current best** |
+| 30_v2 | 30 | Validated | 96.7% | First validated dataset |
+| **100** | **100** | **Validated** | **94.0%** | **Current best** |
 
 Old datasets archived to `data/synthetic/archive/`.
