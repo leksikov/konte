@@ -244,7 +244,7 @@ All config via pydantic-settings in `settings.py`. Key settings:
 
 ## Evaluation
 
-RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 96.7% accuracy** (29/30) with validated test dataset.
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100) on validated test dataset.
 
 ### Structure
 ```
@@ -252,11 +252,13 @@ evaluation/
 ├── custom_llm.py                # BackendAI LLM wrapper for DeepEval
 ├── custom_metrics.py            # Custom FactualCorrectness GEval metric
 ├── synthesize_korean_dataset.py # Generate validated Korean test cases
-├── EVALUATION_REPORT.md         # Detailed experiment results and methodology
+├── EVALUATION_REPORT.md         # Detailed experiment results
+├── EVALUATION_GUIDE.md          # How to run evaluation pipeline
 ├── data/
 │   └── synthetic/
-│       ├── synthetic_goldens_30.json  # 30 validated test cases (DEFAULT)
-│       └── archive/                    # Old datasets (v2, v3, v4, v5)
+│       ├── synthetic_goldens_100.json # 100 validated test cases (DEFAULT)
+│       ├── synthetic_goldens_30.json  # 30 validated test cases
+│       └── archive/                    # Old datasets
 ├── experiments/
 │   ├── llm_reranking.py         # LLM reranking experiments (binary filter)
 │   ├── run_deepeval_full.py     # DeepEval correctness evaluation
@@ -265,69 +267,44 @@ evaluation/
     └── *.log                    # Evaluation logs
 ```
 
-### Best Configuration (96.7% Accuracy)
+### Best Configuration (94.0% Accuracy)
 
 | Setting | Value |
 |---------|-------|
-| Test Cases | `synthetic_goldens_30.json` (30 validated) |
+| Test Cases | `synthetic_goldens_100.json` (100 validated) |
 | Test Generation | HS code extraction + retrieval validation |
 | Reranking | Binary filter with fallback |
 | Initial K | 100 |
 | Final K | 15 |
 | Model | gpt-4.1-mini (evaluation), Qwen3-VL-8B-Instruct (answer) |
 
-### Running Evaluation
-
-```bash
-# Generate 30 validated test cases
-python -m evaluation.synthesize_korean_dataset \
-  --project wco_hs_explanatory_notes_korean \
-  --output evaluation/data/synthetic/synthetic_goldens_30.json \
-  --num 30 \
-  --seed 123
-
-# Run LLM reranking experiment
-python -m evaluation.experiments.llm_reranking \
-  --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_30.json \
-  --method binary \
-  --initial-k 100 \
-  --final-k 15
-
-# Run DeepEval correctness metric
-python -m evaluation.experiments.run_deepeval_full binary 30_v2
-```
-
 ### Evaluation Results
 
-| Metric | Value |
-|--------|-------|
-| Pass Rate | **96.7%** |
-| Passed | 29/30 |
-| Failed | 1 |
-| Avg Score | 0.933 |
+| Dataset | Cases | Pass Rate | Avg Score |
+|---------|-------|-----------|-----------|
+| 100 validated | 100 | **94.0%** | 0.918 |
+| 30 validated | 30 | 96.7% | 0.933 |
 
-### Test Generation Methodology (Jan 2025)
+### Failure Analysis (6/100)
 
-The improved test generation script (`synthesize_korean_dataset.py`) ensures high-quality test cases:
+| Category | Count | Examples |
+|----------|-------|----------|
+| Textile subcode ambiguity | 4 | 6110.30 vs 6101, 5403.10 vs 5403.31 |
+| Chemical classification | 1 | 2853.10 vs 2812 |
+| Fabric type distinction | 1 | 6001.10 vs 6001.21 |
 
-1. **HS Code Extraction**: Regex extracts HS codes directly from chunk content (no LLM hallucination)
-2. **Ambiguity Filtering**: Filters out "기타", "그 밖의" items before question generation
-3. **Retrieval Validation**: Only includes questions where expected HS code appears in top-5 retrieval
-4. **Specific Questions**: Prompt guides LLM to create specific, non-ambiguous questions
+Most failures involve textile products (chapters 54-62) with complex subcode distinctions.
 
-### Single Failure Analysis
+### Quick Start
 
-| Question | Expected | Actual | Cause |
-|----------|----------|--------|-------|
-| 합성스테이플섬유 85%+ 소매용 인조스테이플섬유사 | 5511.20 | 5511.10 | Borderline subcode ambiguity |
+```bash
+# Run full evaluation (100 cases)
+python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0
 
-Both codes are in the same chapter (5511 - synthetic staple fiber yarns), just different subcodes.
+python -m evaluation.experiments.run_deepeval_full binary 100
+```
 
-### FactualCorrectness Metric
-Custom GEval metric (DeepEval) that focuses on factual accuracy:
-- Checks if key HS codes and facts from expected output appear in actual output
-- Ignores: length differences, format differences, language mixing, ordering
-- Score >= 0.5 = PASS
-
-See `evaluation/EVALUATION_REPORT.md` for detailed analysis.
+See `evaluation/EVALUATION_GUIDE.md` for detailed instructions on test generation and metrics.
