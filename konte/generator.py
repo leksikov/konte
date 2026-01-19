@@ -25,6 +25,8 @@ Instructions:
 - If the context doesn't contain enough information to answer, say so clearly
 - Be concise and direct
 - Cite relevant parts of the context when helpful
+- When citing HS codes, use the normalized 4-digit format with leading zeros if needed (e.g., "0908", "8540", "2906")
+- For HS subheadings, use the format with dots (e.g., "0908.31", "8540.11")
 
 Answer:"""
 
@@ -88,6 +90,9 @@ def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
 def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10) -> str:
     """Format retrieved chunks into context string for LLM.
 
+    Includes both the generated context and the original chunk content
+    for maximum information retrieval.
+
     Args:
         retrieval_response: Response from retrieval query.
         max_chunks: Maximum number of chunks to include.
@@ -100,7 +105,12 @@ def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10)
     context_parts = []
     for i, result in enumerate(chunks_to_use, 1):
         source = result.source or "unknown"
-        context_parts.append(f"[{i}] Source: {source}\n{result.content}")
+        # Include context (LLM-generated summary) if available
+        if result.context:
+            chunk_text = f"Context: {result.context}\n\nContent: {result.content}"
+        else:
+            chunk_text = result.content
+        context_parts.append(f"[{i}] Source: {source}\n{chunk_text}")
 
     return "\n\n".join(context_parts)
 

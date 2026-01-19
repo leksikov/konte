@@ -34,7 +34,7 @@ class FAISSStore:
     def build_index(
         self,
         chunks: list[ContextualizedChunk],
-        batch_size: int = 200,
+        batch_size: int = 100,
     ) -> None:
         """Build FAISS index from contextualized chunks.
 
