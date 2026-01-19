@@ -244,67 +244,105 @@ All config via pydantic-settings in `settings.py`. Key settings:
 
 ## Evaluation
 
-RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100) on validated test dataset.
+RAG evaluation using DeepEval with LLM-as-judge metrics. Evaluates answer correctness for diverse question types.
+
+**Important**: This is a RAG (Retrieval-Augmented Generation) system for answering questions based on retrieved context. It is NOT a classification system.
 
 ### Structure
 ```
 evaluation/
 ├── custom_llm.py                # BackendAI LLM wrapper for DeepEval
-├── custom_metrics.py            # Custom FactualCorrectness GEval metric
-├── synthesize_korean_dataset.py # Generate validated Korean test cases
+├── custom_metrics.py            # Custom AnswerCorrectness GEval metric
+├── deepeval_synthesizer.py      # Generate diverse test cases with DeepEval Synthesizer
 ├── EVALUATION_REPORT.md         # Detailed experiment results
 ├── EVALUATION_GUIDE.md          # How to run evaluation pipeline
+├── prompts/
+│   ├── __init__.py              # Exports prompt configurations
+│   └── eval_prompts.py          # GEval criteria for HS Code and Answer Correctness
 ├── data/
 │   └── synthetic/
-│       ├── synthetic_goldens_100.json # 100 validated test cases (DEFAULT)
-│       ├── synthetic_goldens_30.json  # 30 validated test cases
-│       └── archive/                    # Old datasets
+│       ├── deepeval_goldens_korean_100.json  # 100 diverse questions (DeepEval Synthesizer)
+│       ├── synthetic_goldens_100.json        # 100 HS code questions (legacy)
+│       └── archive/                          # Old datasets
 ├── experiments/
 │   ├── llm_reranking.py         # LLM reranking experiments (binary filter)
-│   ├── run_deepeval_full.py     # DeepEval correctness evaluation
+│   ├── run_deepeval_full.py     # DeepEval evaluation (supports hs_code and answer types)
 │   └── results/                 # Experiment results JSON files
 └── results/
     └── *.log                    # Evaluation logs
 ```
 
-### Best Configuration (94.0% Accuracy)
+### Test Case Generation
 
-| Setting | Value |
-|---------|-------|
-| Test Cases | `synthetic_goldens_100.json` (100 validated) |
-| Test Generation | HS code extraction + retrieval validation |
-| Reranking | Binary filter with fallback |
-| Initial K | 100 |
-| Final K | 15 |
-| Model | gpt-4.1-mini (evaluation), Qwen3-VL-8B-Instruct (answer) |
+Use DeepEval Synthesizer to generate diverse question types:
+```bash
+python -m evaluation.deepeval_synthesizer \
+  --project wco_hs_explanatory_notes_korean \
+  --output evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --num 100 --model gpt-4.1-mini
+```
 
-### Evaluation Results
+Evolution types for question diversity:
+- **Reasoning**: Logical complexity questions
+- **Multi-context**: Questions requiring multiple sources
+- **Concretizing**: Specific detail questions
+- **Constrained**: Questions with constraints
+- **Comparative**: Comparison questions
+- **Hypothetical**: "What if" scenarios
+- **In-Breadth**: Scope expansion questions
 
-| Dataset | Cases | Pass Rate | Avg Score |
-|---------|-------|-----------|-----------|
-| 100 validated | 100 | **94.0%** | 0.918 |
-| 30 validated | 30 | 96.7% | 0.933 |
+### Evaluation by Question Type
 
-### Failure Analysis (6/100)
+| Evolution Type | Pass Rate | Avg Score |
+|----------------|-----------|-----------|
+| Reasoning | 100.0% | 0.861 |
+| Comparative | 96.9% | 0.841 |
+| Constrained | 96.7% | 0.857 |
+| In-Breadth | 95.7% | 0.852 |
+| Multi-context | 92.9% | 0.814 |
+| Concretizing | 91.2% | 0.809 |
+| Hypothetical | 86.7% | 0.777 |
+| **TOTAL** | **94.0%** | **0.828** |
 
-| Category | Count | Examples |
-|----------|-------|----------|
-| Textile subcode ambiguity | 4 | 6110.30 vs 6101, 5403.10 vs 5403.31 |
-| Chemical classification | 1 | 2853.10 vs 2812 |
-| Fabric type distinction | 1 | 6001.10 vs 6001.21 |
+### Two Evaluation Types
 
-Most failures involve textile products (chapters 54-62) with complex subcode distinctions.
+The system supports two evaluation types with switchable LLM judge prompts:
+
+| Type | Dataset | Metric | Use Case |
+|------|---------|--------|----------|
+| `answer` | `deepeval_goldens_korean_100.json` | AnswerCorrectness | Diverse RAG questions (default) |
+| `hs_code` | `synthetic_goldens_100.json` | HSCodeCorrectness | HS code lookup questions |
 
 ### Quick Start
 
 ```bash
-# Run full evaluation (100 cases)
+# Run LLM reranking (generates answers)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
-  --method binary --initial-k 100 --final-k 15 --max-cases 0
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0 \
+  --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
 
-python -m evaluation.experiments.run_deepeval_full binary 100
+# Run DeepEval evaluation (answer correctness - default)
+python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
+
+# Or for HS code evaluation (legacy)
+python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
-See `evaluation/EVALUATION_GUIDE.md` for detailed instructions on test generation and metrics.
+### GEval Metrics (LLM-as-Judge)
+
+Two metrics available in `evaluation/prompts/eval_prompts.py`:
+
+**AnswerCorrectness** (for diverse RAG questions):
+- Evaluates if actual output contains key facts from expected output
+- Checks semantic equivalence (same meaning, different wording OK)
+- Verifies technical accuracy (codes, terms, numbers)
+- Ignores format differences, language mixing, verbosity
+
+**HSCodeCorrectness** (for HS code lookup questions):
+- Focuses on HS code accuracy and semantic equivalence
+- Normalizes format differences (제2523.21호 = 2523.21 = 제2523호의 21)
+- Ignores language mixing and extra explanation
+
+See `evaluation/EVALUATION_GUIDE.md` for detailed instructions.
