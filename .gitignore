@@ -71,3 +71,9 @@ experiments/results/
 experiments/*.log
 tmp.sh
 *.log
+.DS_Store
+debug/*
+evaluation/trials/*
+example_knowledge_base/*
+test_dataset/*
+checkpoints/*
