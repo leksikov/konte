@@ -2,6 +2,8 @@
 
 Step-by-step guide to run the RAG evaluation pipeline: test generation, LLM reranking, and DeepEval metrics.
 
+**Important**: Konte is a RAG (Retrieval-Augmented Generation) system for answering questions based on retrieved context. It is NOT a classification system.
+
 ## Prerequisites
 
 ```bash
@@ -16,9 +18,47 @@ export BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
 
 ---
 
+## Two Evaluation Types
+
+The system supports two evaluation types with switchable LLM judge prompts:
+
+| Type | Dataset | Metric | Description |
+|------|---------|--------|-------------|
+| `answer` | `deepeval_goldens_korean_100.json` | AnswerCorrectness | Diverse RAG questions (default) |
+| `hs_code` | `synthetic_goldens_100.json` | HSCodeCorrectness | HS code lookup questions (legacy) |
+
+Prompts are defined in `evaluation/prompts/eval_prompts.py`.
+
+---
+
 ## Quick Start (Use Existing Test Cases)
 
-Run evaluation on the pre-generated 100-case validated dataset:
+### Option 1: Diverse RAG Questions (Recommended)
+
+Run evaluation on DeepEval Synthesizer generated questions (7 Evolution types):
+
+```bash
+# Step 1: Run LLM reranking (generates answers)
+python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --method binary \
+  --initial-k 100 \
+  --final-k 15 \
+  --max-cases 0 \
+  --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
+
+# Step 2: Run DeepEval evaluation (answer correctness)
+python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
+```
+
+Results saved to:
+- `evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json` (answers)
+- `evaluation/experiments/results/binary_deepeval_diverse_deepeval_correctness.json` (scores)
+
+### Option 2: HS Code Lookup Questions (Legacy)
+
+Run evaluation on HS code classification questions:
 
 ```bash
 # Step 1: Run LLM reranking (generates answers)
@@ -30,8 +70,8 @@ python -m evaluation.experiments.llm_reranking \
   --final-k 15 \
   --max-cases 0
 
-# Step 2: Run DeepEval correctness evaluation
-python -m evaluation.experiments.run_deepeval_full binary 100
+# Step 2: Run DeepEval evaluation (HS code correctness)
+python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
 Results saved to:
@@ -120,21 +160,29 @@ cp evaluation/experiments/llm_rerank_results.json \
 ### Step 3: Run DeepEval Correctness Evaluation
 
 ```bash
-python -m evaluation.experiments.run_deepeval_full binary 100
+# For diverse RAG questions (default)
+python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
+
+# For HS code lookup questions
+python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
 **Arguments:**
 - `method`: Reranking method name (e.g., `binary`)
-- `version`: Dataset version suffix (e.g., `100`, `30_v2`)
+- `version`: Dataset version suffix (e.g., `100`, `deepeval_diverse`)
+- `eval_type`: Evaluation type - `answer` (default) or `hs_code`
 
 **What it does:**
 1. Loads reranking results from `results/llm_rerank_{method}_{version}.json`
-2. For each case, creates DeepEval test case with:
+2. Selects appropriate prompt based on eval_type:
+   - `answer`: Uses AnswerCorrectness criteria (for diverse RAG questions)
+   - `hs_code`: Uses HSCodeCorrectness criteria (for HS code lookup)
+3. For each case, creates DeepEval test case with:
    - `input`: Original question
    - `actual_output`: Generated answer
-   - `expected_output`: Ground truth HS code
-3. Evaluates using G-Eval FactualCorrectness metric
-4. Calculates pass rate (score >= 0.5 = PASS)
+   - `expected_output`: Ground truth answer/HS code
+4. Evaluates using G-Eval metric
+5. Calculates pass rate (score >= 0.5 = PASS)
 
 **Output file:** `evaluation/experiments/results/{method}_{version}_deepeval_correctness.json`
 
@@ -142,13 +190,42 @@ python -m evaluation.experiments.run_deepeval_full binary 100
 
 ## Metrics Explained
 
-### FactualCorrectness (G-Eval)
+Two GEval metrics are available in `evaluation/prompts/eval_prompts.py`:
 
-Custom metric that evaluates if the actual output contains the same HS code as expected:
+### AnswerCorrectness (for Diverse RAG Questions)
+
+Evaluates if the actual output correctly answers the question based on the expected output:
 
 ```python
 metric = GEval(
-    name="FactualCorrectness",
+    name="AnswerCorrectness",
+    criteria="""Evaluate if the actual output correctly answers the question based on the expected output.
+
+This is a RAG (Retrieval-Augmented Generation) system evaluation. The system retrieves relevant context and generates answers to user questions.
+
+Evaluation criteria:
+- Does the actual output contain the KEY FACTS from the expected output?
+- Is the information semantically equivalent (same meaning, different wording is OK)?
+- Are technical terms, codes, or specific details accurate?
+- Ignore format differences, language mixing (Korean/English), or extra explanation
+
+Scoring:
+- Score 1.0: All key facts match, answer is complete and accurate
+- Score 0.7-0.9: Most key facts match, minor omissions or variations
+- Score 0.5-0.6: Partially correct, some key facts present but incomplete
+- Score 0.3-0.4: Few key facts match, significant information missing
+- Score 0.0-0.2: Wrong information or contradicts expected output""",
+    threshold=0.5,
+)
+```
+
+### HSCodeCorrectness (for HS Code Lookup Questions)
+
+Evaluates if the actual output contains the same HS code as expected:
+
+```python
+metric = GEval(
+    name="HSCodeCorrectness",
     criteria="""Evaluate if the actual output contains the same KEY FACTUAL INFORMATION as the expected output.
 
 Focus on HS code accuracy and semantic equivalence:
@@ -170,7 +247,16 @@ Scoring:
 - **PASS**: Score >= 0.5
 - **FAIL**: Score < 0.5
 
-### Score Interpretation
+### Score Interpretation (AnswerCorrectness)
+| Score | Meaning |
+|-------|---------|
+| 1.0 | All key facts match, complete and accurate |
+| 0.7-0.9 | Most key facts match, minor omissions |
+| 0.5-0.6 | Partially correct, some key facts present |
+| 0.3-0.4 | Few key facts match, significant info missing |
+| < 0.3 | Wrong or contradictory information |
+
+### Score Interpretation (HSCodeCorrectness)
 | Score | Meaning |
 |-------|---------|
 | 1.0 | Exact HS code match |
