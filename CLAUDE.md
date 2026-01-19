@@ -60,6 +60,10 @@ docs/
 examples/
 └── parallel_multi_project_retrieval.py  # Multi-project querying
 
+scripts/
+├── build_knowledge_bases.py      # Build all projects from example_knowledge_base/
+└── build_combined_project.py     # Merge all projects into unified index
+
 tests/
 ├── unit/           # Mocks allowed here only
 ├── integration/    # Real API calls
@@ -148,11 +152,14 @@ print(answer.sources_used) # Number of chunks used
 
 - **Segment**: ~8000 token portion of document, 10% overlap (800 tokens)
 - **Chunk**: 800 token portion of segment, 10% overlap (80 tokens)
-- **Contextual Chunk**: Original chunk + LLM-generated context (100-200 tokens) prepended
+- **Contextual Chunk**: Original chunk + LLM-generated context (up to 300 tokens) prepended
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
 - **Batch Processing**: Uses LangChain `abatch()` (immediate results), not OpenAI Batch API (24hr latency)
 - **RAG Answer Generation**: Optional LLM answer generation from retrieved chunks via `query_with_answer()`
+- **Custom Metadata**: Chunks support custom metadata dict for filtering (e.g., document_name, page_no)
+- **Combined Projects**: Multiple projects can be merged into unified index via `scripts/build_combined_project.py`
+- **Tokenizer**: Uses gpt-4.1 (o200k_base) encoding - ~30% more efficient for Korean text
 
 ## Storage Structure
 
@@ -180,8 +187,19 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - `SEGMENT_SIZE`: 8000 tokens
 - `CHUNK_SIZE`: 800 tokens
 - `MAX_CONCURRENT_CALLS`: 10
-- `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen25vl.asia03.app.backend.ai/v1`)
-- `BACKENDAI_MODEL_NAME`: Model for answer generation (default: `Qwen3-VL-8B-Instruct`)
+- `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen3vl.asia03.app.backend.ai/v1`)
+- `BACKENDAI_MODEL_NAME`: Model for context/answer generation (default: `Qwen3-VL-8B-Instruct`)
+
+## Available Knowledge Base Projects
+
+| Project | Chunks | Description |
+|---------|--------|-------------|
+| `hs_machinery_electronics_guide` | 182 | HS Ch 84-85 machinery/electronics classification |
+| `korea_tariff_schedule` | 687 | Official Korean tariff rates (legal document) |
+| `tariff_terminology_bilingual` | 485 | Korean-English tariff terminology |
+| `tariff_terminology_dictionary` | 6,270 | Comprehensive tariff terminology dictionary |
+| `wco_hs_explanatory_notes` | 3,036 | WCO HS explanatory notes and GRI rules |
+| `all_tariff_documents` | 10,660 | Combined index of all above projects |
 
 ## Dependencies
 
@@ -223,3 +241,70 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - Example code: `examples/` or `scripts/`
 - Data check code: `data_check/`
 - Prefer updating existing files over creating new ones
+
+## Evaluation
+
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100) on validated test dataset.
+
+### Structure
+```
+evaluation/
+├── custom_llm.py                # BackendAI LLM wrapper for DeepEval
+├── custom_metrics.py            # Custom FactualCorrectness GEval metric
+├── synthesize_korean_dataset.py # Generate validated Korean test cases
+├── EVALUATION_REPORT.md         # Detailed experiment results
+├── EVALUATION_GUIDE.md          # How to run evaluation pipeline
+├── data/
+│   └── synthetic/
+│       ├── synthetic_goldens_100.json # 100 validated test cases (DEFAULT)
+│       ├── synthetic_goldens_30.json  # 30 validated test cases
+│       └── archive/                    # Old datasets
+├── experiments/
+│   ├── llm_reranking.py         # LLM reranking experiments (binary filter)
+│   ├── run_deepeval_full.py     # DeepEval correctness evaluation
+│   └── results/                 # Experiment results JSON files
+└── results/
+    └── *.log                    # Evaluation logs
+```
+
+### Best Configuration (94.0% Accuracy)
+
+| Setting | Value |
+|---------|-------|
+| Test Cases | `synthetic_goldens_100.json` (100 validated) |
+| Test Generation | HS code extraction + retrieval validation |
+| Reranking | Binary filter with fallback |
+| Initial K | 100 |
+| Final K | 15 |
+| Model | gpt-4.1-mini (evaluation), Qwen3-VL-8B-Instruct (answer) |
+
+### Evaluation Results
+
+| Dataset | Cases | Pass Rate | Avg Score |
+|---------|-------|-----------|-----------|
+| 100 validated | 100 | **94.0%** | 0.918 |
+| 30 validated | 30 | 96.7% | 0.933 |
+
+### Failure Analysis (6/100)
+
+| Category | Count | Examples |
+|----------|-------|----------|
+| Textile subcode ambiguity | 4 | 6110.30 vs 6101, 5403.10 vs 5403.31 |
+| Chemical classification | 1 | 2853.10 vs 2812 |
+| Fabric type distinction | 1 | 6001.10 vs 6001.21 |
+
+Most failures involve textile products (chapters 54-62) with complex subcode distinctions.
+
+### Quick Start
+
+```bash
+# Run full evaluation (100 cases)
+python -m evaluation.experiments.llm_reranking \
+  --project wco_hs_explanatory_notes_korean \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
+  --method binary --initial-k 100 --final-k 15 --max-cases 0
+
+python -m evaluation.experiments.run_deepeval_full binary 100
+```
+
+See `evaluation/EVALUATION_GUIDE.md` for detailed instructions on test generation and metrics.

@@ -5,8 +5,8 @@ import tiktoken
 from konte.config import settings
 from konte.models import Chunk
 
-# Use cl100k_base encoding (used by text-embedding-3-small and GPT-4)
-_ENCODING = tiktoken.get_encoding("cl100k_base")
+# Use o200k_base encoding (used by gpt-4.1 and newer models - ~45% more efficient for Korean)
+_ENCODING = tiktoken.encoding_for_model("gpt-4.1")
 
 
 def count_tokens(text: str) -> int:
@@ -91,7 +91,10 @@ def _split_by_tokens(
             if boundary > 10:
                 chunk_text = chunk_text[:boundary].strip()
 
-        chunks.append(chunk_text.strip())
+        # Skip chunks that are too small (less than overlap size)
+        stripped = chunk_text.strip()
+        if len(_ENCODING.encode(stripped)) >= overlap_tokens:
+            chunks.append(stripped)
 
         # Move start position with overlap
         step = max_tokens - overlap_tokens

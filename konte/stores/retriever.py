@@ -6,8 +6,10 @@ import structlog
 
 from konte.config import settings
 from konte.models import ContextualizedChunk, RetrievalResponse, RetrievalResult
+from konte.query_processor import extract_search_keywords
 from konte.stores.bm25_store import BM25Store
 from konte.stores.faiss_store import FAISSStore
+from konte.stores.reranker import rerank_chunks_with_score
 
 logger = structlog.get_logger()
 
@@ -166,12 +168,14 @@ class Retriever:
         self,
         query: str,
         top_k: int | None = None,
+        use_keyword_extraction: bool = True,
     ) -> RetrievalResponse:
         """Retrieve using BM25 lexical search only.
 
         Args:
             query: Query string.
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            use_keyword_extraction: If True, extract keywords for better Korean BM25.
 
         Returns:
             RetrievalResponse with results.
@@ -182,13 +186,14 @@ class Retriever:
             logger.warning("lexical_retrieval_no_index")
             return _build_retrieval_response(query, [], k)
 
-        results = self._bm25.query(query, top_k=k)
+        results = self._get_lexical_results(query, k, use_keyword_extraction)
         return _build_retrieval_response(query, results, k)
 
     def retrieve_hybrid(
         self,
         query: str,
         top_k: int | None = None,
+        use_keyword_extraction: bool = True,
     ) -> RetrievalResponse:
         """Retrieve using both FAISS and BM25 with rank fusion.
 
@@ -197,6 +202,7 @@ class Retriever:
         Args:
             query: Query string.
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            use_keyword_extraction: If True, extract keywords for better Korean BM25.
 
         Returns:
             RetrievalResponse with results.
@@ -212,7 +218,7 @@ class Retriever:
 
         if not has_faiss:
             logger.warning("hybrid_fallback_to_lexical")
-            return self.retrieve_lexical(query, top_k=k)
+            return self.retrieve_lexical(query, top_k=k, use_keyword_extraction=use_keyword_extraction)
 
         if not has_bm25:
             logger.warning("hybrid_fallback_to_semantic")
@@ -221,7 +227,7 @@ class Retriever:
         # Get results from both indexes (more than top_k to allow for fusion)
         fetch_k = k * 2
         faiss_results = self._faiss.query(query, top_k=fetch_k)
-        bm25_results = self._bm25.query(query, top_k=fetch_k)
+        bm25_results = self._get_lexical_results(query, fetch_k, use_keyword_extraction)
 
         # Fuse results
         fused = reciprocal_rank_fusion([faiss_results, bm25_results])
@@ -250,3 +256,104 @@ class Retriever:
             return self.retrieve_lexical(query, top_k=top_k)
         else:
             return self.retrieve_hybrid(query, top_k=top_k)
+
+    async def retrieve_with_rerank(
+        self,
+        query: str,
+        mode: RetrievalMode = "hybrid",
+        top_k: int | None = None,
+        initial_k: int = 50,
+    ) -> RetrievalResponse:
+        """Retrieve with reranking using Qwen3-Reranker-8B.
+
+        First retrieves initial_k candidates, then reranks to get top_k.
+
+        Args:
+            query: Query string.
+            mode: Initial retrieval mode - "hybrid", "semantic", or "lexical".
+            top_k: Final number of results after reranking.
+            initial_k: Number of candidates to retrieve before reranking.
+
+        Returns:
+            RetrievalResponse with reranked results.
+        """
+        k = top_k or settings.DEFAULT_TOP_K
+
+        # Get initial candidates
+        if mode == "semantic":
+            initial_results = self._get_semantic_results(query, initial_k)
+        elif mode == "lexical":
+            initial_results = self._get_lexical_results(query, initial_k)
+        else:
+            initial_results = self._get_hybrid_results(query, initial_k)
+
+        if not initial_results:
+            return _build_retrieval_response(query, [], k)
+
+        # Rerank candidates using score endpoint (reliable individual scoring)
+        reranked = await rerank_chunks_with_score(query, initial_results, top_k=k)
+
+        return _build_retrieval_response(query, reranked, k)
+
+    def _get_semantic_results(
+        self, query: str, top_k: int
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw semantic results."""
+        if self._faiss is None or self._faiss.is_empty:
+            return []
+        return self._faiss.query(query, top_k=top_k)
+
+    def _get_lexical_results(
+        self, query: str, top_k: int, use_keyword_extraction: bool = True
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw lexical results.
+
+        Args:
+            query: Query string.
+            top_k: Number of results.
+            use_keyword_extraction: If True, extract keywords for better Korean BM25.
+
+        Returns:
+            List of (chunk, score) tuples.
+        """
+        if self._bm25 is None or self._bm25.is_empty:
+            return []
+
+        if use_keyword_extraction:
+            # Extract clean keywords for better Korean BM25 matching
+            keywords = extract_search_keywords(query)
+            search_query = " ".join(keywords)
+            logger.debug(
+                "bm25_keyword_extraction",
+                original_query=query,
+                keywords=keywords,
+                search_query=search_query,
+            )
+        else:
+            search_query = query
+
+        return self._bm25.query(search_query, top_k=top_k)
+
+    def _get_hybrid_results(
+        self, query: str, top_k: int
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Get raw hybrid results with rank fusion."""
+        has_faiss = self._faiss is not None and not self._faiss.is_empty
+        has_bm25 = self._bm25 is not None and not self._bm25.is_empty
+
+        if not has_faiss and not has_bm25:
+            return []
+
+        if not has_faiss:
+            return self._get_lexical_results(query, top_k)
+
+        if not has_bm25:
+            return self._get_semantic_results(query, top_k)
+
+        # Get from both and fuse
+        fetch_k = top_k * 2
+        faiss_results = self._faiss.query(query, top_k=fetch_k)
+        bm25_results = self._bm25.query(query, top_k=fetch_k)
+
+        fused = reciprocal_rank_fusion([faiss_results, bm25_results])
+        return fused[:top_k]
