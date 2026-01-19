@@ -1,4 +1,4 @@
-"""Custom LLM wrapper for BackendAI (OpenAI-compatible endpoint) with DeepEval.
+"""Custom LLM wrapper for DeepEval with OpenAI or BackendAI support.
 
 Uses LangChain's .with_structured_output() for Pydantic schema parsing.
 """
@@ -12,25 +12,36 @@ from konte.config.settings import settings
 
 
 class BackendAIModel(DeepEvalBaseLLM):
-    """Custom LLM for DeepEval using BackendAI's OpenAI-compatible endpoint."""
+    """Custom LLM for DeepEval using OpenAI or BackendAI endpoint."""
 
     def __init__(
         self,
         model_name: str | None = None,
         base_url: str | None = None,
-        api_key: str = "placeholder",
+        api_key: str | None = None,
     ):
-        self.model_name = model_name or settings.BACKENDAI_MODEL_NAME
-        self.base_url = base_url or settings.BACKENDAI_ENDPOINT
-        self.api_key = api_key
-
-        self._llm = ChatOpenAI(
-            model=self.model_name,
-            api_key=self.api_key,
-            base_url=self.base_url,
-            temperature=0.0,
-            max_tokens=8000,
-        )
+        # Use BackendAI if configured, otherwise use OpenAI
+        if settings.use_backendai:
+            self.model_name = model_name or settings.BACKENDAI_MODEL_NAME
+            self.base_url = base_url or settings.BACKENDAI_ENDPOINT
+            self.api_key = api_key or settings.BACKENDAI_API_KEY or "placeholder"
+            self._llm = ChatOpenAI(
+                model=self.model_name,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                temperature=0.0,
+                max_tokens=8000,
+            )
+        else:
+            self.model_name = model_name or settings.CONTEXT_MODEL
+            self.base_url = None  # Use OpenAI default
+            self.api_key = api_key or settings.OPENAI_API_KEY
+            self._llm = ChatOpenAI(
+                model=self.model_name,
+                api_key=self.api_key,
+                temperature=0.0,
+                max_tokens=8000,
+            )
 
     def load_model(self):
         """Return the model identifier."""
