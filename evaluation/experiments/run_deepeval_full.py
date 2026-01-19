@@ -1,4 +1,9 @@
-"""Run full DeepEval correctness evaluation on LLM reranking results."""
+"""Run full DeepEval correctness evaluation on LLM reranking results.
+
+Supports two evaluation types:
+- hs_code: For HS code classification questions (synthetic_goldens_100.json)
+- answer: For diverse RAG questions (deepeval_goldens_korean_100.json)
+"""
 
 import json
 from pathlib import Path
@@ -8,10 +13,22 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 from tqdm import tqdm
 
 from evaluation.custom_llm import BackendAIModel
+from evaluation.prompts.eval_prompts import (
+    ANSWER_CORRECTNESS_CRITERIA,
+    ANSWER_CORRECTNESS_STEPS,
+    HS_CODE_CRITERIA,
+    HS_CODE_STEPS,
+)
 
 
-def evaluate_all(method: str = "binary", version: str = ""):
-    """Run DeepEval on all cases."""
+def evaluate_all(method: str = "binary", version: str = "", eval_type: str = "answer"):
+    """Run DeepEval on all cases.
+
+    Args:
+        method: Reranking method (e.g., "binary").
+        version: Version suffix for results file.
+        eval_type: "hs_code" for HS classification, "answer" for general RAG (default).
+    """
     suffix = f"_{version}" if version else ""
     results_path = Path(f"evaluation/experiments/results/llm_rerank_{method}{suffix}.json")
     with open(results_path) as f:
@@ -19,34 +36,28 @@ def evaluate_all(method: str = "binary", version: str = ""):
 
     results = [r for r in data["results"] if r.get("status") == "success"]
     print(f"Evaluating {len(results)} cases from {method}{suffix} method")
+    print(f"Evaluation type: {eval_type}")
 
     custom_model = BackendAIModel()
     print(f"Model: {custom_model.model_name}")
     print(f"Endpoint: {custom_model.base_url}")
 
+    # Select prompt based on evaluation type
+    if eval_type == "hs_code":
+        criteria = HS_CODE_CRITERIA
+        steps = HS_CODE_STEPS
+        metric_name = "HSCodeCorrectness"
+    else:
+        criteria = ANSWER_CORRECTNESS_CRITERIA
+        steps = ANSWER_CORRECTNESS_STEPS
+        metric_name = "AnswerCorrectness"
+
+    print(f"Metric: {metric_name}")
+
     metric = GEval(
-        name="FactualCorrectness",
-        criteria="""Evaluate if the actual output contains the same KEY FACTUAL INFORMATION as the expected output.
-
-Focus on HS code accuracy and semantic equivalence:
-- The key information is the HS CODE (e.g., 2523.21, 제8540호, 8540.20)
-- Ignore format differences: "제2523.21호" = "2523.21" = "제2523호의 21" (all equivalent)
-- Ignore language mixing (Korean/English)
-- Ignore length differences or extra explanation
-
-Scoring:
-- Score 1.0 if the SAME HS CODE is mentioned (regardless of format)
-- Score 0.7-0.9 if mostly correct with minor code variations
-- Score 0.4-0.6 if partially correct (related but not exact code)
-- Score 0.0-0.3 if wrong HS code or contradictory information
-
-IMPORTANT: If actual output provides a DIFFERENT but MORE CORRECT HS code based on the question context, score 0.7+ (the expected output may be wrong).""",
-        evaluation_steps=[
-            "Extract the HS code(s) from both expected and actual outputs",
-            "Normalize format differences (제2523호 = 2523 = 제2523.00호)",
-            "Compare if they refer to the same classification",
-            "Score based on code match, ignoring format/language differences",
-        ],
+        name=metric_name,
+        criteria=criteria,
+        evaluation_steps=steps,
         evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
         model=custom_model,
         threshold=0.5,
@@ -85,7 +96,8 @@ IMPORTANT: If actual output provides a DIFFERENT but MORE CORRECT HS code based 
 
     result = {
         "method": f"{method}{suffix}",
-        "metric": "deepeval_correctness",
+        "eval_type": eval_type,
+        "metric": metric_name,
         "avg_score": avg_score,
         "pass_rate": pass_rate,
         "passed": passed,
@@ -100,8 +112,9 @@ IMPORTANT: If actual output provides a DIFFERENT but MORE CORRECT HS code based 
         json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*60}")
-    print(f"Results for {method} method:")
+    print(f"Results for {method}{suffix} ({eval_type}):")
     print(f"{'='*60}")
+    print(f"  Metric: {metric_name}")
     print(f"  Avg Score: {avg_score:.3f}")
     print(f"  Pass Rate: {pass_rate:.1%}")
     print(f"  Passed: {passed}/{len(scores)}")
@@ -122,4 +135,5 @@ if __name__ == "__main__":
     import sys
     method = sys.argv[1] if len(sys.argv) > 1 else "binary"
     version = sys.argv[2] if len(sys.argv) > 2 else ""
-    evaluate_all(method, version)
+    eval_type = sys.argv[3] if len(sys.argv) > 3 else "answer"
+    evaluate_all(method, version, eval_type)
