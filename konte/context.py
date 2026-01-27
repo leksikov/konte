@@ -178,8 +178,11 @@ async def generate_contexts_batch(
 
     for attempt in range(MAX_RETRIES):
         try:
-            # Use abatch for efficient parallel processing
-            responses = await llm.abatch(prompts)
+            # Use abatch for efficient parallel processing with full concurrency
+            # All chunks share the same segment prefix, enabling vLLM prefix caching
+            responses = await llm.abatch(
+                prompts, config={"max_concurrency": len(prompts)}
+            )
 
             return [
                 ContextualizedChunk(
