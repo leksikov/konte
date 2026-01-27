@@ -194,15 +194,18 @@ Structured logging via structlog provides visibility into the ingestion pipeline
 ### Example Output
 ```
 2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
-2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=45
+2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=55
 2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
-2024-01-15 10:30:03 [info] generating_context_for_segment segment_index=0 total_segments=5 num_chunks=9
+2024-01-15 10:30:03 [info] generating_context_for_segment segment_index=0 total_segments=5 num_chunks=11
+2024-01-15 10:30:05 [info] generating_context_for_segment segment_index=1 total_segments=5 num_chunks=11
 ...
-2024-01-15 10:30:15 [info] context_generation_complete num_chunks=45 skipped=False
+2024-01-15 10:30:15 [info] context_generation_complete num_chunks=55 skipped=False
 2024-01-15 10:30:16 [info] faiss_index_built
 2024-01-15 10:30:16 [info] bm25_index_built
 2024-01-15 10:30:16 [info] project_build_complete
 ```
+
+Note: 1 document → 5 segments (~8000 tokens each) → ~11 chunks per segment (~800 tokens each) = 55 total chunks.
 
 ## Storage Structure
 
