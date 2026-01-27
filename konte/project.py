@@ -119,8 +119,21 @@ class Project:
 
         # Generate context for each segment's chunks
         self._contextualized_chunks = []
+        total_segments = len(chunks_by_segment)
+        logger.info(
+            "context_generation_started",
+            total_segments=total_segments,
+            skip_context=skip_context,
+        )
+
         for seg_idx, segment_chunks in chunks_by_segment.items():
             segment_text = self._segments.get(seg_idx, "")
+            logger.info(
+                "generating_context_for_segment",
+                segment_index=seg_idx,
+                total_segments=total_segments,
+                num_chunks=len(segment_chunks),
+            )
 
             ctx_chunks = await generate_contexts_batch(
                 segment=segment_text,
