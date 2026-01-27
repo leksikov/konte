@@ -29,7 +29,7 @@ class Project:
         self._config = config
         self._chunks: list[Chunk] = []
         self._contextualized_chunks: list[ContextualizedChunk] = []
-        self._segments: dict[int, str] = {}  # segment_idx -> segment text
+        self._segments: dict[tuple[str, int], str] = {}  # (source, segment_idx) -> segment text
         self._faiss: FAISSStore | None = None
         self._bm25: BM25Store | None = None
         self._retriever: Retriever | None = None
@@ -110,12 +110,12 @@ class Project:
             raise ValueError("At least one index (FAISS or BM25) must be enabled")
 
         # Group chunks by segment for context generation
-        chunks_by_segment: dict[int, list[Chunk]] = {}
+        chunks_by_segment: dict[tuple[str, int], list[Chunk]] = {}
         for chunk in self._chunks:
-            seg_idx = chunk.segment_idx
-            if seg_idx not in chunks_by_segment:
-                chunks_by_segment[seg_idx] = []
-            chunks_by_segment[seg_idx].append(chunk)
+            key = (chunk.source, chunk.segment_idx)
+            if key not in chunks_by_segment:
+                chunks_by_segment[key] = []
+            chunks_by_segment[key].append(chunk)
 
         # Generate context for each segment's chunks
         self._contextualized_chunks = []
@@ -126,11 +126,11 @@ class Project:
             skip_context=skip_context,
         )
 
-        for seg_idx, segment_chunks in chunks_by_segment.items():
-            segment_text = self._segments.get(seg_idx, "")
+        for seg_key, segment_chunks in chunks_by_segment.items():
+            segment_text = self._segments.get(seg_key, "")
             logger.info(
                 "generating_context_for_segment",
-                segment_index=seg_idx,
+                segment_index=seg_key,
                 total_segments=total_segments,
                 num_chunks=len(segment_chunks),
             )
@@ -317,9 +317,10 @@ class Project:
         raw_chunks_data = [c.model_dump() for c in self._chunks]
         raw_chunks_path.write_text(json.dumps(raw_chunks_data, indent=2), encoding="utf-8")
 
-        # Save segments (before build)
+        # Save segments (before build) - convert tuple keys to string for JSON
         segments_path = project_dir / "segments.json"
-        segments_path.write_text(json.dumps(self._segments, indent=2), encoding="utf-8")
+        segments_data = {f"{source}|{idx}": text for (source, idx), text in self._segments.items()}
+        segments_path.write_text(json.dumps(segments_data, indent=2), encoding="utf-8")
 
         # Save contextualized chunks (after build)
         chunks_path = project_dir / "chunks.json"
@@ -354,12 +355,17 @@ class Project:
             raw_chunks_data = json.loads(raw_chunks_path.read_text(encoding="utf-8"))
             self._chunks = [Chunk(**item) for item in raw_chunks_data]
 
-        # Load segments (before build)
+        # Load segments (before build) - parse string keys back to tuples
         segments_path = project_dir / "segments.json"
         if segments_path.exists():
             segments_data = json.loads(segments_path.read_text(encoding="utf-8"))
-            # JSON keys are strings, convert to int
-            self._segments = {int(k): v for k, v in segments_data.items()}
+            self._segments = {}
+            for k, v in segments_data.items():
+                if "|" in k:  # New format: "source|idx"
+                    source, idx = k.rsplit("|", 1)
+                    self._segments[(source, int(idx))] = v
+                else:  # Backward compat: old int-only format
+                    self._segments[("unknown", int(k))] = v
 
         # Load contextualized chunks (after build)
         chunks_path = project_dir / "chunks.json"
