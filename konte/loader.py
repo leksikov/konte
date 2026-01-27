@@ -3,7 +3,10 @@
 from pathlib import Path
 
 import aiofiles
+import structlog
 from pypdf import PdfReader
+
+logger = structlog.get_logger()
 
 
 def load_txt(file_path: Path) -> str:
@@ -19,9 +22,12 @@ def load_txt(file_path: Path) -> str:
         FileNotFoundError: If file does not exist.
     """
     file_path = Path(file_path)
+    logger.debug("document_loading", path=str(file_path), file_type="txt")
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
-    return file_path.read_text(encoding="utf-8")
+    content = file_path.read_text(encoding="utf-8")
+    logger.debug("document_loaded", path=str(file_path), content_length=len(content))
+    return content
 
 
 def load_md(file_path: Path) -> str:
@@ -52,12 +58,16 @@ def load_pdf(file_path: Path) -> str:
         FileNotFoundError: If file does not exist.
     """
     file_path = Path(file_path)
+    logger.debug("document_loading", path=str(file_path), file_type="pdf")
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     reader = PdfReader(file_path)
     pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n\n".join(pages)
+    logger.debug("pdf_pages_loaded", path=str(file_path), page_count=len(pages))
+    content = "\n\n".join(pages)
+    logger.debug("document_loaded", path=str(file_path), content_length=len(content))
+    return content
 
 
 def load_document(file_path: Path) -> str:
@@ -101,11 +111,14 @@ async def load_txt_async(file_path: Path) -> str:
         FileNotFoundError: If file does not exist.
     """
     file_path = Path(file_path)
+    logger.debug("document_loading", path=str(file_path), file_type="txt")
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     async with aiofiles.open(file_path, encoding="utf-8") as f:
-        return await f.read()
+        content = await f.read()
+    logger.debug("document_loaded", path=str(file_path), content_length=len(content))
+    return content
 
 
 async def load_md_async(file_path: Path) -> str:

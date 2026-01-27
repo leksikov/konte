@@ -1,9 +1,12 @@
 """Chunker module for segmenting and chunking documents."""
 
+import structlog
 import tiktoken
 
 from konte.config import settings
 from konte.models import Chunk
+
+logger = structlog.get_logger()
 
 # Use o200k_base encoding (used by gpt-4.1 and newer models - ~45% more efficient for Korean)
 _ENCODING = tiktoken.encoding_for_model("gpt-4.1")
@@ -173,13 +176,29 @@ def create_chunks(
     Returns:
         Tuple of (List of Chunk objects, Dict mapping segment_idx to segment text).
     """
+    total_tokens = count_tokens(text)
+    logger.debug("segmentation_started", source=source, total_tokens=total_tokens)
+
     chunks = []
     segments_map: dict[int, str] = {}
     segments = segment_document(text, segment_size, segment_overlap)
 
     for seg_idx, segment in enumerate(segments):
+        segment_tokens = count_tokens(segment)
+        logger.debug(
+            "segment_created",
+            source=source,
+            segment_index=seg_idx,
+            token_count=segment_tokens,
+        )
         segments_map[seg_idx] = segment
         segment_chunks = chunk_segment(segment, chunk_size, chunk_overlap)
+        logger.debug(
+            "chunking_segment",
+            source=source,
+            segment_index=seg_idx,
+            num_chunks=len(segment_chunks),
+        )
 
         for chunk_idx, chunk_text in enumerate(segment_chunks):
             chunk_id = f"{source}_s{seg_idx}_c{chunk_idx}"
@@ -192,4 +211,10 @@ def create_chunks(
             )
             chunks.append(chunk)
 
+    logger.debug(
+        "chunks_created",
+        source=source,
+        total_segments=len(segments),
+        total_chunks=len(chunks),
+    )
     return chunks, segments_map
