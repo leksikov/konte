@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     # API Keys
-    OPENAI_API_KEY: str
+    OPENAI_API_KEY: str | None = None  # Optional - Backend.AI is default
 
     # Custom Backend (vLLM with OpenAI schema)
     BACKENDAI_ENDPOINT: str | None = None  # Disabled - using OpenAI
