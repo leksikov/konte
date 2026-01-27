@@ -10,6 +10,19 @@ This report documents the evaluation of the Konte RAG system using DeepEval with
 
 ## Evaluation Results Summary
 
+### Contextual RAG vs Baseline Comparison
+
+| Configuration | HS Code (100q) | Diverse RAG (100q) |
+|---------------|----------------|---------------------|
+| **Contextual + Reranking** | **94% (0.920)** | **94% (0.828)** |
+| Baseline (no context, no rerank) | 85% (0.822) | 74% (0.613) |
+| **Improvement** | **+9% (+0.098)** | **+20% (+0.215)** |
+
+**Key Findings**:
+1. Context generation provides significant improvement - particularly for diverse questions (+20% pass rate)
+2. HS code lookups benefit moderately from context (+9% pass rate)
+3. The combined effect of contextual chunks + LLM reranking is most pronounced on complex, multi-context questions
+
 ### Two Evaluation Approaches
 
 | Evaluation | Dataset | Questions | Pass Rate | Avg Score |
@@ -201,6 +214,43 @@ python -m evaluation.experiments.run_deepeval_full binary 100
 | `data/synthetic/synthetic_goldens_100.json` | 100 HS code lookup questions (legacy) |
 | `experiments/results/llm_rerank_binary_deepeval_diverse.json` | Reranking results (diverse) |
 | `experiments/results/binary_deepeval_diverse_deepeval_correctness.json` | DeepEval scores (diverse) |
+| `experiments/results/llm_rerank_baseline_hs_code.json` | Baseline answers for HS code |
+| `experiments/results/llm_rerank_baseline_diverse.json` | Baseline answers for diverse RAG |
+| `experiments/results/baseline_hs_code_deepeval_correctness.json` | Baseline DeepEval results (85% pass) |
+| `experiments/results/baseline_diverse_deepeval_correctness.json` | Baseline DeepEval results (74% pass) |
+
+---
+
+## Baseline Comparison
+
+### What is Baseline?
+
+Baseline configuration removes both key innovations of Konte:
+1. **No contextual chunks** - raw chunks without LLM-generated context prepended
+2. **No LLM reranking** - top-k chunks from hybrid retrieval used directly
+
+### Baseline vs Contextual Pipeline
+
+| Step | Contextual (Full) | Baseline |
+|------|-------------------|----------|
+| Chunking | Segment → Chunk | Segment → Chunk |
+| Context Generation | ✅ LLM prepends context | ❌ Skipped |
+| Embedding | Contextual chunk | Raw chunk |
+| Retrieval | Hybrid (FAISS + BM25) | Hybrid (FAISS + BM25) |
+| Reranking | ✅ LLM binary filter | ❌ Skipped |
+| Answer Generation | Top-k reranked | Top-k direct |
+
+### Scripts for Baseline Evaluation
+
+```bash
+# Build baseline project (no context)
+python scripts/build_baseline_project.py
+
+# Run baseline evaluation
+python -m evaluation.experiments.run_baseline_eval \
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --eval-type answer
+```
 
 ---
 

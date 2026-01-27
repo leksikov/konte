@@ -62,7 +62,8 @@ examples/
 
 scripts/
 ├── build_knowledge_bases.py      # Build all projects from example_knowledge_base/
-└── build_combined_project.py     # Merge all projects into unified index
+├── build_combined_project.py     # Merge all projects into unified index
+└── build_baseline_project.py     # Build project without context (for baseline eval)
 
 tests/
 ├── unit/           # Mocks allowed here only
@@ -267,6 +268,7 @@ evaluation/
 ├── experiments/
 │   ├── llm_reranking.py         # LLM reranking experiments (binary filter)
 │   ├── run_deepeval_full.py     # DeepEval evaluation (supports hs_code and answer types)
+│   ├── run_baseline_eval.py     # Baseline evaluation (no context, no reranking)
 │   └── results/                 # Experiment results JSON files
 └── results/
     └── *.log                    # Evaluation logs
@@ -290,6 +292,19 @@ Evolution types for question diversity:
 - **Comparative**: Comparison questions
 - **Hypothetical**: "What if" scenarios
 - **In-Breadth**: Scope expansion questions
+
+### Contextual RAG vs Baseline
+
+| Configuration | HS Code (100q) | Diverse RAG (100q) |
+|---------------|----------------|---------------------|
+| **Contextual + Reranking** | **94% (0.920)** | **94% (0.828)** |
+| Baseline (no context, no rerank) | 85% (0.822) | 74% (0.613) |
+| **Improvement** | **+9% (+0.098)** | **+20% (+0.215)** |
+
+Key findings:
+- Context generation provides +20% improvement for diverse questions
+- HS code lookups benefit +9% from context
+- Most impact on complex, multi-context questions
 
 ### Evaluation by Question Type
 
