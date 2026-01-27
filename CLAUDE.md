@@ -152,6 +152,7 @@ print(answer.sources_used) # Number of chunks used
 ## Key Concepts
 
 - **Segment**: ~8000 token portion of document, 10% overlap (800 tokens)
+- **Segment Key**: `(source, segment_idx)` tuple for multi-document isolation (stored as `"source|idx"` in JSON)
 - **Chunk**: 800 token portion of segment, 10% overlap (80 tokens)
 - **Contextual Chunk**: Original chunk + LLM-generated context (up to 300 tokens) prepended
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
@@ -196,8 +197,8 @@ Structured logging via structlog provides visibility into the ingestion pipeline
 2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
 2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=55
 2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
-2024-01-15 10:30:03 [info] generating_context_for_segment segment_index=0 total_segments=5 num_chunks=11
-2024-01-15 10:30:05 [info] generating_context_for_segment segment_index=1 total_segments=5 num_chunks=11
+2024-01-15 10:30:03 [info] generating_context_for_segment segment_key=('doc.pdf', 0) total_segments=5 num_chunks=11
+2024-01-15 10:30:05 [info] generating_context_for_segment segment_key=('doc.pdf', 1) total_segments=5 num_chunks=11
 ...
 2024-01-15 10:30:15 [info] context_generation_complete num_chunks=55 skipped=False
 2024-01-15 10:30:16 [info] faiss_index_built
@@ -214,7 +215,7 @@ Note: 1 document → 5 segments (~8000 tokens each) → ~11 chunks per segment (
 └── {project_name}/
     ├── config.json       # ProjectConfig
     ├── raw_chunks.json   # Raw chunks (before build)
-    ├── segments.json     # Segment data
+    ├── segments.json     # Segment data (keys: "source|segment_idx")
     ├── chunks.json       # ContextualizedChunk list (after build)
     ├── faiss.faiss       # FAISS index (LangChain format)
     ├── faiss.pkl         # FAISS docstore (LangChain format)
