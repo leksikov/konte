@@ -49,13 +49,13 @@ class TestSettings:
             assert isinstance(s.PROMPT_PATH, Path)
             assert s.PROMPT_PATH.name == "context_prompt.txt"
 
-    def test_openai_api_key_required(self):
-        """Test that OPENAI_API_KEY is required."""
-        with patch.dict("os.environ", {}, clear=True):
-            from konte.config import Settings
+    def test_openai_api_key_optional(self):
+        """Test that OPENAI_API_KEY is optional (Backend.AI is default)."""
+        from konte.config import Settings
 
-            with pytest.raises(Exception):
-                Settings()
+        # Verify the field has default=None (making it optional)
+        field_info = Settings.model_fields["OPENAI_API_KEY"]
+        assert field_info.default is None, "OPENAI_API_KEY should default to None"
 
     def test_overlap_less_than_size(self):
         """Test segment overlap is less than segment size."""

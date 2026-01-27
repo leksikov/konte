@@ -250,7 +250,7 @@ class TestProjectConfig:
         assert config.context_min_tokens == 100
         assert config.context_max_tokens == 200
         assert config.embedding_model == "text-embedding-3-small"
-        assert config.context_model == "gpt-4.1"
+        assert config.context_model is None  # Default: use Backend.AI or settings
         assert config.enable_faiss is True
         assert config.enable_bm25 is True
         assert config.fusion_weight_semantic == 0.5

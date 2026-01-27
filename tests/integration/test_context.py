@@ -83,8 +83,14 @@ class TestGenerateContext:
         )
 
         # Context should mention something related to tariffs or classification
+        # Support both English and Korean (Backend.AI may generate Korean)
         context_lower = context.lower()
-        relevant_terms = ["tariff", "classification", "customs", "import", "duty", "chapter"]
+        relevant_terms = [
+            # English
+            "tariff", "classification", "customs", "import", "duty", "chapter",
+            # Korean
+            "관세", "분류", "세관", "수입", "hs", "상품", "코드",
+        ]
         has_relevant = any(term in context_lower for term in relevant_terms)
         assert has_relevant, f"Context not relevant: {context}"
 
