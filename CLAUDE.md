@@ -15,10 +15,10 @@ pip install -e .
 # Run all tests
 pytest
 
-# Run unit tests only (70 tests, no API calls)
+# Run unit tests only (111 tests, no API calls)
 pytest tests/unit/
 
-# Run integration tests (42 tests, requires OPENAI_API_KEY)
+# Run integration tests (53 tests, requires OPENAI_API_KEY)
 pytest tests/integration/
 
 # Run single test file
@@ -34,8 +34,8 @@ pytest tests/unit/test_chunker.py::test_segment_splitting -v
 konte/
 ├── __init__.py      # Public API exports
 ├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig
-├── loader.py        # Document loading (PDF, TXT, MD) - sync and async
-├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap
+├── loader.py        # Document loading (PDF, TXT, MD) - sync and async, with logging
+├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap, with logging
 ├── context.py       # Async LLM context generation (LangChain abatch, cached LLM instance)
 ├── generator.py     # RAG answer generation with LLM (BackendAI/OpenAI)
 ├── project.py       # Main interface: Project class (query, query_with_answer)
@@ -162,6 +162,48 @@ print(answer.sources_used) # Number of chunks used
 - **Combined Projects**: Multiple projects can be merged into unified index via `scripts/build_combined_project.py`
 - **Tokenizer**: Uses gpt-4.1 (o200k_base) encoding - ~30% more efficient for Korean text
 
+## Logging & Observability
+
+Structured logging via structlog provides visibility into the ingestion pipeline.
+
+### Pipeline Log Events
+
+| Stage | Log Event | Level | Key Fields |
+|-------|-----------|-------|------------|
+| **Loading** | `document_loading` | debug | path, file_type |
+| | `document_loaded` | debug | path, content_length |
+| | `pdf_pages_loaded` | debug | path, page_count |
+| | `loading_document` | info | path |
+| | `document_chunked` | info | path, num_chunks |
+| | `documents_added` | info | total_chunks |
+| **Chunking** | `segmentation_started` | debug | source, total_tokens |
+| | `segment_created` | debug | source, segment_index, token_count |
+| | `chunking_segment` | debug | source, segment_index, num_chunks |
+| | `chunks_created` | debug | source, total_segments, total_chunks |
+| **Context** | `context_generation_started` | info | total_segments, skip_context |
+| | `generating_context_for_segment` | info | segment_index, total_segments, num_chunks |
+| | `context_generation_complete` | info | num_chunks, skipped |
+| **Indexing** | `faiss_index_built` | info | - |
+| | `bm25_index_built` | info | - |
+| | `project_build_complete` | info | - |
+
+### Log Levels
+- **info**: Major pipeline stages (document load, context generation, index build)
+- **debug**: Granular events (individual segments, token counts, file reads)
+
+### Example Output
+```
+2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
+2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=45
+2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
+2024-01-15 10:30:03 [info] generating_context_for_segment segment_index=0 total_segments=5 num_chunks=9
+...
+2024-01-15 10:30:15 [info] context_generation_complete num_chunks=45 skipped=False
+2024-01-15 10:30:16 [info] faiss_index_built
+2024-01-15 10:30:16 [info] bm25_index_built
+2024-01-15 10:30:16 [info] project_build_complete
+```
+
 ## Storage Structure
 
 ```
@@ -180,14 +222,14 @@ print(answer.sources_used) # Number of chunks used
 ## Configuration
 
 All config via pydantic-settings in `settings.py`. Key settings:
-- `OPENAI_API_KEY`: Required for embeddings and context generation
+- `OPENAI_API_KEY`: Optional (required for OpenAI embeddings, Backend.AI is default)
 - `STORAGE_PATH`: Project storage (default: `~/.konte`)
 - `EMBEDDING_MODEL`: text-embedding-3-small
 - `CONTEXT_MODEL`: gpt-4.1
 - `DEFAULT_TOP_K`: 20
 - `SEGMENT_SIZE`: 8000 tokens
 - `CHUNK_SIZE`: 800 tokens
-- `MAX_CONCURRENT_CALLS`: 10
+- `MAX_CONCURRENT_CALLS`: 1
 - `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen3vl.asia03.app.backend.ai/v1`)
 - `BACKENDAI_MODEL_NAME`: Model for context/answer generation (default: `Qwen3-VL-8B-Instruct`)
 
