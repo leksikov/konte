@@ -5,7 +5,7 @@ from pathlib import Path
 
 import structlog
 from langchain_openai import ChatOpenAI
-from openai import RateLimitError, APIStatusError, APITimeoutError, APIConnectionError
+from openai import RateLimitError, APIStatusError, APITimeoutError, APIConnectionError, NotFoundError
 
 from konte.config import settings
 from konte.models import Chunk, ContextualizedChunk
@@ -21,7 +21,7 @@ MAX_DELAY = 120.0  # seconds
 _llm_cache: dict[str, ChatOpenAI] = {}
 
 
-def get_llm(model: str | None = None, timeout: float = 30.0) -> ChatOpenAI:
+def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
     """Get or create a cached ChatOpenAI instance.
 
     Supports custom backends (vLLM, BackendAI) via BACKENDAI_ENDPOINT.
@@ -35,8 +35,8 @@ def get_llm(model: str | None = None, timeout: float = 30.0) -> ChatOpenAI:
     Returns:
         Cached ChatOpenAI instance.
     """
-    # Use BackendAI if configured and no specific model override
-    if settings.use_backendai and model is None:
+    # Use BackendAI if configured and model is None or matches Backend.AI model
+    if settings.use_backendai and (model is None or model == settings.BACKENDAI_MODEL_NAME):
         model_name = settings.BACKENDAI_MODEL_NAME
         base_url = settings.BACKENDAI_ENDPOINT
         api_key = settings.BACKENDAI_API_KEY or "not-needed"
@@ -55,7 +55,7 @@ def get_llm(model: str | None = None, timeout: float = 30.0) -> ChatOpenAI:
                 temperature=0,
                 timeout=timeout,
                 max_retries=2,
-                max_tokens=300,
+                max_tokens=400,
             )
         return _llm_cache[cache_key]
 
@@ -107,7 +107,7 @@ async def generate_context(
     chunk: Chunk,
     model: str | None = None,
     prompt_template: str | None = None,
-    timeout: float = 30.0,
+    timeout: float = 120.0,
 ) -> str:
     """Generate context for a single chunk using LLM.
 
@@ -138,7 +138,7 @@ async def generate_contexts_batch(
     chunks: list[Chunk],
     model: str | None = None,
     prompt_template: str | None = None,
-    timeout: float = 30.0,
+    timeout: float = 120.0,
     skip_context: bool = False,
 ) -> list[ContextualizedChunk]:
     """Generate context for multiple chunks using LLM batch.

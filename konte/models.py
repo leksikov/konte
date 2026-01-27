@@ -75,7 +75,7 @@ class ProjectConfig(BaseModel):
 
     # Models
     embedding_model: str = "text-embedding-3-small"
-    context_model: str = "gpt-4.1"
+    context_model: str | None = None  # Use Backend.AI or settings.CONTEXT_MODEL
 
     # Index options
     enable_faiss: bool = True

@@ -175,7 +175,7 @@ from konte import Project
 project = Project.open("tariff_codes")
 
 # Create LLM
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4.1", temperature=0)
 
 # Define prompt template
 prompt = ChatPromptTemplate.from_messages([
@@ -262,7 +262,7 @@ project = Project.open("tariff_codes")
 retriever = KonteRetriever(project=project, mode="hybrid", top_k=10)
 
 qa_chain = RetrievalQA.from_chain_type(
-    llm=ChatOpenAI(model="gpt-4o"),
+    llm=ChatOpenAI(model="gpt-4.1"),
     chain_type="stuff",
     retriever=retriever,
 )
@@ -279,7 +279,7 @@ from langchain_core.runnables import RunnablePassthrough
 from konte import Project
 
 project = Project.open("tariff_codes")
-llm = ChatOpenAI(model="gpt-4o")
+llm = ChatOpenAI(model="gpt-4.1")
 
 prompt = ChatPromptTemplate.from_template("""
 Based on the following context, answer the question.
@@ -347,7 +347,7 @@ def search_tariff_codes(query: str, top_k: int = 10) -> str:
 
 # Create agent
 agent = Agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search_tariff_codes],
     instructions="""You are a tariff classification expert.
 Use the search_tariff_codes tool to find relevant HS codes.
@@ -393,7 +393,7 @@ def search_precedents(query: str) -> str:
 
 
 agent = Agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search_hs_codes, search_gri_rules, search_precedents],
     instructions="""You are a tariff classification expert.
 
@@ -439,7 +439,7 @@ def search_with_confidence(query: str) -> dict:
 
 
 agent = Agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search_with_confidence],
     instructions="""You are a tariff classification assistant.
 
@@ -507,7 +507,7 @@ from konte import Project
 from langchain_openai import ChatOpenAI
 
 project = Project.open("tariff_codes")
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4.1", temperature=0)
 
 
 def retrieve_and_rerank(query: str, top_k: int = 5) -> list[dict]:
@@ -548,7 +548,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from konte import Project
 
 project = Project.open("tariff_codes")
-llm = ChatOpenAI(model="gpt-4o", streaming=True)
+llm = ChatOpenAI(model="gpt-4.1", streaming=True)
 
 prompt = ChatPromptTemplate.from_template("""
 Context: {context}
@@ -693,7 +693,7 @@ def get_hs_code_details(hs_code: str) -> str:
 
 # Create agent
 classification_agent = Agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search_hs_codes, search_classification_rules, get_hs_code_details],
     instructions="""You are an expert customs tariff classification agent.
 
