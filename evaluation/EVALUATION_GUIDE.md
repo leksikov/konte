@@ -400,3 +400,11 @@ def validate_retrieval(query: str, expected_hs_code: str) -> bool:
    - `valid`: Validated questions generated
    - `gen_err`: Question generation errors
    - `val_fail`: Retrieval validation failures
+
+5. **Logging visibility**: The pipeline logs progress at info level during evaluation runs. For troubleshooting, enable debug logging to see granular events (token counts, individual segments):
+   ```python
+   import structlog
+   structlog.configure(
+       wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+   )
+   ```
