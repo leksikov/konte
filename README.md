@@ -22,9 +22,9 @@ This achieves up to **49% reduction** in failed retrievals (67% with reranking).
 pip install -e .
 ```
 
-Set your OpenAI API key:
+Optionally set your OpenAI API key (Backend.AI is used by default):
 ```bash
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...  # Optional, for OpenAI embeddings
 ```
 
 ## CLI
@@ -153,7 +153,7 @@ response = project.query("query", mode="lexical")
 For standard RAG without LLM-generated context (faster, cheaper):
 
 ```python
-await project.build(skip_context=False)
+await project.build(skip_context=True)
 ```
 
 ## Performance Optimizations
@@ -170,7 +170,7 @@ Structured logging via structlog provides visibility into the ingestion pipeline
 2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
 2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=55
 2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
-2024-01-15 10:30:03 [info] generating_context_for_segment segment_index=0 total_segments=5 num_chunks=11
+2024-01-15 10:30:03 [info] generating_context_for_segment segment_key=('doc.pdf', 0) total_segments=5 num_chunks=11
 ...
 2024-01-15 10:30:15 [info] context_generation_complete num_chunks=55 skipped=False
 2024-01-15 10:30:16 [info] faiss_index_built
