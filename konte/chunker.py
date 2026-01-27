@@ -160,7 +160,7 @@ def create_chunks(
     segment_overlap: int | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> tuple[list[Chunk], dict[int, str]]:
+) -> tuple[list[Chunk], dict[tuple[str, int], str]]:
     """Create Chunk objects from document text.
 
     First segments the document, then chunks each segment.
@@ -174,13 +174,13 @@ def create_chunks(
         chunk_overlap: Overlap between chunks in tokens. Defaults to settings.CHUNK_OVERLAP.
 
     Returns:
-        Tuple of (List of Chunk objects, Dict mapping segment_idx to segment text).
+        Tuple of (List of Chunk objects, Dict mapping (source, segment_idx) to segment text).
     """
     total_tokens = count_tokens(text)
     logger.debug("segmentation_started", source=source, total_tokens=total_tokens)
 
     chunks = []
-    segments_map: dict[int, str] = {}
+    segments_map: dict[tuple[str, int], str] = {}
     segments = segment_document(text, segment_size, segment_overlap)
 
     for seg_idx, segment in enumerate(segments):
@@ -191,7 +191,8 @@ def create_chunks(
             segment_index=seg_idx,
             token_count=segment_tokens,
         )
-        segments_map[seg_idx] = segment
+        key = (source, seg_idx)
+        segments_map[key] = segment
         segment_chunks = chunk_segment(segment, chunk_size, chunk_overlap)
         logger.debug(
             "chunking_segment",

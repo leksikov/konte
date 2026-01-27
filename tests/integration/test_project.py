@@ -272,22 +272,22 @@ class TestProjectSegmentStorage:
         doc_content = (FIXTURES_DIR / "sample.txt").read_text()
         doc_tokens = count_tokens(doc_content)
 
-        for seg_idx, segment_text in project._segments.items():
+        for seg_key, segment_text in project._segments.items():
             segment_tokens = count_tokens(segment_text)
             # Segment should be around segment_size, not the full document
             # Allow 2x margin for word boundary adjustments
             assert segment_tokens <= 200 * 2, (
-                f"Segment {seg_idx} has {segment_tokens} tokens, "
+                f"Segment {seg_key} has {segment_tokens} tokens, "
                 f"expected <= 400 (200 * 2)"
             )
             # Segment should be smaller than full document
             assert segment_tokens < doc_tokens, (
-                f"Segment {seg_idx} has {segment_tokens} tokens, "
+                f"Segment {seg_key} has {segment_tokens} tokens, "
                 f"which is >= full document ({doc_tokens} tokens)"
             )
 
     def test_each_chunk_maps_to_valid_segment(self, tmp_path):
-        """Verify each chunk's segment_idx maps to correct segment."""
+        """Verify each chunk's (source, segment_idx) maps to correct segment."""
         from konte.project import Project
 
         project = Project.create(
@@ -302,14 +302,15 @@ class TestProjectSegmentStorage:
 
         # Each chunk should have a corresponding segment
         for chunk in project._chunks:
-            assert chunk.segment_idx in project._segments, (
-                f"Chunk {chunk.chunk_id} has segment_idx {chunk.segment_idx} "
+            key = (chunk.source, chunk.segment_idx)
+            assert key in project._segments, (
+                f"Chunk {chunk.chunk_id} has key {key} "
                 f"not in segments map"
             )
             # Chunk content should appear in its segment
-            segment_text = project._segments[chunk.segment_idx]
+            segment_text = project._segments[key]
             # Due to overlap, chunk might be in adjacent segments too,
             # but should be findable in declared segment
             assert chunk.content[:50] in segment_text or segment_text[:50] in chunk.content, (
-                f"Chunk content not found in segment {chunk.segment_idx}"
+                f"Chunk content not found in segment {key}"
             )

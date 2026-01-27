@@ -170,8 +170,9 @@ class TestCreateChunks:
             assert chunk.segment_idx >= 0
             assert chunk.chunk_idx >= 0
             assert chunk.chunk_id.startswith("document.pdf_s")
-            # Verify segment_idx maps to a segment
-            assert chunk.segment_idx in segments_map
+            # Verify (source, segment_idx) maps to a segment
+            key = (chunk.source, chunk.segment_idx)
+            assert key in segments_map
 
     def test_create_chunks_unique_ids(self):
         """Test that all chunk IDs are unique."""
@@ -217,19 +218,19 @@ class TestCreateChunksDataFlow:
 
         # Each segment should be SIGNIFICANTLY smaller than full document
         # This is the critical assertion - catches bug where full doc stored as segment
-        for seg_idx, segment_text in segments_map.items():
+        for seg_key, segment_text in segments_map.items():
             segment_tokens = count_tokens(segment_text)
             # Segment should be at most 1/4 of document size
             # With overlap, segments can be up to ~2x segment_size, so allow ~2000 tokens
             # But definitely NOT the full 10000 token document
             assert segment_tokens < doc_tokens / 4, (
-                f"Segment {seg_idx} has {segment_tokens} tokens, "
+                f"Segment {seg_key} has {segment_tokens} tokens, "
                 f"should be less than 1/4 of document ({doc_tokens / 4} tokens). "
                 f"Full document has {doc_tokens} tokens."
             )
 
     def test_chunk_segment_idx_maps_to_segments_map(self):
-        """Verify every chunk.segment_idx has corresponding entry in segments_map."""
+        """Verify every chunk.(source, segment_idx) has corresponding entry in segments_map."""
         from konte.chunker import create_chunks
 
         text = "Content " * 500
@@ -243,8 +244,9 @@ class TestCreateChunksDataFlow:
         )
 
         for chunk in chunks:
-            assert chunk.segment_idx in segments_map, (
-                f"Chunk {chunk.chunk_id} has segment_idx={chunk.segment_idx} "
+            key = (chunk.source, chunk.segment_idx)
+            assert key in segments_map, (
+                f"Chunk {chunk.chunk_id} has key={key} "
                 f"not found in segments_map keys: {list(segments_map.keys())}"
             )
 
@@ -263,15 +265,16 @@ class TestCreateChunksDataFlow:
         )
 
         for chunk in chunks:
-            segment_text = segments_map[chunk.segment_idx]
+            key = (chunk.source, chunk.segment_idx)
+            segment_text = segments_map[key]
             # First 20 chars of chunk should appear in segment
             chunk_start = chunk.content[:20]
             assert chunk_start in segment_text, (
-                f"Chunk content '{chunk_start}...' not found in segment {chunk.segment_idx}"
+                f"Chunk content '{chunk_start}...' not found in segment {key}"
             )
 
     def test_segments_map_indices_are_contiguous(self):
-        """Verify segments_map has contiguous indices starting from 0."""
+        """Verify segments_map has contiguous indices starting from 0 for each source."""
         from konte.chunker import create_chunks
 
         text = "Test content. " * 300
@@ -284,7 +287,8 @@ class TestCreateChunksDataFlow:
             chunk_overlap=2,
         )
 
-        indices = sorted(segments_map.keys())
+        # Extract indices for the source
+        indices = sorted(idx for (source, idx) in segments_map.keys() if source == "test.txt")
         expected = list(range(len(indices)))
         assert indices == expected, (
             f"Segment indices not contiguous: got {indices}, expected {expected}"
