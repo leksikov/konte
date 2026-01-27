@@ -158,9 +158,11 @@ class TestLargeDocumentProcessing:
         project.add_documents([large_doc_path])
 
         # Every chunk must have a valid segment reference
+        # Segment keys are (source, segment_idx) tuples
         for chunk in project._chunks:
-            assert chunk.segment_idx in project._segments, (
-                f"Chunk {chunk.chunk_id} references segment {chunk.segment_idx} "
+            segment_key = (chunk.source, chunk.segment_idx)
+            assert segment_key in project._segments, (
+                f"Chunk {chunk.chunk_id} references segment {segment_key} "
                 f"which doesn't exist in segments map"
             )
 
