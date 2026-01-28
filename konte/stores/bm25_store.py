@@ -184,47 +184,42 @@ class BM25Store:
 
         k = top_k or settings.DEFAULT_TOP_K
 
-        # If filtering, get more results initially to ensure enough after filtering
-        initial_k = k * 3 if metadata_filter else k
-        initial_k = min(initial_k, len(self._chunks))
+        # Pre-retrieval filtering: identify valid chunk indices BEFORE ranking
+        if metadata_filter:
+            valid_indices = [
+                i for i, chunk in enumerate(self._chunks)
+                if _matches_filter(chunk, metadata_filter)
+            ]
+            if not valid_indices:
+                return []
+        else:
+            valid_indices = list(range(len(self._chunks)))
+
+        k = min(k, len(valid_indices))
 
         # Tokenize query
         tokenized_query = _tokenize(query)
 
-        # Get BM25 scores
+        # Get BM25 scores (requires full corpus for IDF calculation)
         scores = self._index.get_scores(tokenized_query)
 
-        # Get top indices (more if filtering)
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:initial_k]
+        # Rank only among filtered indices (pre-retrieval filtering)
+        top_indices = sorted(valid_indices, key=lambda i: scores[i], reverse=True)[:k]
 
-        # Normalize scores to 0-1 range
-        # BM25 scores can be negative for non-matching terms, clamp to 0
-        min_score = min(scores)
-        max_score = max(scores)
-
-        # Shift to positive range if needed, then normalize
+        # Normalize scores to 0-1 range based on filtered results only
+        filtered_scores = [scores[i] for i in valid_indices]
+        min_score = min(filtered_scores)
+        max_score = max(filtered_scores)
         score_range = max_score - min_score if max_score != min_score else 1.0
 
         results = []
         for idx in top_indices:
-            chunk = self._chunks[idx]
-
-            # Apply metadata filter if provided
-            if metadata_filter and not _matches_filter(chunk, metadata_filter):
-                continue
-
-            # Shift and normalize to 0-1
             if score_range > 0:
                 normalized_score = (scores[idx] - min_score) / score_range
             else:
                 normalized_score = 0.0
-            # Ensure score is in valid range
             normalized_score = max(0.0, min(1.0, normalized_score))
-            results.append((chunk, float(normalized_score)))
-
-            # Stop if we have enough results
-            if len(results) >= k:
-                break
+            results.append((self._chunks[idx], float(normalized_score)))
 
         return results
 
