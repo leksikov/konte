@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import structlog
 
@@ -173,6 +173,7 @@ class Project:
         query: str,
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> RetrievalResponse:
         """Query the project (sync, no reranking).
 
@@ -180,6 +181,8 @@ class Project:
             query: Query string.
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+                Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
 
         Returns:
             RetrievalResponse with results.
@@ -197,7 +200,7 @@ class Project:
             )
 
         k = top_k or settings.DEFAULT_TOP_K
-        return self._retriever.retrieve(query, mode=mode, top_k=k)
+        return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter)
 
     async def query_async(
         self,
@@ -206,6 +209,7 @@ class Project:
         top_k: int | None = None,
         rerank: bool = False,
         rerank_initial_k: int = 50,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> RetrievalResponse:
         """Query the project (async, with optional reranking).
 
@@ -215,6 +219,8 @@ class Project:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             rerank: If True, apply Qwen3-Reranker-8B reranking.
             rerank_initial_k: Number of candidates to retrieve before reranking.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+                Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
 
         Returns:
             RetrievalResponse with results.
@@ -235,10 +241,11 @@ class Project:
 
         if rerank:
             return await self._retriever.retrieve_with_rerank(
-                query, mode=mode, top_k=k, initial_k=rerank_initial_k
+                query, mode=mode, top_k=k, initial_k=rerank_initial_k,
+                metadata_filter=metadata_filter
             )
         else:
-            return self._retriever.retrieve(query, mode=mode, top_k=k)
+            return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter)
 
     def as_retriever(self) -> Callable[[str], RetrievalResponse]:
         """Return a callable retriever for Agno integration.
@@ -258,6 +265,7 @@ class Project:
         timeout: float = 60.0,
         rerank: bool = False,
         rerank_initial_k: int = 50,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> tuple[RetrievalResponse, GeneratedAnswer]:
         """Query the project and generate an LLM answer from retrieved chunks.
 
@@ -272,13 +280,16 @@ class Project:
             timeout: LLM request timeout in seconds.
             rerank: If True, apply Qwen3-Reranker-8B reranking.
             rerank_initial_k: Number of candidates to retrieve before reranking.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+                Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
 
         Returns:
             Tuple of (RetrievalResponse, GeneratedAnswer).
         """
         # First, retrieve chunks (with optional reranking)
         retrieval_response = await self.query_async(
-            query, mode=mode, top_k=top_k, rerank=rerank, rerank_initial_k=rerank_initial_k
+            query, mode=mode, top_k=top_k, rerank=rerank, rerank_initial_k=rerank_initial_k,
+            metadata_filter=metadata_filter
         )
 
         # Then, generate answer using LLM

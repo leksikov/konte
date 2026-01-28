@@ -1,7 +1,7 @@
 """Base protocol for retrieval stores."""
 
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from konte.models import ContextualizedChunk
 
@@ -25,8 +25,15 @@ class Store(Protocol):
         self,
         query: str,
         top_k: int | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
-        """Query the index, return (chunk, score) tuples."""
+        """Query the index, return (chunk, score) tuples.
+
+        Args:
+            query: Query string.
+            top_k: Number of results to return.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+        """
         ...
 
     @property

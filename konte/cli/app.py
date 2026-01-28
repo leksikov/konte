@@ -1,6 +1,7 @@
 """Main CLI application using Typer + Rich."""
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -248,6 +249,12 @@ def query(
         "-m",
         help="Retrieval mode: hybrid, semantic, lexical",
     ),
+    filter_json: Optional[str] = typer.Option(
+        None,
+        "--filter",
+        "-f",
+        help='Metadata filter as JSON, e.g. \'{"source": "doc.pdf", "year": 2024}\'',
+    ),
 ) -> None:
     """Query a project."""
     path = storage_path or settings.STORAGE_PATH
@@ -260,12 +267,23 @@ def query(
         console.print(f"[red]Error:[/red] Invalid mode: {mode}")
         raise typer.Exit(1)
 
+    # Parse metadata filter
+    metadata_filter = None
+    if filter_json:
+        try:
+            metadata_filter = json.loads(filter_json)
+        except json.JSONDecodeError as e:
+            console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
+            raise typer.Exit(1)
+
     try:
         project = get_project(name, storage_path=path)
-        response = project.query(query_text, mode=mode, top_k=top_k)
+        response = project.query(query_text, mode=mode, top_k=top_k, metadata_filter=metadata_filter)
 
         console.print(f"\n[bold]Query:[/bold] {query_text}")
         console.print(f"[bold]Mode:[/bold] {mode}")
+        if metadata_filter:
+            console.print(f"[bold]Filter:[/bold] {metadata_filter}")
         console.print(f"[bold]Results:[/bold] {response.total_found}")
         console.print(f"[bold]Top Score:[/bold] {response.top_score:.3f}")
         console.print(f"[bold]Suggested Action:[/bold] {response.suggested_action}")
@@ -311,6 +329,12 @@ def ask(
         "-m",
         help="Retrieval mode: hybrid, semantic, lexical",
     ),
+    filter_json: Optional[str] = typer.Option(
+        None,
+        "--filter",
+        "-f",
+        help='Metadata filter as JSON, e.g. \'{"company": "ACME", "year": 2024}\'',
+    ),
     show_sources: bool = typer.Option(
         False,
         "--show-sources",
@@ -328,6 +352,15 @@ def ask(
         console.print(f"[red]Error:[/red] Invalid mode: {mode}")
         raise typer.Exit(1)
 
+    # Parse metadata filter
+    metadata_filter = None
+    if filter_json:
+        try:
+            metadata_filter = json.loads(filter_json)
+        except json.JSONDecodeError as e:
+            console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
+            raise typer.Exit(1)
+
     try:
         project = get_project(name, storage_path=path)
 
@@ -344,11 +377,14 @@ def ask(
                     mode=mode,
                     top_k=top_k,
                     max_chunks=max_chunks,
+                    metadata_filter=metadata_filter,
                 )
 
             retrieval_response, answer = asyncio.run(run_query())
 
         console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
+        if metadata_filter:
+            console.print(f"[bold]Filter:[/bold] {metadata_filter}")
         console.print(f"\n[bold green]Answer:[/bold green]")
         console.print(answer.answer)
         console.print(f"\n[dim]Model: {answer.model} | Sources used: {answer.sources_used}[/dim]")
