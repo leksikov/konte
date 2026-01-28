@@ -87,10 +87,26 @@ def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
     return _answer_llm_cache[cache_key]
 
 
+def _format_metadata(metadata: dict) -> str:
+    """Format metadata dict into readable string.
+
+    Args:
+        metadata: Chunk metadata dict.
+
+    Returns:
+        Formatted metadata string or empty string if no metadata.
+    """
+    if not metadata:
+        return ""
+    # Format as key=value pairs, skip None values
+    parts = [f"{k}={v}" for k, v in metadata.items() if v is not None]
+    return " | ".join(parts) if parts else ""
+
+
 def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10) -> str:
     """Format retrieved chunks into context string for LLM.
 
-    Includes both the generated context and the original chunk content
+    Includes source, metadata, generated context, and original chunk content
     for maximum information retrieval.
 
     Args:
@@ -105,12 +121,20 @@ def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10)
     context_parts = []
     for i, result in enumerate(chunks_to_use, 1):
         source = result.source or "unknown"
+
+        # Build header with source and metadata
+        header = f"[{i}] Source: {source}"
+        metadata_str = _format_metadata(result.metadata)
+        if metadata_str:
+            header = f"{header} | {metadata_str}"
+
         # Include context (LLM-generated summary) if available
         if result.context:
             chunk_text = f"Context: {result.context}\n\nContent: {result.content}"
         else:
             chunk_text = result.content
-        context_parts.append(f"[{i}] Source: {source}\n{chunk_text}")
+
+        context_parts.append(f"{header}\n{chunk_text}")
 
     return "\n\n".join(context_parts)
 
