@@ -1,4 +1,4 @@
-"""Query preprocessing for better Korean BM25 retrieval."""
+"""Query preprocessing for better BM25 retrieval (Korean and English)."""
 
 import structlog
 from langchain_openai import ChatOpenAI
@@ -7,6 +7,35 @@ from pydantic import BaseModel
 from konte.config import settings
 
 logger = structlog.get_logger()
+
+
+# English stopwords to filter in fallback tokenizer
+STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "can", "may",
+    "might", "must", "if", "then", "else", "and", "or", "but", "not", "no",
+    "this", "that", "these", "those", "what", "when", "where", "who", "which",
+    "why", "how", "for", "from", "to", "of", "in", "on", "at", "by", "with",
+    "about", "into", "through", "during", "before", "after", "above", "below",
+    "between", "under", "again", "further", "once", "here", "there", "any",
+    "all", "each", "every", "both", "few", "more", "most", "other", "some",
+    "such", "only", "own", "same", "so", "than", "too", "very", "just", "also",
+    "now", "please", "based", "us", "me", "my", "your", "his", "her", "their",
+    "our", "you", "i", "we", "she", "him", "them", "am", "been", "being",
+})
+
+# Bilingual prompt for keyword extraction
+KEYWORD_EXTRACTION_PROMPT = """Extract search keywords from the query.
+
+Rules:
+1. Extract only meaningful nouns, verbs, proper nouns, and technical terms
+2. Remove English stopwords (a, an, the, is, are, was, were, be, have, has, had, do, does, did, will, would, could, should, can, may, might, must, if, then, else, and, or, but, not, no, this, that, these, those, what, when, where, who, which, why, how, for, from, to, of, in, on, at, by, with, about, into, through, during, before, after, above, below, between, under, again, further, once, here, there, any, all, each, every, both, few, more, most, other, some, such, only, own, same, so, than, too, very, just, also, now, please, based, us, me, my, your, his, her, their, our, you, i, we, she, him, them)
+3. Remove Korean particles (은/는/이/가/을/를/에/의/로 등) and stopwords (어느, 어떤, 무엇, 어디)
+4. Keep compound terms together (e.g., "working capital" as one keyword, "의류 탈수기" as one keyword)
+5. Keep codes, numbers, identifiers as-is (e.g., "FY2022", "HS 8471", "HS 코드")
+6. Extract 3-10 keywords
+
+Query: {query}"""
 
 
 class ExtractedKeywords(BaseModel):
@@ -29,49 +58,45 @@ def _get_llm() -> ChatOpenAI:
     return _llm_instance
 
 
-def extract_search_keywords(query: str) -> list[str]:
-    """Extract clean Korean keywords from query for BM25 search.
+def _fallback_tokenize(query: str) -> list[str]:
+    """Fallback tokenizer with stopword filtering."""
+    tokens = query.split()
+    return [t for t in tokens if t.lower() not in STOPWORDS and len(t) > 1]
 
-    Removes particles (조사), endings (어미), and extracts core terms.
+
+def extract_search_keywords(query: str) -> list[str]:
+    """Extract keywords from query for BM25 search (supports Korean and English).
+
+    Uses LLM with structured output to extract meaningful keywords,
+    removing stopwords and particles.
 
     Args:
-        query: Natural language Korean query.
+        query: Natural language query (Korean or English).
 
     Returns:
-        List of clean keywords without particles.
+        List of clean keywords for BM25 search.
 
-    Example:
-        Input: "의류 탈수기는 어느 HS 코드에 분류되나요?"
-        Output: ["의류", "탈수기", "HS", "코드", "분류"]
+    Examples:
+        Korean: "의류 탈수기는 어느 HS 코드에 분류되나요?"
+        Output: ["의류 탈수기", "HS 코드", "분류"]
+
+        English: "Does Paypal have positive working capital based on FY2022 data?"
+        Output: ["Paypal", "positive", "working capital", "FY2022", "data"]
     """
-    prompt = f"""다음 한국어 질문에서 검색에 사용할 핵심 키워드를 추출하세요.
-
-규칙:
-1. 조사(은/는/이/가/을/를/에/의/로 등)를 제거한 순수 명사/동사 어간만 추출
-2. 복합어는 분리하지 말고 그대로 유지 (예: "의류 탈수기" → "의류 탈수기")
-3. HS 코드, 숫자는 그대로 유지
-4. 불용어(어느, 어떤, 무엇, 어디) 제외
-5. 3-7개 키워드 추출
-
-질문: {query}
-
-키워드만 쉼표로 구분하여 출력하세요."""
-
     try:
         llm = _get_llm()
-        response = llm.invoke(prompt)
-
-        # Parse comma-separated keywords
-        keywords_text = response.content.strip()
-        keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
+        structured_llm = llm.with_structured_output(ExtractedKeywords)
+        result = structured_llm.invoke(
+            KEYWORD_EXTRACTION_PROMPT.format(query=query)
+        )
 
         logger.debug(
             "keywords_extracted",
             query=query,
-            keywords=keywords,
+            keywords=result.keywords,
         )
 
-        return keywords
+        return result.keywords
 
     except Exception as e:
         logger.warning(
@@ -79,40 +104,36 @@ def extract_search_keywords(query: str) -> list[str]:
             query=query,
             error=str(e),
         )
-        # Fallback: simple whitespace split
-        return query.split()
+        # Fallback with basic stopword filtering
+        return _fallback_tokenize(query)
 
 
 async def extract_search_keywords_async(query: str) -> list[str]:
-    """Async version of extract_search_keywords."""
-    prompt = f"""다음 한국어 질문에서 검색에 사용할 핵심 키워드를 추출하세요.
+    """Async version of extract_search_keywords.
 
-규칙:
-1. 조사(은/는/이/가/을/를/에/의/로 등)를 제거한 순수 명사/동사 어간만 추출
-2. 복합어는 분리하지 말고 그대로 유지 (예: "의류 탈수기" → "의류 탈수기")
-3. HS 코드, 숫자는 그대로 유지
-4. 불용어(어느, 어떤, 무엇, 어디) 제외
-5. 3-7개 키워드 추출
+    Uses LLM with structured output to extract meaningful keywords,
+    removing stopwords and particles.
 
-질문: {query}
+    Args:
+        query: Natural language query (Korean or English).
 
-키워드만 쉼표로 구분하여 출력하세요."""
-
+    Returns:
+        List of clean keywords for BM25 search.
+    """
     try:
         llm = _get_llm()
-        response = await llm.ainvoke(prompt)
-
-        # Parse comma-separated keywords
-        keywords_text = response.content.strip()
-        keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
+        structured_llm = llm.with_structured_output(ExtractedKeywords)
+        result = await structured_llm.ainvoke(
+            KEYWORD_EXTRACTION_PROMPT.format(query=query)
+        )
 
         logger.debug(
             "keywords_extracted_async",
             query=query,
-            keywords=keywords,
+            keywords=result.keywords,
         )
 
-        return keywords
+        return result.keywords
 
     except Exception as e:
         logger.warning(
@@ -120,5 +141,5 @@ async def extract_search_keywords_async(query: str) -> list[str]:
             query=query,
             error=str(e),
         )
-        # Fallback: simple whitespace split
-        return query.split()
+        # Fallback with basic stopword filtering
+        return _fallback_tokenize(query)
