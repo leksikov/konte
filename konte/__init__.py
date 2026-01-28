@@ -13,6 +13,7 @@ from konte.manager import (
 from konte.models import (
     Chunk,
     ContextualizedChunk,
+    MetadataFilter,
     ProjectConfig,
     RetrievalResponse,
     RetrievalResult,
@@ -26,6 +27,7 @@ __all__ = [
     # Models
     "Chunk",
     "ContextualizedChunk",
+    "MetadataFilter",
     "RetrievalResult",
     "RetrievalResponse",
     "ProjectConfig",

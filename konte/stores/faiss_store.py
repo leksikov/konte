@@ -1,6 +1,7 @@
 """FAISS vector store for semantic search using LangChain."""
 
 from pathlib import Path
+from typing import Any
 
 import structlog
 from langchain_community.vectorstores import FAISS
@@ -175,12 +176,15 @@ class FAISSStore:
         self,
         query: str,
         top_k: int | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the FAISS index.
 
         Args:
             query: Query string.
             top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+                Example: {"source": "doc.pdf", "page_no": 5}
 
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
@@ -193,7 +197,10 @@ class FAISSStore:
 
         # LangChain similarity_search_with_score returns (doc, score) tuples
         # Score is L2 distance (lower = more similar)
-        results_with_scores = self._vectorstore.similarity_search_with_score(query, k=k)
+        # Use LangChain's native filter parameter for metadata filtering
+        results_with_scores = self._vectorstore.similarity_search_with_score(
+            query, k=k, filter=metadata_filter
+        )
 
         results = []
         for doc, distance in results_with_scores:

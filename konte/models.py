@@ -1,9 +1,12 @@
 """Pydantic models for Konte contextual RAG library."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+# Type alias for metadata filtering (simple equality filter with AND logic)
+MetadataFilter = dict[str, Any]
 
 
 class Chunk(BaseModel):

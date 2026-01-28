@@ -3,6 +3,7 @@
 import json
 import pickle
 from pathlib import Path
+from typing import Any
 
 import structlog
 from rank_bm25 import BM25Okapi
@@ -23,6 +24,37 @@ def _tokenize(text: str) -> list[str]:
         List of lowercase tokens.
     """
     return text.lower().split()
+
+
+def _matches_filter(
+    chunk: ContextualizedChunk, metadata_filter: dict[str, Any]
+) -> bool:
+    """Check if a chunk matches the metadata filter (AND logic).
+
+    Args:
+        chunk: The chunk to check.
+        metadata_filter: Filter with key-value pairs (equality match).
+
+    Returns:
+        True if all filter conditions match.
+    """
+    chunk_metadata = chunk.chunk.metadata
+    # Also check standard fields: source, segment_idx, chunk_idx
+    for key, value in metadata_filter.items():
+        if key == "source":
+            if chunk.chunk.source != value:
+                return False
+        elif key == "segment_idx":
+            if chunk.chunk.segment_idx != value:
+                return False
+        elif key == "chunk_idx":
+            if chunk.chunk.chunk_idx != value:
+                return False
+        else:
+            # Check custom metadata
+            if chunk_metadata.get(key) != value:
+                return False
+    return True
 
 
 class BM25Store:
@@ -133,12 +165,15 @@ class BM25Store:
         self,
         query: str,
         top_k: int | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the BM25 index.
 
         Args:
             query: Query string.
             top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+                Example: {"source": "doc.pdf", "year": 2024}
 
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
@@ -148,7 +183,10 @@ class BM25Store:
             return []
 
         k = top_k or settings.DEFAULT_TOP_K
-        k = min(k, len(self._chunks))
+
+        # If filtering, get more results initially to ensure enough after filtering
+        initial_k = k * 3 if metadata_filter else k
+        initial_k = min(initial_k, len(self._chunks))
 
         # Tokenize query
         tokenized_query = _tokenize(query)
@@ -156,8 +194,8 @@ class BM25Store:
         # Get BM25 scores
         scores = self._index.get_scores(tokenized_query)
 
-        # Get top-k indices
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+        # Get top indices (more if filtering)
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:initial_k]
 
         # Normalize scores to 0-1 range
         # BM25 scores can be negative for non-matching terms, clamp to 0
@@ -169,6 +207,12 @@ class BM25Store:
 
         results = []
         for idx in top_indices:
+            chunk = self._chunks[idx]
+
+            # Apply metadata filter if provided
+            if metadata_filter and not _matches_filter(chunk, metadata_filter):
+                continue
+
             # Shift and normalize to 0-1
             if score_range > 0:
                 normalized_score = (scores[idx] - min_score) / score_range
@@ -176,7 +220,11 @@ class BM25Store:
                 normalized_score = 0.0
             # Ensure score is in valid range
             normalized_score = max(0.0, min(1.0, normalized_score))
-            results.append((self._chunks[idx], float(normalized_score)))
+            results.append((chunk, float(normalized_score)))
+
+            # Stop if we have enough results
+            if len(results) >= k:
+                break
 
         return results
 
