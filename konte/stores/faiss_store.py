@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any
 
+import faiss
+import numpy as np
 import structlog
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -10,6 +12,14 @@ from langchain_openai import OpenAIEmbeddings
 
 from konte.config import settings
 from konte.models import Chunk, ContextualizedChunk
+
+
+def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: dict[str, Any]) -> bool:
+    """Check if document metadata matches the filter (AND logic)."""
+    for key, value in metadata_filter.items():
+        if metadata.get(key) != value:
+            return False
+    return True
 
 logger = structlog.get_logger()
 
@@ -195,21 +205,73 @@ class FAISSStore:
 
         k = top_k or settings.DEFAULT_TOP_K
 
-        # LangChain similarity_search_with_score returns (doc, score) tuples
-        # Score is L2 distance (lower = more similar)
-        # Use LangChain's native filter parameter for metadata filtering
-        results_with_scores = self._vectorstore.similarity_search_with_score(
-            query, k=k, filter=metadata_filter
-        )
+        # Pre-retrieval filtering: use FAISS IDSelector to search only matching documents
+        if metadata_filter:
+            # Find FAISS internal IDs that match the filter
+            valid_faiss_ids = []
+            for faiss_id, docstore_id in self._vectorstore.index_to_docstore_id.items():
+                doc = self._vectorstore.docstore.search(docstore_id)
+                if doc and hasattr(doc, "metadata"):
+                    if _matches_faiss_filter(doc.metadata, metadata_filter):
+                        valid_faiss_ids.append(faiss_id)
+
+            if not valid_faiss_ids:
+                return []
+
+            # Use FAISS IDSelectorArray for pre-filtered search
+            id_selector = faiss.IDSelectorArray(np.array(valid_faiss_ids, dtype=np.int64))
+            search_params = faiss.SearchParametersIVF(sel=id_selector)
+
+            # Embed the query
+            query_embedding = self._embeddings.embed_query(query)
+            query_vector = np.array([query_embedding], dtype=np.float32)
+
+            # Search only among filtered IDs
+            search_k = min(k, len(valid_faiss_ids))
+            distances, indices = self._vectorstore.index.search(
+                query_vector, search_k, params=search_params
+            )
+
+            # Build results from search output
+            results = []
+            for i, (distance, faiss_idx) in enumerate(zip(distances[0], indices[0])):
+                if faiss_idx == -1:  # No result
+                    continue
+
+                docstore_id = self._vectorstore.index_to_docstore_id.get(faiss_idx)
+                if not docstore_id:
+                    continue
+
+                doc = self._vectorstore.docstore.search(docstore_id)
+                if not doc:
+                    continue
+
+                similarity = 1.0 / (1.0 + distance)
+                standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
+                custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
+
+                chunk = Chunk(
+                    chunk_id=doc.metadata.get("chunk_id", ""),
+                    content=doc.metadata.get("original_content", ""),
+                    source=doc.metadata.get("source", ""),
+                    segment_idx=doc.metadata.get("segment_idx", 0),
+                    chunk_idx=doc.metadata.get("chunk_idx", 0),
+                    metadata=custom_metadata,
+                )
+                ctx_chunk = ContextualizedChunk(
+                    chunk=chunk,
+                    context=doc.metadata.get("context", ""),
+                )
+                results.append((ctx_chunk, float(similarity)))
+
+            return results
+
+        # No filter: use standard LangChain search
+        results_with_scores = self._vectorstore.similarity_search_with_score(query, k=k)
 
         results = []
         for doc, distance in results_with_scores:
-            # Convert L2 distance to similarity score (0-1 range)
-            # L2 distance: 0 = identical, larger = more different
-            # Use exponential decay: score = exp(-distance/2)
             similarity = 1.0 / (1.0 + distance)
-
-            # Extract custom metadata (exclude standard fields)
             standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
             custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
 
