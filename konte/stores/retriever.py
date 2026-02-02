@@ -124,6 +124,57 @@ def _build_retrieval_response(
     )
 
 
+def _inject_evidence_result(
+    response: RetrievalResponse,
+    evidence: str,
+    position: int | None = None,
+) -> RetrievalResponse:
+    """Inject evidence at specified position for ablation study.
+
+    Args:
+        response: Original retrieval response.
+        evidence: Evidence text to inject.
+        position: Position to insert (0=top, None=random).
+
+    Returns:
+        New RetrievalResponse with evidence injected.
+    """
+    import random
+
+    evidence_result = RetrievalResult(
+        content=evidence,
+        context="[Ablation study: injected evidence]",
+        score=0.95,  # High but not 1.0 to blend with results
+        source="ablation_study",
+        chunk_id="INJECTED_EVIDENCE",
+        metadata={"injected": True},
+    )
+
+    # Determine insertion position
+    if position is None:
+        # Random position within results
+        max_pos = len(response.results)
+        actual_position = random.randint(0, max_pos)
+    else:
+        actual_position = min(position, len(response.results))
+
+    # Insert at position
+    new_results = list(response.results)
+    new_results.insert(actual_position, evidence_result)
+
+    top_score = new_results[0].score if new_results else 0.0
+
+    return RetrievalResponse(
+        results=new_results,
+        query=response.query,
+        total_found=len(new_results),
+        top_score=top_score,
+        score_spread=response.score_spread,
+        has_high_confidence=True,
+        suggested_action="deliver",
+    )
+
+
 class Retriever:
     """Hybrid retriever combining FAISS and BM25 search."""
 
@@ -249,6 +300,8 @@ class Retriever:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        inject_evidence: str | None = None,
+        inject_position: int | None = None,
     ) -> RetrievalResponse:
         """Retrieve documents using specified mode.
 
@@ -257,16 +310,24 @@ class Retriever:
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            inject_evidence: For ablation study - inject this text.
+            inject_position: Position to inject (0=top, None=random).
 
         Returns:
             RetrievalResponse with results and agent hints.
         """
         if mode == "semantic":
-            return self.retrieve_semantic(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_semantic(query, top_k=top_k, metadata_filter=metadata_filter)
         elif mode == "lexical":
-            return self.retrieve_lexical(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_lexical(query, top_k=top_k, metadata_filter=metadata_filter)
         else:
-            return self.retrieve_hybrid(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_hybrid(query, top_k=top_k, metadata_filter=metadata_filter)
+
+        # Inject evidence for ablation study
+        if inject_evidence:
+            response = _inject_evidence_result(response, inject_evidence, inject_position)
+
+        return response
 
     async def retrieve_with_rerank(
         self,

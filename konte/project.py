@@ -174,6 +174,8 @@ class Project:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        inject_evidence: str | None = None,
+        inject_position: int | None = None,
     ) -> RetrievalResponse:
         """Query the project (sync, no reranking).
 
@@ -183,6 +185,8 @@ class Project:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
+            inject_evidence: For ablation study - inject this text.
+            inject_position: Position to inject (0=top, None=random).
 
         Returns:
             RetrievalResponse with results.
@@ -200,7 +204,10 @@ class Project:
             )
 
         k = top_k or settings.DEFAULT_TOP_K
-        return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter)
+        return self._retriever.retrieve(
+            query, mode=mode, top_k=k, metadata_filter=metadata_filter,
+            inject_evidence=inject_evidence, inject_position=inject_position,
+        )
 
     async def query_async(
         self,
