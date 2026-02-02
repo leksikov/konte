@@ -30,14 +30,12 @@ class KoreanTestCase(BaseModel):
 HS_CODE_PATTERN = re.compile(r'\b(\d{4}\.\d{2})\s*[-–—]\s*([^\n\r]{3,50})')
 
 
-def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str]]:
+def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str, int]]:
     """Extract HS codes and their descriptions from chunk content.
 
-    Returns list of (hs_code, item_name) tuples.
+    Returns list of (hs_code, item_name, position) tuples.
     Filters out ambiguous items like "기타", "그 밖의 것" etc.
     """
-    matches = HS_CODE_PATTERN.findall(content)
-
     # Ambiguous item names to skip
     ambiguous_patterns = [
         "기타",
@@ -50,7 +48,11 @@ def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str]]:
     # Deduplicate and filter
     seen = set()
     result = []
-    for code, name in matches:
+    for match in HS_CODE_PATTERN.finditer(content):
+        code = match.group(1)
+        name = match.group(2)
+        position = match.start()
+
         if code not in seen:
             seen.add(code)
             # Clean up the item name
@@ -64,8 +66,47 @@ def extract_hs_codes_from_chunk(content: str) -> list[tuple[str, str]]:
             if name.startswith("-"):  # Skip incomplete items like "-- 면으로"
                 continue
 
-            result.append((code, name))
+            result.append((code, name, position))
     return result
+
+
+def extract_context_around_hs_code(
+    content: str,
+    hs_code: str,
+    position: int,
+    window_before: int = 500,
+    window_after: int = 1000,
+) -> str:
+    """Extract context window around the HS code position.
+
+    Ensures the HS code and its description are included in the context.
+    """
+    # Find a good start position (try to start at a paragraph or sentence)
+    start = max(0, position - window_before)
+
+    # Try to find paragraph break before
+    para_break = content.rfind("\n\n", start, position)
+    if para_break > start:
+        start = para_break + 2
+
+    # Find end position
+    end = min(len(content), position + window_after)
+
+    # Try to find paragraph break after
+    para_break = content.find("\n\n", position + len(hs_code), end)
+    if para_break > 0:
+        end = para_break
+
+    extracted = content[start:end].strip()
+
+    # Verify HS code is in extracted context
+    if hs_code not in extracted:
+        # Fallback: just use position-based window
+        start = max(0, position - 200)
+        end = min(len(content), position + 800)
+        extracted = content[start:end].strip()
+
+    return extracted
 
 
 KOREAN_SYNTHESIS_PROMPT = """당신은 관세 및 HS 코드 분류 전문가입니다.
@@ -195,15 +236,21 @@ async def synthesize_korean_dataset(
 
         full_text = f"{context}\n\n{content}" if context else content
 
-        # Extract HS codes from this chunk
+        # Extract HS codes from this chunk (now includes position)
         hs_codes = extract_hs_codes_from_chunk(content)
 
         if hs_codes and len(full_text) > 200:
-            for hs_code, item_name in hs_codes:
+            for hs_code, item_name, position in hs_codes:
+                # Extract focused context around this specific HS code
+                focused_context = extract_context_around_hs_code(
+                    full_text, hs_code, position
+                )
                 chunks_with_codes.append({
                     "content": full_text,
+                    "focused_context": focused_context,
                     "hs_code": hs_code,
                     "item_name": item_name,
+                    "position": position,
                 })
 
     print(f"Found {len(chunks_with_codes)} chunks with extractable HS codes")
@@ -285,10 +332,23 @@ async def synthesize_korean_dataset(
                 )
 
                 if is_valid:
+                    # Use focused_context that contains the specific HS code
+                    retrieval_ctx = chunk_info.get("focused_context", chunk_info["content"][:1000])
+
+                    # Verify the HS code is actually in the retrieval context
+                    if result.hs_code not in retrieval_ctx:
+                        # Try to find and include the HS code
+                        if result.hs_code in chunk_info["content"]:
+                            retrieval_ctx = extract_context_around_hs_code(
+                                chunk_info["content"],
+                                result.hs_code,
+                                chunk_info.get("position", 0),
+                            )
+
                     golden_dicts.append({
                         "input": result.question,
                         "expected_output": result.expected_answer,
-                        "retrieval_context": [chunk_info["content"][:1000]],
+                        "retrieval_context": [retrieval_ctx],
                     })
                     used_hs_codes.add(result.hs_code)
                     pbar.update(1)
