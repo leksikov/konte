@@ -1,5 +1,8 @@
 """Chunker module for segmenting and chunking documents."""
 
+import re
+from pathlib import Path
+
 import structlog
 import tiktoken
 
@@ -7,6 +10,30 @@ from konte.config import settings
 from konte.models import Chunk
 
 logger = structlog.get_logger()
+
+
+def extract_metadata_from_source(source: str) -> dict[str, str]:
+    """Extract metadata (company, year) from source filename.
+
+    Parses filenames like:
+    - ADOBE_2022_10K.md -> company: ADOBE, year: 2022
+    - PEPSICO_2023Q1_EARNINGS.md -> company: PEPSICO, year: 2023
+    - 3M_2018_10K.md -> company: 3M, year: 2018
+
+    Args:
+        source: Source filename or path.
+
+    Returns:
+        Dict with 'company' and 'year' keys (empty dict if not parsed).
+    """
+    filename = Path(source).stem
+    match = re.match(r"^([A-Z0-9]+)_(\d{4})", filename, re.IGNORECASE)
+    if match:
+        return {
+            "company": match.group(1).upper(),
+            "year": match.group(2),
+        }
+    return {}
 
 # Use o200k_base encoding (used by gpt-4.1 and newer models - ~45% more efficient for Korean)
 _ENCODING = tiktoken.encoding_for_model("gpt-4.1")
@@ -201,6 +228,9 @@ def create_chunks(
             num_chunks=len(segment_chunks),
         )
 
+        # Extract metadata from source filename
+        metadata = extract_metadata_from_source(source)
+
         for chunk_idx, chunk_text in enumerate(segment_chunks):
             chunk_id = f"{source}_s{seg_idx}_c{chunk_idx}"
             chunk = Chunk(
@@ -209,6 +239,7 @@ def create_chunks(
                 source=source,
                 segment_idx=seg_idx,
                 chunk_idx=chunk_idx,
+                metadata=metadata,
             )
             chunks.append(chunk)
 
