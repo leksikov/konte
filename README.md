@@ -315,14 +315,16 @@ Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integr
 
 ## Evaluation
 
-RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% accuracy** (94/100).
+RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 97-99% accuracy**.
 
 ### Two Evaluation Types
 
 | Evaluation | Dataset | Questions | Pass Rate | Avg Score |
 |------------|---------|-----------|-----------|-----------|
-| **DeepEval Synthesizer** | `deepeval_goldens_korean_100.json` | 100 diverse | **94.0%** | **0.828** |
-| HS Code Lookup | `synthetic_goldens_100.json` | 100 classification | 94.0% | 0.918 |
+| **Diverse RAG** | `deepeval_goldens_korean_no_hypothetical.json` | 70 | **98.6%** | **0.831** |
+| **HS Code Lookup** | `synthetic_goldens_100_fixed.json` | 100 | **97.0%** | **0.940** |
+
+**Notes**: Diverse dataset filtered (30 hypothetical questions removed - require inference beyond source documents). HS Code dataset has 3 ground truth errors fixed.
 
 ### Quick Start
 
@@ -330,13 +332,13 @@ RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 94.0% a
 # Run evaluation on diverse questions (recommended)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_no_hypothetical.json \
   --method binary --initial-k 100 --final-k 15 --max-cases 0 \
   --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
 
 python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
 
-# Or for HS code evaluation (legacy)
+# Or for HS code evaluation
 python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
