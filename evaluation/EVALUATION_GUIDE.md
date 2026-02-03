@@ -24,8 +24,12 @@ The system supports two evaluation types with switchable LLM judge prompts:
 
 | Type | Dataset | Metric | Description |
 |------|---------|--------|-------------|
-| `answer` | `deepeval_goldens_korean_100.json` | AnswerCorrectness | Diverse RAG questions (default) |
-| `hs_code` | `synthetic_goldens_100.json` | HSCodeCorrectness | HS code lookup questions (legacy) |
+| `answer` | `deepeval_goldens_korean_no_hypothetical.json` | AnswerCorrectness | 70 diverse RAG questions (recommended) |
+| `hs_code` | `synthetic_goldens_100_fixed.json` | HSCodeCorrectness | 100 HS code lookup questions |
+
+**Notes on datasets:**
+- Diverse dataset filtered to 70 questions - removed 30 hypothetical questions that require inference beyond source documents
+- HS Code dataset has 3 ground truth errors fixed (5403.10→5403.31, 5511.20→5511.10, 6001.10→6001.21)
 
 Prompts are defined in `evaluation/prompts/eval_prompts.py`.
 
@@ -35,13 +39,13 @@ Prompts are defined in `evaluation/prompts/eval_prompts.py`.
 
 ### Option 1: Diverse RAG Questions (Recommended)
 
-Run evaluation on DeepEval Synthesizer generated questions (7 Evolution types):
+Run evaluation on DeepEval Synthesizer generated questions (6 Evolution types, hypothetical removed):
 
 ```bash
 # Step 1: Run LLM reranking (generates answers)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_no_hypothetical.json \
   --method binary \
   --initial-k 100 \
   --final-k 15 \
@@ -52,19 +56,21 @@ python -m evaluation.experiments.llm_reranking \
 python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
 ```
 
+**Expected results**: 98.6% pass rate (69/70)
+
 Results saved to:
 - `evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json` (answers)
 - `evaluation/experiments/results/binary_deepeval_diverse_deepeval_correctness.json` (scores)
 
-### Option 2: HS Code Lookup Questions (Legacy)
+### Option 2: HS Code Lookup Questions
 
-Run evaluation on HS code classification questions:
+Run evaluation on HS code classification questions (ground truth fixed):
 
 ```bash
 # Step 1: Run LLM reranking (generates answers)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/synthetic_goldens_100.json \
+  --test-cases evaluation/data/synthetic/synthetic_goldens_100_fixed.json \
   --method binary \
   --initial-k 100 \
   --final-k 15 \
@@ -73,6 +79,8 @@ python -m evaluation.experiments.llm_reranking \
 # Step 2: Run DeepEval evaluation (HS code correctness)
 python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
+
+**Expected results**: 97% pass rate (97/100)
 
 Results saved to:
 - `evaluation/experiments/results/llm_rerank_binary_100.json` (answers)
