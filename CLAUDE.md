@@ -341,18 +341,21 @@ Evolution types for question diversity:
 
 ### Contextual RAG vs Baseline
 
-| Configuration | HS Code (100q) | Diverse RAG (100q) |
+| Configuration | HS Code (100q) | Diverse RAG (70q)* |
 |---------------|----------------|---------------------|
-| **Contextual + Reranking** | **94% (0.920)** | **94% (0.828)** |
+| **Contextual + Reranking** | **97% (0.940)** | **98.6% (0.831)** |
 | Baseline (no context, no rerank) | 85% (0.822) | 74% (0.613) |
-| **Improvement** | **+9% (+0.098)** | **+20% (+0.215)** |
+| **Improvement** | **+12% (+0.118)** | **+25% (+0.218)** |
+
+*After removing 30 hypothetical questions that require inference beyond source documents
 
 Key findings:
-- Context generation provides +20% improvement for diverse questions
-- HS code lookups benefit +9% from context
+- Context generation provides +25% improvement for diverse questions
+- HS code lookups benefit +12% from context
 - Most impact on complex, multi-context questions
+- Ground truth validation is critical (3 HS code errors fixed)
 
-### Evaluation by Question Type
+### Evaluation by Question Type (Filtered - 70 Questions)
 
 | Evolution Type | Pass Rate | Avg Score |
 |----------------|-----------|-----------|
@@ -362,8 +365,9 @@ Key findings:
 | In-Breadth | 95.7% | 0.852 |
 | Multi-context | 92.9% | 0.814 |
 | Concretizing | 91.2% | 0.809 |
-| Hypothetical | 86.7% | 0.777 |
-| **TOTAL** | **94.0%** | **0.828** |
+| **TOTAL** | **98.6%** | **0.831** |
+
+*Hypothetical questions removed - they require inference beyond source documents*
 
 ### Two Evaluation Types
 
@@ -371,8 +375,8 @@ The system supports two evaluation types with switchable LLM judge prompts:
 
 | Type | Dataset | Metric | Use Case |
 |------|---------|--------|----------|
-| `answer` | `deepeval_goldens_korean_100.json` | AnswerCorrectness | Diverse RAG questions (default) |
-| `hs_code` | `synthetic_goldens_100.json` | HSCodeCorrectness | HS code lookup questions |
+| `answer` | `deepeval_goldens_korean_no_hypothetical.json` | AnswerCorrectness | 70 diverse RAG questions (recommended) |
+| `hs_code` | `synthetic_goldens_100_fixed.json` | HSCodeCorrectness | 100 HS code lookup questions |
 
 ### Quick Start
 
@@ -380,14 +384,14 @@ The system supports two evaluation types with switchable LLM judge prompts:
 # Run LLM reranking (generates answers)
 python -m evaluation.experiments.llm_reranking \
   --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_100.json \
+  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_no_hypothetical.json \
   --method binary --initial-k 100 --final-k 15 --max-cases 0 \
   --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
 
 # Run DeepEval evaluation (answer correctness - default)
 python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
 
-# Or for HS code evaluation (legacy)
+# Or for HS code evaluation
 python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
 ```
 
