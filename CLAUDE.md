@@ -33,7 +33,7 @@ pytest tests/unit/test_chunker.py::test_segment_splitting -v
 ```
 konte/
 ├── __init__.py      # Public API exports
-├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig
+├── models.py        # Pydantic models: Chunk, ContextualizedChunk, RetrievalResult, RetrievalResponse, ProjectConfig, BuildCheckpoint
 ├── loader.py        # Document loading (PDF, TXT, MD) - sync and async, with logging
 ├── chunker.py       # Segment (~8000 tokens) + chunk (800 tokens) with overlap, with logging
 ├── context.py       # Async LLM context generation (LangChain abatch, cached LLM instance)
@@ -87,6 +87,7 @@ from konte import (
     project_exists,
 
     # Models
+    BuildCheckpoint,
     Chunk,
     ContextualizedChunk,
     RetrievalResult,
@@ -158,10 +159,49 @@ print(answer.sources_used) # Number of chunks used
 - **Hybrid Retrieval**: FAISS (semantic) + BM25 (lexical) combined via reciprocal rank fusion
 - **Suggested Action**: Agent decision hints based on top_score (deliver ≥0.7, query_more ≥0.4, refine_query <0.4)
 - **Batch Processing**: Uses LangChain `abatch()` (immediate results), not OpenAI Batch API (24hr latency)
+- **Prefix Caching**: Context generation is optimized for vLLM/OpenAI KV cache prefix caching (see below)
 - **RAG Answer Generation**: Optional LLM answer generation from retrieved chunks via `query_with_answer()`
 - **Custom Metadata**: Chunks support custom metadata dict for filtering (e.g., document_name, page_no)
 - **Combined Projects**: Multiple projects can be merged into unified index via `scripts/build_combined_project.py`
 - **Tokenizer**: Uses gpt-4.1 (o200k_base) encoding - ~30% more efficient for Korean text
+- **Build Checkpointing**: Per-segment checkpointing during `build()` enables resumption of interrupted builds
+
+## Prefix Caching Architecture
+
+Context generation is optimized for vLLM/OpenAI KV cache prefix caching.
+
+### Prompt Structure
+```
+[SEGMENT ~8000 tokens] + [CHUNK ~800 tokens]
+```
+
+All chunks within a segment share the same prefix (segment text).
+
+### Processing Strategy
+- **Segments**: Processed sequentially (one at a time)
+- **Chunks within segment**: Processed in parallel via `abatch(max_concurrency=len(chunks))`
+
+### How Prefix Caching Works
+```
+Segment A (10 chunks):
+  Request 1: segment_A + chunk_1  → computes prefix KV, caches it
+  Request 2: segment_A + chunk_2  → cache hit, only computes chunk_2
+  Request 3: segment_A + chunk_3  → cache hit, only computes chunk_3
+  ... (all 10 requests sent in parallel)
+
+Then Segment B (10 chunks):
+  Request 1: segment_B + chunk_1  → computes new prefix KV, caches it
+  ... (parallel within segment)
+```
+
+### Why This Design
+- Request order within segment doesn't matter - whichever arrives first triggers caching
+- Sequential segments ensure KV cache isn't fragmented across multiple large prefixes
+- Parallel chunks maximize throughput while benefiting from shared prefix cache
+- Code: `context.py:183-184` - `abatch(prompts, config={"max_concurrency": len(prompts)})`
+
+### Do NOT Parallelize Segments
+Parallelizing segments would interleave requests with different prefixes, fragmenting the KV cache and defeating prefix caching benefits.
 
 ## Logging & Observability
 
@@ -182,10 +222,14 @@ Structured logging via structlog provides visibility into the ingestion pipeline
 | | `chunking_segment` | debug | source, segment_index, num_chunks |
 | | `chunks_created` | debug | source, total_segments, total_chunks |
 | **Context** | `context_generation_started` | info | total_segments, skip_context |
-| | `generating_context_for_segment` | info | segment_index, total_segments, num_chunks |
+| | `checkpoint_resumed` | info | completed_segments, total_segments |
+| | `segment_skipped` | info | segment_key, reason |
+| | `generating_context_for_segment` | info | segment_key, total_segments, num_chunks |
+| | `checkpoint_saved` | info | segment_key, completed, total |
 | | `context_generation_complete` | info | num_chunks, skipped |
 | **Indexing** | `faiss_index_built` | info | - |
 | | `bm25_index_built` | info | - |
+| | `checkpoint_cleared` | info | - |
 | | `project_build_complete` | info | - |
 
 ### Log Levels
@@ -213,14 +257,15 @@ Note: 1 document → 5 segments (~8000 tokens each) → ~11 chunks per segment (
 ```
 {STORAGE_PATH}/
 └── {project_name}/
-    ├── config.json       # ProjectConfig
-    ├── raw_chunks.json   # Raw chunks (before build)
-    ├── segments.json     # Segment data (keys: "source|segment_idx")
-    ├── chunks.json       # ContextualizedChunk list (after build)
-    ├── faiss.faiss       # FAISS index (LangChain format)
-    ├── faiss.pkl         # FAISS docstore (LangChain format)
-    ├── bm25.pkl          # BM25 index (if enabled)
-    └── bm25_chunks.json  # Chunk data for BM25
+    ├── config.json              # ProjectConfig
+    ├── raw_chunks.json          # Raw chunks (before build)
+    ├── segments.json            # Segment data (keys: "source|segment_idx")
+    ├── chunks.json              # ContextualizedChunk list (after build)
+    ├── context_checkpoint.json  # Build checkpoint (temporary, cleared on success)
+    ├── faiss.faiss              # FAISS index (LangChain format)
+    ├── faiss.pkl                # FAISS docstore (LangChain format)
+    ├── bm25.pkl                 # BM25 index (if enabled)
+    └── bm25_chunks.json         # Chunk data for BM25
 ```
 
 ## Configuration
@@ -233,7 +278,7 @@ All config via pydantic-settings in `settings.py`. Key settings:
 - `DEFAULT_TOP_K`: 20
 - `SEGMENT_SIZE`: 8000 tokens
 - `CHUNK_SIZE`: 800 tokens
-- `MAX_CONCURRENT_CALLS`: 1
+- `MAX_CONCURRENT_CALLS`: 1 (legacy, unused - concurrency is automatic per segment)
 - `BACKENDAI_ENDPOINT`: BackendAI vLLM endpoint (default: `https://qwen3vl.asia03.app.backend.ai/v1`)
 - `BACKENDAI_MODEL_NAME`: Model for context/answer generation (default: `Qwen3-VL-8B-Instruct`)
 
