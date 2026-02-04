@@ -1,0 +1,73 @@
+Analyzing HS Code failures...
+Analyzing Diverse failures...
+
+============================================================
+FAILURE ANALYSIS RESULTS
+============================================================
+
+HS Code Failures: 6
+
+  1. 인조섬유로 만든 저지 풀오버 카디건은 어느 HS 코드에 분류되나요?...
+     Score: 0.2 | Type: knowledge_gap
+     Evidence in chunks: False | Recoverable: False
+
+  2. 비스코스 레이온으로 만든 꼬임이 없거나 미터당 120회 이하인 재생 필라멘트사는 어느 HS 코드에 분류되나요...
+     Score: 0.2 | Type: hs_code_confusion
+     Evidence in chunks: True | Recoverable: True
+
+  3. 시아노겐 클로라이드(클로르시안)는 어느 HS 코드에 분류되나요?...
+     Score: 0.2 | Type: knowledge_gap
+     Evidence in chunks: False | Recoverable: False
+
+  4. 합성스테이플섬유의 함유량이 전 중량의 85% 이상인 소매용 인조스테이플섬유사는 어느 HS 코드에 분류되나요?...
+     Score: 0.2 | Type: hs_code_confusion
+     Evidence in chunks: True | Recoverable: True
+
+  5. 제5602호 또는 제5603호의 직물로 만든 여성용 실내복(슬립, 페티코트, 나이트드레스 등)은 어느 HS ...
+     Score: 0.2 | Type: context_quality
+     Evidence in chunks: True | Recoverable: True
+
+  6. 롱파일(looped pile) 편물 중 면으로 만든 메리야스 편물은 어느 HS 코드에 분류되나요?...
+     Score: 0.0 | Type: hs_code_confusion
+     Evidence in chunks: True | Recoverable: True
+
+Diverse Failures: 6
+
+  1. 인조 커런덤 용융법과 무수 알루미나 소성법이 결합될 경우, 미세구조와 내화성은 어떻게 변화할까요?...
+     Score: 0.3 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+  2. 복사지용 종이와 등사원지의 방수 처리 방법, 압력 구멍 형성 방식, 그리고 복사기 고정 방식에는 어떤 차이가...
+     Score: 0.2 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+  3. 가동코일형 대신 가동철편형을 사용할 경우 전류 측정의 정확도와 응답 속도에는 어떤 차이가 발생하나요?...
+     Score: 0.2 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+  4. 케이폭과 코이어 섬유의 가구용 충전재 분류 기준과 HS 코드의 차이점은 무엇인가요?...
+     Score: 0.2 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+  5. PHEV가 충전이 불가능한 장거리 주행 시 HEV와 추진용 전동기 및 총중량별로 어떤 성능 차이가 발생하나요...
+     Score: 0.2 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+  6. 만약 오배자 탄닌과 제외된 유도체가 혼합된다면, 이 혼합물의 분류 기준은 어떻게 달라질까요?...
+     Score: 0.3 | Type: retrieval_miss
+     Evidence in chunks: False | Recoverable: True
+
+
+Report saved to: evaluation/experiments/results/ERROR_ANALYSIS.md
+
+============================================================
+SUMMARY
+============================================================
+Total failures: 12
+Recoverable: 10
+Not recoverable: 2
+
+To reach 96%: Need to fix 2 failures per dataset
+Recoverable available: HS=4, Diverse=6
+
+✓ 96% target is ACHIEVABLE based on recoverable failures
