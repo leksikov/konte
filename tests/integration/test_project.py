@@ -251,6 +251,163 @@ class TestProjectAsRetriever:
 
 
 @pytest.mark.integration
+class TestProjectCheckpoint:
+    """Test build checkpoint functionality with real file I/O."""
+
+    async def test_checkpoint_created_during_build(self, tmp_path):
+        """Test that checkpoint file is created during build."""
+        from konte.project import Project
+
+        project = Project.create(name="checkpoint_test", storage_path=tmp_path)
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        # Build with skip_context to make it faster
+        await project.build(skip_context=True)
+
+        # Checkpoint should be cleared after successful build
+        checkpoint_path = tmp_path / "checkpoint_test" / "context_checkpoint.json"
+        assert not checkpoint_path.exists()
+
+    async def test_checkpoint_cleared_after_successful_build(self, tmp_path):
+        """Test that checkpoint is cleared after successful build."""
+        from konte.project import Project
+
+        project = Project.create(name="clear_test", storage_path=tmp_path)
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        await project.build(skip_context=True)
+
+        # Checkpoint should be cleared
+        checkpoint_path = project._checkpoint_path()
+        assert not checkpoint_path.exists()
+
+    async def test_build_resume_continues_from_checkpoint(self, tmp_path):
+        """Test that build resumes from checkpoint."""
+        from konte.project import Project
+        from konte.models import BuildCheckpoint
+        import json
+
+        project = Project.create(name="resume_test", storage_path=tmp_path)
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        # Get the segments that will be created
+        segments_count = len(project._segments)
+        assert segments_count >= 1
+
+        # Manually create a checkpoint for the first segment
+        first_seg_key = list(project._segments.keys())[0]
+        seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
+        first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
+
+        checkpoint = BuildCheckpoint(
+            completed_segments=[seg_key_str],
+            contextualized_chunks=[
+                {"chunk": first_chunk.model_dump(), "context": "Pre-existing context"}
+            ],
+        )
+        project._save_checkpoint(checkpoint)
+
+        # Build with resume=True
+        await project.build(skip_context=True, resume=True)
+
+        # Should have contextualized chunks
+        assert len(project._contextualized_chunks) > 0
+
+        # First chunk should have the pre-existing context
+        first_ctx_chunk = next(
+            c for c in project._contextualized_chunks
+            if c.chunk.chunk_id == first_chunk.chunk_id
+        )
+        assert first_ctx_chunk.context == "Pre-existing context"
+
+    async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
+        """Test that resume=False ignores existing checkpoint."""
+        from konte.project import Project
+        from konte.models import BuildCheckpoint
+
+        project = Project.create(name="no_resume_test", storage_path=tmp_path)
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        # Create a checkpoint with fake context
+        first_seg_key = list(project._segments.keys())[0]
+        seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
+        first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
+
+        checkpoint = BuildCheckpoint(
+            completed_segments=[seg_key_str],
+            contextualized_chunks=[
+                {"chunk": first_chunk.model_dump(), "context": "Should be ignored"}
+            ],
+        )
+        project._save_checkpoint(checkpoint)
+
+        # Build with resume=False
+        await project.build(skip_context=True, resume=False)
+
+        # First chunk should NOT have the pre-existing context
+        first_ctx_chunk = next(
+            c for c in project._contextualized_chunks
+            if c.chunk.chunk_id == first_chunk.chunk_id
+        )
+        # skip_context=True means context should be empty, not "Should be ignored"
+        assert first_ctx_chunk.context != "Should be ignored"
+
+    def test_checkpoint_path_method(self, tmp_path):
+        """Test that _checkpoint_path returns correct path."""
+        from konte.project import Project
+
+        project = Project.create(name="path_test", storage_path=tmp_path)
+        checkpoint_path = project._checkpoint_path()
+
+        expected = tmp_path / "path_test" / "context_checkpoint.json"
+        assert checkpoint_path == expected
+
+    def test_save_and_load_checkpoint(self, tmp_path):
+        """Test checkpoint save and load round-trip."""
+        from konte.project import Project
+        from konte.models import BuildCheckpoint
+
+        project = Project.create(name="roundtrip_test", storage_path=tmp_path)
+
+        # Create and save checkpoint
+        original = BuildCheckpoint(
+            completed_segments=["doc.pdf|0", "doc.pdf|1"],
+            contextualized_chunks=[
+                {"chunk": {"chunk_id": "c1", "content": "text1"}, "context": "ctx1"},
+                {"chunk": {"chunk_id": "c2", "content": "text2"}, "context": "ctx2"},
+            ],
+        )
+        project._save_checkpoint(original)
+
+        # Load checkpoint
+        loaded = project._load_checkpoint()
+
+        assert loaded is not None
+        assert loaded.completed_segments == original.completed_segments
+        assert len(loaded.contextualized_chunks) == 2
+
+    def test_clear_checkpoint(self, tmp_path):
+        """Test checkpoint clearing."""
+        from konte.project import Project
+        from konte.models import BuildCheckpoint
+
+        project = Project.create(name="clear_test", storage_path=tmp_path)
+
+        # Save checkpoint
+        checkpoint = BuildCheckpoint(completed_segments=["doc.pdf|0"])
+        project._save_checkpoint(checkpoint)
+
+        # Verify it exists
+        assert project._checkpoint_path().exists()
+
+        # Clear it
+        project._clear_checkpoint()
+
+        # Verify it's gone
+        assert not project._checkpoint_path().exists()
+
+
+@pytest.mark.integration
 class TestProjectSegmentStorage:
     """Test that segments are stored correctly (not full document)."""
 
