@@ -11,6 +11,7 @@ from konte.manager import (
     project_exists,
 )
 from konte.models import (
+    BuildCheckpoint,
     Chunk,
     ContextualizedChunk,
     MetadataFilter,
@@ -25,6 +26,7 @@ __all__ = [
     # Settings
     "settings",
     # Models
+    "BuildCheckpoint",
     "Chunk",
     "ContextualizedChunk",
     "MetadataFilter",
