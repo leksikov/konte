@@ -229,6 +229,64 @@ class TestRetrievalResponse:
 
 
 @pytest.mark.unit
+class TestBuildCheckpoint:
+    """Test BuildCheckpoint model."""
+
+    def test_checkpoint_creation_defaults(self):
+        """Test creating a BuildCheckpoint with defaults."""
+        from konte.models import BuildCheckpoint
+
+        checkpoint = BuildCheckpoint()
+        assert checkpoint.completed_segments == []
+        assert checkpoint.contextualized_chunks == []
+
+    def test_checkpoint_creation_with_data(self):
+        """Test creating a BuildCheckpoint with data."""
+        from konte.models import BuildCheckpoint
+
+        checkpoint = BuildCheckpoint(
+            completed_segments=["doc.pdf|0", "doc.pdf|1"],
+            contextualized_chunks=[
+                {"chunk": {"chunk_id": "id1", "content": "text"}, "context": "ctx"}
+            ],
+        )
+        assert len(checkpoint.completed_segments) == 2
+        assert checkpoint.completed_segments[0] == "doc.pdf|0"
+        assert len(checkpoint.contextualized_chunks) == 1
+
+    def test_checkpoint_serialization(self):
+        """Test that BuildCheckpoint can be serialized to JSON."""
+        from konte.models import BuildCheckpoint
+        import json
+
+        checkpoint = BuildCheckpoint(
+            completed_segments=["doc.pdf|0"],
+            contextualized_chunks=[
+                {"chunk": {"chunk_id": "id1"}, "context": "ctx"}
+            ],
+        )
+        json_str = checkpoint.model_dump_json()
+        data = json.loads(json_str)
+        assert data["completed_segments"] == ["doc.pdf|0"]
+        assert len(data["contextualized_chunks"]) == 1
+
+    def test_checkpoint_deserialization(self):
+        """Test that BuildCheckpoint can be deserialized from dict."""
+        from konte.models import BuildCheckpoint
+
+        data = {
+            "completed_segments": ["doc.pdf|0", "doc.pdf|1"],
+            "contextualized_chunks": [
+                {"chunk": {"chunk_id": "id1"}, "context": "ctx1"},
+                {"chunk": {"chunk_id": "id2"}, "context": "ctx2"},
+            ],
+        }
+        checkpoint = BuildCheckpoint(**data)
+        assert len(checkpoint.completed_segments) == 2
+        assert len(checkpoint.contextualized_chunks) == 2
+
+
+@pytest.mark.unit
 class TestProjectConfig:
     """Test ProjectConfig model."""
 
