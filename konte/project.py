@@ -11,7 +11,13 @@ from konte.config import settings
 from konte.context import generate_contexts_batch
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
-from konte.models import Chunk, ContextualizedChunk, ProjectConfig, RetrievalResponse
+from konte.models import (
+    BuildCheckpoint,
+    Chunk,
+    ContextualizedChunk,
+    ProjectConfig,
+    RetrievalResponse,
+)
 from konte.stores import BM25Store, FAISSStore, Retriever, RetrievalMode
 
 logger = structlog.get_logger()
@@ -43,6 +49,32 @@ class Project:
     def project_dir(self) -> Path:
         """Get project directory path."""
         return self._config.storage_path / self._config.name
+
+    def _checkpoint_path(self) -> Path:
+        """Get path to checkpoint file."""
+        return self.project_dir / "context_checkpoint.json"
+
+    def _load_checkpoint(self) -> BuildCheckpoint | None:
+        """Load checkpoint if exists."""
+        path = self._checkpoint_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return BuildCheckpoint(**data)
+
+    def _save_checkpoint(self, checkpoint: BuildCheckpoint) -> None:
+        """Save checkpoint to disk."""
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_path().write_text(
+            checkpoint.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+    def _clear_checkpoint(self) -> None:
+        """Remove checkpoint file after successful build."""
+        path = self._checkpoint_path()
+        if path.exists():
+            path.unlink()
 
     def add_documents(self, file_paths: list[Path]) -> int:
         """Add documents to the project.
@@ -91,6 +123,7 @@ class Project:
         skip_context: bool = False,
         enable_faiss: bool | None = None,
         enable_bm25: bool | None = None,
+        resume: bool = True,
     ) -> None:
         """Build indexes from added documents.
 
@@ -98,6 +131,7 @@ class Project:
             skip_context: If True, skip LLM context generation (standard RAG).
             enable_faiss: Enable FAISS index. Defaults to config setting.
             enable_bm25: Enable BM25 index. Defaults to config setting.
+            resume: If True, resume from checkpoint if exists.
         """
         if not self._chunks:
             logger.warning("build_no_chunks")
@@ -117,9 +151,36 @@ class Project:
                 chunks_by_segment[key] = []
             chunks_by_segment[key].append(chunk)
 
-        # Generate context for each segment's chunks
-        self._contextualized_chunks = []
         total_segments = len(chunks_by_segment)
+
+        # Load checkpoint if resuming
+        checkpoint: BuildCheckpoint | None = None
+        completed_set: set[str] = set()
+
+        if resume:
+            checkpoint = self._load_checkpoint()
+            if checkpoint:
+                completed_set = set(checkpoint.completed_segments)
+                self._contextualized_chunks = [
+                    ContextualizedChunk(
+                        chunk=Chunk(**item["chunk"]),
+                        context=item["context"],
+                    )
+                    for item in checkpoint.contextualized_chunks
+                ]
+                logger.info(
+                    "checkpoint_resumed",
+                    completed_segments=len(completed_set),
+                    total_segments=total_segments,
+                )
+            else:
+                self._contextualized_chunks = []
+        else:
+            self._contextualized_chunks = []
+
+        if checkpoint is None:
+            checkpoint = BuildCheckpoint()
+
         logger.info(
             "context_generation_started",
             total_segments=total_segments,
@@ -127,10 +188,17 @@ class Project:
         )
 
         for seg_key, segment_chunks in chunks_by_segment.items():
+            seg_key_str = f"{seg_key[0]}|{seg_key[1]}"
+
+            # Skip if already completed
+            if seg_key_str in completed_set:
+                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
+                continue
+
             segment_text = self._segments.get(seg_key, "")
             logger.info(
                 "generating_context_for_segment",
-                segment_index=seg_key,
+                segment_key=seg_key_str,
                 total_segments=total_segments,
                 num_chunks=len(segment_chunks),
             )
@@ -142,6 +210,20 @@ class Project:
                 skip_context=skip_context,
             )
             self._contextualized_chunks.extend(ctx_chunks)
+
+            # Update and save checkpoint
+            checkpoint.completed_segments.append(seg_key_str)
+            checkpoint.contextualized_chunks.extend([
+                {"chunk": c.chunk.model_dump(), "context": c.context}
+                for c in ctx_chunks
+            ])
+            self._save_checkpoint(checkpoint)
+            logger.info(
+                "checkpoint_saved",
+                segment_key=seg_key_str,
+                completed=len(checkpoint.completed_segments),
+                total=total_segments,
+            )
 
         logger.info(
             "context_generation_complete",
@@ -165,6 +247,10 @@ class Project:
             faiss_store=self._faiss,
             bm25_store=self._bm25,
         )
+
+        # Clear checkpoint on successful build
+        self._clear_checkpoint()
+        logger.info("checkpoint_cleared")
 
         logger.info("project_build_complete")
 
