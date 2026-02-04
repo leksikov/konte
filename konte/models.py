@@ -58,6 +58,13 @@ class RetrievalResponse(BaseModel):
     suggested_action: Literal["deliver", "query_more", "refine_query"]
 
 
+class BuildCheckpoint(BaseModel):
+    """Checkpoint state for build process resumption."""
+
+    completed_segments: list[str] = Field(default_factory=list)
+    contextualized_chunks: list[dict] = Field(default_factory=list)
+
+
 class ProjectConfig(BaseModel):
     """Configuration for a project."""
 
