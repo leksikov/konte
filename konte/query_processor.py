@@ -1,10 +1,9 @@
 """Query preprocessing for better BM25 retrieval (Korean and English)."""
 
 import structlog
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from konte.config import settings
+from konte.context import get_llm
 
 logger = structlog.get_logger()
 
@@ -43,21 +42,6 @@ class ExtractedKeywords(BaseModel):
     keywords: list[str]
 
 
-_llm_instance: ChatOpenAI | None = None
-
-
-def _get_llm() -> ChatOpenAI:
-    """Get cached LLM instance."""
-    global _llm_instance
-    if _llm_instance is None:
-        _llm_instance = ChatOpenAI(
-            model=settings.CONTEXT_MODEL,
-            temperature=0.0,
-            max_tokens=100,
-        )
-    return _llm_instance
-
-
 def _fallback_tokenize(query: str) -> list[str]:
     """Fallback tokenizer with stopword filtering."""
     tokens = query.split()
@@ -84,7 +68,7 @@ def extract_search_keywords(query: str) -> list[str]:
         Output: ["Paypal", "positive", "working capital", "FY2022", "data"]
     """
     try:
-        llm = _get_llm()
+        llm = get_llm()
         structured_llm = llm.with_structured_output(ExtractedKeywords)
         result = structured_llm.invoke(
             KEYWORD_EXTRACTION_PROMPT.format(query=query)
@@ -121,7 +105,7 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         List of clean keywords for BM25 search.
     """
     try:
-        llm = _get_llm()
+        llm = get_llm()
         structured_llm = llm.with_structured_output(ExtractedKeywords)
         result = await structured_llm.ainvoke(
             KEYWORD_EXTRACTION_PROMPT.format(query=query)
