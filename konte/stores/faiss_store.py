@@ -15,10 +15,18 @@ from konte.models import Chunk, ContextualizedChunk
 
 
 def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: dict[str, Any]) -> bool:
-    """Check if document metadata matches the filter (AND logic)."""
+    """Check if document metadata matches the filter (AND logic).
+
+    Values can be a single value (equality) or a list (match any).
+    """
     for key, value in metadata_filter.items():
-        if metadata.get(key) != value:
-            return False
+        actual = metadata.get(key)
+        if isinstance(value, list):
+            if actual not in value:
+                return False
+        else:
+            if actual != value:
+                return False
     return True
 
 logger = structlog.get_logger()

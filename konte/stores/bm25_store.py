@@ -31,28 +31,31 @@ def _matches_filter(
 ) -> bool:
     """Check if a chunk matches the metadata filter (AND logic).
 
+    Values can be a single value (equality) or a list (match any).
+
     Args:
         chunk: The chunk to check.
-        metadata_filter: Filter with key-value pairs (equality match).
+        metadata_filter: Filter with key-value pairs.
 
     Returns:
         True if all filter conditions match.
     """
     chunk_metadata = chunk.chunk.metadata
-    # Also check standard fields: source, segment_idx, chunk_idx
     for key, value in metadata_filter.items():
         if key == "source":
-            if chunk.chunk.source != value:
-                return False
+            actual = chunk.chunk.source
         elif key == "segment_idx":
-            if chunk.chunk.segment_idx != value:
-                return False
+            actual = chunk.chunk.segment_idx
         elif key == "chunk_idx":
-            if chunk.chunk.chunk_idx != value:
+            actual = chunk.chunk.chunk_idx
+        else:
+            actual = chunk_metadata.get(key)
+
+        if isinstance(value, list):
+            if actual not in value:
                 return False
         else:
-            # Check custom metadata
-            if chunk_metadata.get(key) != value:
+            if actual != value:
                 return False
     return True
 

@@ -217,6 +217,30 @@ def multi_source_chunks():
     return chunks
 
 
+@pytest.fixture
+def metadata_chunks():
+    """Create chunks with custom metadata for metadata_filter testing."""
+    data = [
+        ("ADOBE_2022_10K.md", "Adobe revenue report.", {"company": "ADOBE", "year": "2022"}),
+        ("ADOBE_2023_10K.md", "Adobe growth analysis.", {"company": "ADOBE", "year": "2023"}),
+        ("3M_2022_10K.md", "3M industrial results.", {"company": "3M", "year": "2022"}),
+        ("3M_2023_10K.md", "3M segment performance.", {"company": "3M", "year": "2023"}),
+        ("JOHNSON_2022_10K.md", "Johnson pharma division.", {"company": "JOHNSON", "year": "2022"}),
+    ]
+    chunks = []
+    for i, (source, content, meta) in enumerate(data):
+        chunk = Chunk(
+            chunk_id=f"{source}_s0_c{i}",
+            content=content,
+            source=source,
+            segment_idx=0,
+            chunk_idx=i,
+            metadata=meta,
+        )
+        chunks.append(ContextualizedChunk(chunk=chunk, context=""))
+    return chunks
+
+
 @pytest.mark.unit
 class TestBM25StoreSourceFilter:
     """Test BM25 store source_filter functionality."""
@@ -275,3 +299,65 @@ class TestBM25StoreSourceFilter:
         assert len(results) > 0
         for chunk, _ in results:
             assert chunk.chunk.source == "ADOBE_2022_10K.md"
+
+
+@pytest.mark.unit
+class TestBM25StoreListValueFilter:
+    """Test BM25 store metadata_filter with list values."""
+
+    def test_metadata_filter_list_values(self, metadata_chunks):
+        """Test filtering with list values returns chunks matching any value."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(metadata_chunks)
+
+        results = store.query(
+            "revenue",
+            top_k=10,
+            metadata_filter={"company": ["ADOBE", "3M"]},
+        )
+
+        assert len(results) == 4
+        companies = {r[0].chunk.metadata["company"] for r in results}
+        assert companies == {"ADOBE", "3M"}
+
+    def test_metadata_filter_list_single_item(self, metadata_chunks):
+        """Test list with single item behaves same as scalar."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(metadata_chunks)
+
+        results_list = store.query(
+            "revenue",
+            top_k=10,
+            metadata_filter={"year": ["2022"]},
+        )
+        results_scalar = store.query(
+            "revenue",
+            top_k=10,
+            metadata_filter={"year": "2022"},
+        )
+
+        ids_list = sorted(r[0].chunk.chunk_id for r in results_list)
+        ids_scalar = sorted(r[0].chunk.chunk_id for r in results_scalar)
+        assert ids_list == ids_scalar
+
+    def test_metadata_filter_mixed_list_and_scalar(self, metadata_chunks):
+        """Test combining list and scalar filters (AND logic)."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(metadata_chunks)
+
+        results = store.query(
+            "revenue",
+            top_k=10,
+            metadata_filter={"company": ["ADOBE", "3M"], "year": "2022"},
+        )
+
+        assert len(results) == 2
+        for chunk, _ in results:
+            assert chunk.chunk.metadata["company"] in ["ADOBE", "3M"]
+            assert chunk.chunk.metadata["year"] == "2022"
