@@ -158,9 +158,36 @@ await project.build(skip_context=True)
 
 ## Performance Optimizations
 
-- **LLM Instance Caching**: Reuses ChatOpenAI instance to enable OpenAI prompt caching
-- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls
-- **Prompt Structure**: Segment (~8000 tokens) comes first enabling prefix caching across chunks
+### vLLM/OpenAI Prefix Caching
+
+Context generation is optimized for KV cache prefix caching:
+
+```
+Prompt structure: [SEGMENT ~8000 tokens] + [CHUNK ~800 tokens]
+```
+
+**How it works:**
+1. All chunks within a segment share the same prefix (segment text)
+2. Chunks are sent in parallel via `abatch(max_concurrency=len(chunks))`
+3. First request computes and caches the segment prefix KV states
+4. Subsequent chunk requests hit the cache - only compute the unique chunk suffix
+5. Segments are processed sequentially to maximize cache efficiency
+
+```
+Segment A (10 chunks):
+  Request 1: segment_A + chunk_1  → compute prefix, cache it
+  Request 2: segment_A + chunk_2  → cache hit, compute only chunk_2
+  Request 3: segment_A + chunk_3  → cache hit, compute only chunk_3
+  ...
+Then Segment B, etc.
+```
+
+Request order within a segment doesn't matter - whichever arrives first triggers caching.
+
+### Other Optimizations
+
+- **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
+- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls within segment
 
 ## Logging
 
