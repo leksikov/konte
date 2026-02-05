@@ -293,3 +293,43 @@ class TestCreateChunksDataFlow:
         assert indices == expected, (
             f"Segment indices not contiguous: got {indices}, expected {expected}"
         )
+
+
+@pytest.mark.unit
+class TestExtractMetadataFromSource:
+    """Test metadata extraction from source filenames."""
+
+    def test_single_word_company(self):
+        """Test single word company name."""
+        from konte.chunker import extract_metadata_from_source
+
+        result = extract_metadata_from_source("ADOBE_2022_10K.md")
+        assert result == {"company": "ADOBE", "year": "2022"}
+
+    def test_multi_word_company(self):
+        """Test multi-word company name with underscores."""
+        from konte.chunker import extract_metadata_from_source
+
+        result = extract_metadata_from_source("JOHNSON_JOHNSON_2022_10K.md")
+        assert result == {"company": "JOHNSON_JOHNSON", "year": "2022"}
+
+    def test_numeric_company(self):
+        """Test company name starting with number."""
+        from konte.chunker import extract_metadata_from_source
+
+        result = extract_metadata_from_source("3M_2018_10K.md")
+        assert result == {"company": "3M", "year": "2018"}
+
+    def test_no_match(self):
+        """Test filename that doesn't match pattern."""
+        from konte.chunker import extract_metadata_from_source
+
+        result = extract_metadata_from_source("readme.md")
+        assert result == {}
+
+    def test_lowercase_filename(self):
+        """Test lowercase filename."""
+        from konte.chunker import extract_metadata_from_source
+
+        result = extract_metadata_from_source("apple_2023_annual.txt")
+        assert result == {"company": "APPLE", "year": "2023"}
