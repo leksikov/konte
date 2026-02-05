@@ -5,6 +5,7 @@ from pathlib import Path
 
 import structlog
 import tiktoken
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from konte.config import settings
 from konte.models import Chunk
@@ -53,30 +54,27 @@ def count_tokens(text: str) -> int:
     return len(_ENCODING.encode(text))
 
 
-def _find_word_boundary(text: str, position: int, direction: str = "backward") -> int:
-    """Find the nearest word boundary from a position.
+# Sentence-aware separators: paragraphs > lines > sentences > words
+_SENTENCE_SEPARATORS = [
+    "\n\n",
+    "\n",
+    ". ",
+    "? ",
+    "! ",
+    "。",
+    " ",
+]
 
-    Args:
-        text: The text to search in.
-        position: Starting position.
-        direction: "backward" or "forward".
 
-    Returns:
-        Position of word boundary.
-    """
-    if position >= len(text):
-        return len(text)
-    if position <= 0:
-        return 0
-
-    if direction == "backward":
-        while position > 0 and text[position - 1] not in " \n\t":
-            position -= 1
-    else:
-        while position < len(text) and text[position] not in " \n\t":
-            position += 1
-
-    return position
+def _make_splitter(max_tokens: int, overlap_tokens: int) -> RecursiveCharacterTextSplitter:
+    """Create a sentence-boundary-aware splitter with token counting."""
+    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        encoding_name="o200k_base",
+        chunk_size=max_tokens,
+        chunk_overlap=overlap_tokens,
+        separators=_SENTENCE_SEPARATORS,
+        keep_separator="end",
+    )
 
 
 def _split_by_tokens(
@@ -84,7 +82,7 @@ def _split_by_tokens(
     max_tokens: int,
     overlap_tokens: int,
 ) -> list[str]:
-    """Split text into chunks by token count with overlap.
+    """Split text into chunks by token count at sentence boundaries.
 
     Args:
         text: Text to split.
@@ -101,43 +99,8 @@ def _split_by_tokens(
     if total_tokens <= max_tokens:
         return [text]
 
-    chunks = []
-    tokens = _ENCODING.encode(text)
-    start = 0
-
-    while start < len(tokens):
-        end = min(start + max_tokens, len(tokens))
-
-        # Decode this chunk
-        chunk_tokens = tokens[start:end]
-        chunk_text = _ENCODING.decode(chunk_tokens)
-
-        # Adjust to word boundary if not at the end
-        if end < len(tokens):
-            # Find word boundary within the chunk
-            boundary = _find_word_boundary(chunk_text, len(chunk_text), "backward")
-
-            # Only adjust if we found a reasonable boundary (at least 10 chars in)
-            if boundary > 10:
-                chunk_text = chunk_text[:boundary].strip()
-
-        # Skip chunks that are too small (less than overlap size)
-        stripped = chunk_text.strip()
-        if len(_ENCODING.encode(stripped)) >= overlap_tokens:
-            chunks.append(stripped)
-
-        # Move start position with overlap
-        step = max_tokens - overlap_tokens
-        if step <= 0:
-            step = max_tokens // 2
-
-        start += step
-
-        # Break if we've processed all content
-        if start >= len(tokens):
-            break
-
-    return chunks
+    splitter = _make_splitter(max_tokens, overlap_tokens)
+    return splitter.split_text(text)
 
 
 def segment_document(
