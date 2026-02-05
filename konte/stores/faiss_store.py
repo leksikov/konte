@@ -187,6 +187,7 @@ class FAISSStore:
         query: str,
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the FAISS index.
 
@@ -195,6 +196,8 @@ class FAISSStore:
             top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "page_no": 5}
+            source_filter: Substring match on chunk source field.
+                Example: "JOHNSON" matches "JOHNSON_JOHNSON_2022_10K.md"
 
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
@@ -206,14 +209,17 @@ class FAISSStore:
         k = top_k or settings.DEFAULT_TOP_K
 
         # Pre-retrieval filtering: use FAISS IDSelector to search only matching documents
-        if metadata_filter:
+        if metadata_filter or source_filter:
             # Find FAISS internal IDs that match the filter
             valid_faiss_ids = []
             for faiss_id, docstore_id in self._vectorstore.index_to_docstore_id.items():
                 doc = self._vectorstore.docstore.search(docstore_id)
                 if doc and hasattr(doc, "metadata"):
-                    if _matches_faiss_filter(doc.metadata, metadata_filter):
-                        valid_faiss_ids.append(faiss_id)
+                    if metadata_filter and not _matches_faiss_filter(doc.metadata, metadata_filter):
+                        continue
+                    if source_filter and source_filter not in doc.metadata.get("source", ""):
+                        continue
+                    valid_faiss_ids.append(faiss_id)
 
             if not valid_faiss_ids:
                 return []

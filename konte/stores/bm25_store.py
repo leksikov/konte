@@ -166,6 +166,7 @@ class BM25Store:
         query: str,
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the BM25 index.
 
@@ -174,6 +175,8 @@ class BM25Store:
             top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "year": 2024}
+            source_filter: Substring match on chunk source field.
+                Example: "JOHNSON" matches "JOHNSON_JOHNSON_2022_10K.md"
 
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
@@ -194,6 +197,14 @@ class BM25Store:
                 return []
         else:
             valid_indices = list(range(len(self._chunks)))
+
+        if source_filter:
+            valid_indices = [
+                i for i in valid_indices
+                if source_filter in self._chunks[i].chunk.source
+            ]
+            if not valid_indices:
+                return []
 
         k = min(k, len(valid_indices))
 

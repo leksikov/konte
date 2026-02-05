@@ -197,6 +197,7 @@ class Retriever:
         query: str,
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using FAISS semantic search only.
 
@@ -204,6 +205,7 @@ class Retriever:
             query: Query string.
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
@@ -214,7 +216,7 @@ class Retriever:
             logger.warning("semantic_retrieval_no_index")
             return _build_retrieval_response(query, [], k)
 
-        results = self._faiss.query(query, top_k=k, metadata_filter=metadata_filter)
+        results = self._faiss.query(query, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
         return _build_retrieval_response(query, results, k)
 
     def retrieve_lexical(
@@ -223,6 +225,7 @@ class Retriever:
         top_k: int | None = None,
         use_keyword_extraction: bool = True,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using BM25 lexical search only.
 
@@ -231,6 +234,7 @@ class Retriever:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             use_keyword_extraction: If True, extract keywords for better Korean BM25.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
@@ -241,7 +245,7 @@ class Retriever:
             logger.warning("lexical_retrieval_no_index")
             return _build_retrieval_response(query, [], k)
 
-        results = self._get_lexical_results(query, k, use_keyword_extraction, metadata_filter)
+        results = self._get_lexical_results(query, k, use_keyword_extraction, metadata_filter, source_filter)
         return _build_retrieval_response(query, results, k)
 
     def retrieve_hybrid(
@@ -250,6 +254,7 @@ class Retriever:
         top_k: int | None = None,
         use_keyword_extraction: bool = True,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using both FAISS and BM25 with rank fusion.
 
@@ -260,6 +265,7 @@ class Retriever:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             use_keyword_extraction: If True, extract keywords for better Korean BM25.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
@@ -277,17 +283,17 @@ class Retriever:
             logger.warning("hybrid_fallback_to_lexical")
             return self.retrieve_lexical(
                 query, top_k=k, use_keyword_extraction=use_keyword_extraction,
-                metadata_filter=metadata_filter
+                metadata_filter=metadata_filter, source_filter=source_filter,
             )
 
         if not has_bm25:
             logger.warning("hybrid_fallback_to_semantic")
-            return self.retrieve_semantic(query, top_k=k, metadata_filter=metadata_filter)
+            return self.retrieve_semantic(query, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
 
         # Get results from both indexes (more than top_k to allow for fusion)
         fetch_k = k * 2
-        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter)
-        bm25_results = self._get_lexical_results(query, fetch_k, use_keyword_extraction, metadata_filter)
+        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
+        bm25_results = self._get_lexical_results(query, fetch_k, use_keyword_extraction, metadata_filter, source_filter)
 
         # Fuse results
         fused = reciprocal_rank_fusion([faiss_results, bm25_results])
@@ -300,6 +306,7 @@ class Retriever:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
         inject_evidence: str | None = None,
         inject_position: int | None = None,
     ) -> RetrievalResponse:
@@ -310,6 +317,7 @@ class Retriever:
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
             inject_evidence: For ablation study - inject this text.
             inject_position: Position to inject (0=top, None=random).
 
@@ -317,11 +325,11 @@ class Retriever:
             RetrievalResponse with results and agent hints.
         """
         if mode == "semantic":
-            response = self.retrieve_semantic(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_semantic(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
         elif mode == "lexical":
-            response = self.retrieve_lexical(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_lexical(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
         else:
-            response = self.retrieve_hybrid(query, top_k=top_k, metadata_filter=metadata_filter)
+            response = self.retrieve_hybrid(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
 
         # Inject evidence for ablation study
         if inject_evidence:
@@ -336,6 +344,7 @@ class Retriever:
         top_k: int | None = None,
         initial_k: int = 50,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve with reranking using Qwen3-Reranker-8B.
 
@@ -347,6 +356,7 @@ class Retriever:
             top_k: Final number of results after reranking.
             initial_k: Number of candidates to retrieve before reranking.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with reranked results.
@@ -355,11 +365,11 @@ class Retriever:
 
         # Get initial candidates
         if mode == "semantic":
-            initial_results = self._get_semantic_results(query, initial_k, metadata_filter)
+            initial_results = self._get_semantic_results(query, initial_k, metadata_filter, source_filter)
         elif mode == "lexical":
-            initial_results = self._get_lexical_results(query, initial_k, metadata_filter=metadata_filter)
+            initial_results = self._get_lexical_results(query, initial_k, metadata_filter=metadata_filter, source_filter=source_filter)
         else:
-            initial_results = self._get_hybrid_results(query, initial_k, metadata_filter)
+            initial_results = self._get_hybrid_results(query, initial_k, metadata_filter, source_filter)
 
         if not initial_results:
             return _build_retrieval_response(query, [], k)
@@ -374,11 +384,12 @@ class Retriever:
         query: str,
         top_k: int,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Get raw semantic results."""
         if self._faiss is None or self._faiss.is_empty:
             return []
-        return self._faiss.query(query, top_k=top_k, metadata_filter=metadata_filter)
+        return self._faiss.query(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
 
     def _get_lexical_results(
         self,
@@ -386,6 +397,7 @@ class Retriever:
         top_k: int,
         use_keyword_extraction: bool = True,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Get raw lexical results.
 
@@ -394,6 +406,7 @@ class Retriever:
             top_k: Number of results.
             use_keyword_extraction: If True, extract keywords for better Korean BM25.
             metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
 
         Returns:
             List of (chunk, score) tuples.
@@ -414,13 +427,14 @@ class Retriever:
         else:
             search_query = query
 
-        return self._bm25.query(search_query, top_k=top_k, metadata_filter=metadata_filter)
+        return self._bm25.query(search_query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
 
     def _get_hybrid_results(
         self,
         query: str,
         top_k: int,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Get raw hybrid results with rank fusion."""
         has_faiss = self._faiss is not None and not self._faiss.is_empty
@@ -430,15 +444,15 @@ class Retriever:
             return []
 
         if not has_faiss:
-            return self._get_lexical_results(query, top_k, metadata_filter=metadata_filter)
+            return self._get_lexical_results(query, top_k, metadata_filter=metadata_filter, source_filter=source_filter)
 
         if not has_bm25:
-            return self._get_semantic_results(query, top_k, metadata_filter)
+            return self._get_semantic_results(query, top_k, metadata_filter, source_filter)
 
         # Get from both and fuse
         fetch_k = top_k * 2
-        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter)
-        bm25_results = self._bm25.query(query, top_k=fetch_k, metadata_filter=metadata_filter)
+        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
+        bm25_results = self._bm25.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
 
         fused = reciprocal_rank_fusion([faiss_results, bm25_results])
         return fused[:top_k]

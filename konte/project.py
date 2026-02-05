@@ -260,6 +260,7 @@ class Project:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
         inject_evidence: str | None = None,
         inject_position: int | None = None,
     ) -> RetrievalResponse:
@@ -271,6 +272,8 @@ class Project:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
+            source_filter: Substring match on chunk source field.
+                Example: "JOHNSON" matches "JOHNSON_JOHNSON_2022_10K.md"
             inject_evidence: For ablation study - inject this text.
             inject_position: Position to inject (0=top, None=random).
 
@@ -292,6 +295,7 @@ class Project:
         k = top_k or settings.DEFAULT_TOP_K
         return self._retriever.retrieve(
             query, mode=mode, top_k=k, metadata_filter=metadata_filter,
+            source_filter=source_filter,
             inject_evidence=inject_evidence, inject_position=inject_position,
         )
 
@@ -303,6 +307,7 @@ class Project:
         rerank: bool = False,
         rerank_initial_k: int = 50,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Query the project (async, with optional reranking).
 
@@ -314,6 +319,7 @@ class Project:
             rerank_initial_k: Number of candidates to retrieve before reranking.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
+            source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
@@ -335,10 +341,10 @@ class Project:
         if rerank:
             return await self._retriever.retrieve_with_rerank(
                 query, mode=mode, top_k=k, initial_k=rerank_initial_k,
-                metadata_filter=metadata_filter
+                metadata_filter=metadata_filter, source_filter=source_filter,
             )
         else:
-            return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter)
+            return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
 
     def as_retriever(self) -> Callable[[str], RetrievalResponse]:
         """Return a callable retriever for Agno integration.
@@ -359,6 +365,7 @@ class Project:
         rerank: bool = False,
         rerank_initial_k: int = 50,
         metadata_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
     ) -> tuple[RetrievalResponse, GeneratedAnswer]:
         """Query the project and generate an LLM answer from retrieved chunks.
 
@@ -375,6 +382,7 @@ class Project:
             rerank_initial_k: Number of candidates to retrieve before reranking.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
+            source_filter: Substring match on chunk source field.
 
         Returns:
             Tuple of (RetrievalResponse, GeneratedAnswer).
@@ -382,7 +390,7 @@ class Project:
         # First, retrieve chunks (with optional reranking)
         retrieval_response = await self.query_async(
             query, mode=mode, top_k=top_k, rerank=rerank, rerank_initial_k=rerank_initial_k,
-            metadata_filter=metadata_filter
+            metadata_filter=metadata_filter, source_filter=source_filter,
         )
 
         # Then, generate answer using LLM
