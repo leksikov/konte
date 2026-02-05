@@ -192,3 +192,86 @@ class TestBM25StorePersistence:
         ids1 = [r[0].chunk.chunk_id for r in results1]
         ids2 = [r[0].chunk.chunk_id for r in results2]
         assert ids1 == ids2
+
+
+@pytest.fixture
+def multi_source_chunks():
+    """Create chunks from multiple sources for source_filter testing."""
+    chunks = []
+    sources = [
+        ("ADOBE_2022_10K.md", "Adobe revenue grew 15% in FY2022."),
+        ("ADOBE_2022_10K.md", "Adobe cloud segment leads growth."),
+        ("JOHNSON_JOHNSON_2022_10K.md", "Johnson & Johnson pharmaceutical division."),
+        ("JOHNSON_JOHNSON_2022_10K.md", "Johnson & Johnson medical devices revenue."),
+        ("3M_2018_10K.md", "3M industrial segment performance."),
+    ]
+    for i, (source, content) in enumerate(sources):
+        chunk = Chunk(
+            chunk_id=f"{source}_s0_c{i}",
+            content=content,
+            source=source,
+            segment_idx=0,
+            chunk_idx=i,
+        )
+        chunks.append(ContextualizedChunk(chunk=chunk, context=""))
+    return chunks
+
+
+@pytest.mark.unit
+class TestBM25StoreSourceFilter:
+    """Test BM25 store source_filter functionality."""
+
+    def test_source_filter_substring_match(self, multi_source_chunks):
+        """Test that source_filter returns only matching sources."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(multi_source_chunks)
+
+        results = store.query("revenue", top_k=10, source_filter="ADOBE")
+
+        assert len(results) > 0
+        for chunk, _ in results:
+            assert "ADOBE" in chunk.chunk.source
+
+    def test_source_filter_multi_word(self, multi_source_chunks):
+        """Test source_filter with multi-word company name."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(multi_source_chunks)
+
+        results = store.query("revenue", top_k=10, source_filter="JOHNSON_JOHNSON")
+
+        assert len(results) > 0
+        for chunk, _ in results:
+            assert "JOHNSON_JOHNSON" in chunk.chunk.source
+
+    def test_source_filter_no_match(self, multi_source_chunks):
+        """Test source_filter with no matching source."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(multi_source_chunks)
+
+        results = store.query("revenue", top_k=10, source_filter="NONEXISTENT")
+
+        assert results == []
+
+    def test_source_filter_combined_with_metadata_filter(self, multi_source_chunks):
+        """Test source_filter works alongside metadata_filter."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(multi_source_chunks)
+
+        results = store.query(
+            "revenue",
+            top_k=10,
+            metadata_filter={"source": "ADOBE_2022_10K.md"},
+            source_filter="ADOBE",
+        )
+
+        assert len(results) > 0
+        for chunk, _ in results:
+            assert chunk.chunk.source == "ADOBE_2022_10K.md"
