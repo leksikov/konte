@@ -27,7 +27,7 @@ def extract_metadata_from_source(source: str) -> dict[str, str]:
         Dict with 'company' and 'year' keys (empty dict if not parsed).
     """
     filename = Path(source).stem
-    match = re.match(r"^([A-Z0-9]+)_(\d{4})", filename, re.IGNORECASE)
+    match = re.match(r"^(.+?)_(\d{4})", filename, re.IGNORECASE)
     if match:
         return {
             "company": match.group(1).upper(),
