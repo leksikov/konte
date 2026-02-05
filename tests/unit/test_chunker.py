@@ -65,17 +65,24 @@ class TestSegmentSplitting:
             # Some overlap should exist
             assert len(set(first_end.split()) & set(second_start.split())) > 0
 
-    def test_segment_no_word_breakage(self):
-        """Test that segments don't break in middle of words."""
+    def test_segment_no_sentence_breakage(self):
+        """Test that segments end at sentence boundaries, not mid-sentence."""
         from konte.chunker import segment_document
 
-        text = "supercalifragilisticexpialidocious " * 500
+        sentences = [
+            f"Sentence number {i} describes an important fact." for i in range(200)
+        ]
+        text = " ".join(sentences)
         segments = segment_document(text, segment_size=100, overlap=10)
 
-        for segment in segments:
-            # Segment should not start or end with partial word
-            assert not segment.startswith("ous ")
-            assert not segment.endswith("supercalifrag")
+        assert len(segments) > 1
+        # All segments except the last should end with sentence-ending punctuation
+        for segment in segments[:-1]:
+            last_char = segment.rstrip()[-1]
+            assert last_char in ".?!", (
+                f"Segment should end at sentence boundary, but ends with: "
+                f"...{segment[-40:]!r}"
+            )
 
 
 @pytest.mark.unit
@@ -111,20 +118,24 @@ class TestChunkSplitting:
             second_start = chunks[1][:50]
             assert len(set(first_end.split()) & set(second_start.split())) > 0
 
-    def test_chunk_no_word_breakage(self):
-        """Test that chunks start and end at word boundaries."""
+    def test_chunk_no_sentence_breakage(self):
+        """Test that chunks end at sentence boundaries, not mid-sentence."""
         from konte.chunker import chunk_segment
 
-        text = "hello world this is a test document with many words " * 50
+        sentences = [
+            f"This is chunk test sentence {i} with details." for i in range(100)
+        ]
+        text = " ".join(sentences)
         chunks = chunk_segment(text, chunk_size=50, overlap=5)
 
-        for chunk in chunks:
-            stripped = chunk.strip()
-            # Should not start with lowercase continuation of previous word
-            # (allowing uppercase as sentence start is fine)
-            if stripped:
-                # Check that chunk doesn't obviously start mid-word
-                assert not stripped[0].islower() or stripped.split()[0] in text.split()
+        assert len(chunks) > 1
+        # All chunks except the last should end with sentence-ending punctuation
+        for chunk in chunks[:-1]:
+            last_char = chunk.rstrip()[-1]
+            assert last_char in ".?!", (
+                f"Chunk should end at sentence boundary, but ends with: "
+                f"...{chunk[-40:]!r}"
+            )
 
 
 @pytest.mark.unit
