@@ -16,12 +16,15 @@ Focus on HS code accuracy and semantic equivalence:
 - Ignore length differences or extra explanation
 
 Scoring:
-- Score 1.0 if the SAME HS CODE is mentioned (regardless of format)
-- Score 0.7-0.9 if mostly correct with minor code variations
-- Score 0.4-0.6 if partially correct (related but not exact code)
-- Score 0.0-0.3 if wrong HS code or contradictory information
+- Score 1.0: EXACT HS code match (regardless of format)
+- Score 0.7-0.9: Parent code given when subheading expected (e.g., "7114" when "7114.20" expected, or "8446호" when "8446.10" expected) - this is a PARTIAL MATCH, not a failure
+- Score 0.5-0.6: Related but different subheading under same parent (e.g., "7114.11" when "7114.20" expected)
+- Score 0.3-0.4: Wrong parent code but same chapter
+- Score 0.0-0.2: Completely wrong HS code or contradictory information
 
-IMPORTANT: If actual output provides a DIFFERENT but MORE CORRECT HS code based on the question context, score 0.7+ (the expected output may be wrong)."""
+IMPORTANT:
+- Parent code matching the expected subheading's parent should score 0.7+, NOT zero
+- If actual output provides a DIFFERENT but MORE CORRECT HS code based on the question context, score 0.7+ (the expected output may be wrong)"""
 
 HS_CODE_STEPS = [
     "Extract the HS code(s) from both expected and actual outputs",

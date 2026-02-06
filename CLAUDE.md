@@ -286,11 +286,12 @@ All config via pydantic-settings in `settings.py`. Key settings:
 
 | Project | Chunks | Description |
 |---------|--------|-------------|
+| `wco_korean_feb2026` | 3,144 | **Latest** - WCO notes with Qwen3-30B context (Feb 2026) |
+| `wco_hs_explanatory_notes_korean` | 3,036 | WCO HS explanatory notes (Dec 2025, Korean context) |
 | `hs_machinery_electronics_guide` | 182 | HS Ch 84-85 machinery/electronics classification |
 | `korea_tariff_schedule` | 687 | Official Korean tariff rates (legal document) |
 | `tariff_terminology_bilingual` | 485 | Korean-English tariff terminology |
 | `tariff_terminology_dictionary` | 6,270 | Comprehensive tariff terminology dictionary |
-| `wco_hs_explanatory_notes` | 3,036 | WCO HS explanatory notes and GRI rules |
 | `all_tariff_documents` | 10,660 | Combined index of all above projects |
 
 ## Dependencies
@@ -384,7 +385,19 @@ Evolution types for question diversity:
 - **Hypothetical**: "What if" scenarios
 - **In-Breadth**: Scope expansion questions
 
-### Contextual RAG vs Baseline
+### Model Comparison (February 2026)
+
+Evaluated on `wco_korean_feb2026` project with score-aware context format.
+
+| Model | HS Code (100q) | Diverse RAG (70q) |
+|-------|----------------|-------------------|
+| **gpt-4.1** | **95.0% (0.950)** | **91.4% (0.816)** |
+| Qwen3-30B-A3B-Instruct | 89.0% (0.910) | 80.0% (0.797) |
+| Dec 2025 Baseline | 97.0% (0.940) | 98.6% (0.831) |
+
+**Key finding**: Model choice matters more than prompt tuning. gpt-4.1 outperforms Qwen3-30B by +6% (HS) and +11% (Diverse).
+
+### Contextual RAG vs Baseline (December 2025)
 
 | Configuration | HS Code (100q) | Diverse RAG (70q)* |
 |---------------|----------------|---------------------|
@@ -400,20 +413,6 @@ Key findings:
 - Most impact on complex, multi-context questions
 - Ground truth validation is critical (3 HS code errors fixed)
 
-### Evaluation by Question Type (Filtered - 70 Questions)
-
-| Evolution Type | Pass Rate | Avg Score |
-|----------------|-----------|-----------|
-| Reasoning | 100.0% | 0.861 |
-| Comparative | 96.9% | 0.841 |
-| Constrained | 96.7% | 0.857 |
-| In-Breadth | 95.7% | 0.852 |
-| Multi-context | 92.9% | 0.814 |
-| Concretizing | 91.2% | 0.809 |
-| **TOTAL** | **98.6%** | **0.831** |
-
-*Hypothetical questions removed - they require inference beyond source documents*
-
 ### Two Evaluation Types
 
 The system supports two evaluation types with switchable LLM judge prompts:
@@ -426,18 +425,18 @@ The system supports two evaluation types with switchable LLM judge prompts:
 ### Quick Start
 
 ```bash
-# Run LLM reranking (generates answers)
-python -m evaluation.experiments.llm_reranking \
-  --project wco_hs_explanatory_notes_korean \
+# Run LLM reranking with gpt-4.1 (recommended)
+BACKENDAI_ENDPOINT="" CONTEXT_MODEL="gpt-4.1" python -m evaluation.experiments.llm_reranking \
+  --project wco_korean_feb2026 \
   --test-cases evaluation/data/synthetic/deepeval_goldens_korean_no_hypothetical.json \
   --method binary --initial-k 100 --final-k 15 --max-cases 0 \
-  --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
+  --output evaluation/experiments/results/llm_rerank_binary_diverse70_gpt41.json
 
 # Run DeepEval evaluation (answer correctness - default)
-python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
+BACKENDAI_ENDPOINT="" python -m evaluation.experiments.run_deepeval_full binary diverse70_gpt41 answer
 
 # Or for HS code evaluation
-python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
+BACKENDAI_ENDPOINT="" python -m evaluation.experiments.run_deepeval_full binary hs100_gpt41 hs_code
 ```
 
 ### GEval Metrics (LLM-as-Judge)
@@ -453,6 +452,7 @@ Two metrics available in `evaluation/prompts/eval_prompts.py`:
 **HSCodeCorrectness** (for HS code lookup questions):
 - Focuses on HS code accuracy and semantic equivalence
 - Normalizes format differences (제2523.21호 = 2523.21 = 제2523호의 21)
+- Parent code matches subheading expected: scores 0.7+ (e.g., "7114" when "7114.20" expected)
 - Ignores language mixing and extra explanation
 
 See `evaluation/EVALUATION_GUIDE.md` for detailed instructions.
