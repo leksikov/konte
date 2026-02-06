@@ -10,7 +10,34 @@ This report documents the evaluation of the Konte RAG system using DeepEval with
 
 ## Evaluation Results Summary
 
-### Contextual RAG vs Baseline Comparison
+### Latest Results (February 2026)
+
+Evaluation on `wco_korean_feb2026` project with updated context generation prompt and score-aware answer generation.
+
+#### Model Comparison
+
+| Model | HS Code (100q) | Diverse RAG (70q) |
+|-------|----------------|-------------------|
+| **gpt-4.1** | **95.0% (0.950)** | **91.4% (0.816)** |
+| Qwen3-30B-A3B-Instruct | 89.0% (0.910) | 80.0% (0.797) |
+| Dec 2025 Baseline (Qwen3-VL-8B) | 97.0% (0.940) | 98.6% (0.831) |
+
+**Key Finding**: Model choice significantly impacts answer quality. gpt-4.1 outperforms Qwen3-30B by +6% on HS Code and +11% on Diverse questions.
+
+#### February 2026 Improvements
+
+1. **Score-aware context format**: Chunks now include relevance scores for LLM prioritization
+   ```
+   [1] Score: 0.950 | Source: wco_hs_explanatory_notes.md
+   ```
+
+2. **Updated answer generation prompt**: Emphasizes specific subheadings (e.g., "8446.10" not "8446호")
+
+3. **Improved judge criteria**: Partial matches (parent code vs subheading) now score 0.7+ instead of 0.0
+
+---
+
+### Contextual RAG vs Baseline Comparison (December 2025)
 
 | Configuration | HS Code (100q) | Diverse RAG (70q)* |
 |---------------|----------------|---------------------|
@@ -148,8 +175,10 @@ Scoring:
 1. **Retrieval**: Hybrid (FAISS semantic + BM25 lexical) with RRF fusion
 2. **Initial Retrieval**: top-k=100 candidates
 3. **LLM Reranking**: Binary filter to select relevant chunks
-4. **Final Context**: top-k=15 chunks passed to answer generation
-5. **Answer Generation**: Qwen3-VL-8B-Instruct (BackendAI)
+4. **Final Context**: top-k=15 chunks with scores passed to answer generation
+5. **Answer Generation**: gpt-4.1 (recommended) or Qwen3-30B-A3B-Instruct (BackendAI)
+
+**Note**: Model choice significantly impacts accuracy. gpt-4.1 achieves +6-11% higher pass rates than Qwen3-30B.
 
 ---
 

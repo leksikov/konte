@@ -15,18 +15,19 @@ _answer_llm_cache: dict[str, ChatOpenAI] = {}
 # Default answer generation prompt
 DEFAULT_ANSWER_PROMPT = """You are a helpful assistant that answers questions based on the provided context.
 
-Context (retrieved documents):
+Context (retrieved documents, ordered by relevance score):
 {context}
 
 Question: {question}
 
 Instructions:
 - Answer the question based ONLY on the provided context
+- Prioritize information from higher-scored chunks (score closer to 1.0 = more relevant)
 - If the context doesn't contain enough information to answer, say so clearly
 - Be concise and direct
 - Cite relevant parts of the context when helpful
-- When citing HS codes, use the normalized 4-digit format with leading zeros if needed (e.g., "0908", "8540", "2906")
-- For HS subheadings, use the format with dots (e.g., "0908.31", "8540.11")
+- When citing HS codes, always provide the most specific subheading available (e.g., "8446.10" not just "8446호", "2207.10" not just "2207호")
+- Use the normalized format with dots for subheadings (e.g., "0908.31", "8540.11", "9505.10")
 
 Answer:"""
 
@@ -106,8 +107,8 @@ def _format_metadata(metadata: dict) -> str:
 def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10) -> str:
     """Format retrieved chunks into context string for LLM.
 
-    Includes source, metadata, generated context, and original chunk content
-    for maximum information retrieval.
+    Includes relevance score, source, metadata, generated context, and original
+    chunk content for maximum information retrieval.
 
     Args:
         retrieval_response: Response from retrieval query.
@@ -122,8 +123,9 @@ def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10)
     for i, result in enumerate(chunks_to_use, 1):
         source = result.source or "unknown"
 
-        # Build header with source and metadata
-        header = f"[{i}] Source: {source}"
+        # Build header with score, source, and metadata
+        score_str = f"Score: {result.score:.3f}" if result.score is not None else "Score: N/A"
+        header = f"[{i}] {score_str} | Source: {source}"
         metadata_str = _format_metadata(result.metadata)
         if metadata_str:
             header = f"{header} | {metadata_str}"
