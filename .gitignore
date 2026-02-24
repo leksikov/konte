@@ -78,4 +78,5 @@ example_knowledge_base/*
 test_dataset/*
 checkpoints/*
 evaluation/debug/*
-evalaution/experiments/*docs/ppt_prep/
+evaluation/experiments/*
+docs/ppt_prep/
