@@ -100,7 +100,7 @@ Reasoning: Complete storage unit, not bare IC.
         project.save()
 
         projects.append(project)
-        print(f"  Built project '{data['name']}' with {len(project._chunks)} chunks")
+        print(f"  Built project '{data['name']}')")
 
     return projects
 
@@ -130,7 +130,7 @@ def query_all_projects(
     results = {}
     for project in projects:
         response = project.query(query, mode="hybrid", top_k=top_k)
-        results[project._config.name] = response
+        results[project.config.name] = response
     return results
 
 
