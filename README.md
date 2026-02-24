@@ -318,7 +318,7 @@ projects = [
 # Query all projects
 results = {}
 for project in projects:
-    results[project._config.name] = project.query("memory chip classification")
+    results[project.config.name] = project.query("memory chip classification")
 
 # Merge and rank
 all_results = []
@@ -330,6 +330,16 @@ all_results.sort(key=lambda x: x[1].score, reverse=True)
 ```
 
 See [examples/parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) for a complete example.
+
+## Examples
+
+| Example | Demonstrates |
+|---------|-------------|
+| [basic_usage.py](examples/basic_usage.py) | Project CRUD, document loading, building, querying, retrieval modes |
+| [query_with_answer.py](examples/query_with_answer.py) | Full RAG pipeline, custom prompt templates, GeneratedAnswer model |
+| [metadata_filtering.py](examples/metadata_filtering.py) | source_filter, metadata_filter, combining filters with modes |
+| [async_reranking.py](examples/async_reranking.py) | Async querying, LLM reranking, comparing with/without reranking |
+| [parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) | Multi-project querying, result merging |
 
 ## Agent Integration
 
