@@ -234,7 +234,7 @@ BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
 
 ## RAG Answer Generation
 
-Generate LLM-grounded answers from retrieved chunks:
+`query_with_answer()` is the full RAG pipeline: retrieve chunks, then generate an LLM-grounded answer.
 
 ```python
 import asyncio
@@ -254,10 +254,106 @@ async def main():
     print(answer.model)        # Model used (e.g., "Qwen3-VL-8B-Instruct")
     print(answer.sources_used) # Number of chunks used
 
+    # Retrieval metadata is also available
+    print(response.top_score)        # Highest retrieval score (0-1)
+    print(response.suggested_action) # "deliver", "query_more", or "refine_query"
+
 asyncio.run(main())
 ```
 
+### Custom Prompt Templates
+
+Override the default answer prompt with `{context}` and `{question}` placeholders:
+
+```python
+custom_prompt = """Based on the following documents, answer the question.
+
+Documents:
+{context}
+
+Question: {question}
+
+Provide the answer with references to source documents.
+Answer:"""
+
+response, answer = await project.query_with_answer(
+    query="What is the tariff rate for semiconductor imports?",
+    prompt_template=custom_prompt,
+    max_chunks=10,
+)
+```
+
+### With Reranking
+
+Combine answer generation with LLM reranking for better retrieval quality:
+
+```python
+response, answer = await project.query_with_answer(
+    query="How to classify a multi-function device?",
+    rerank=True,           # Apply LLM reranking before answer generation
+    rerank_initial_k=50,   # Retrieve 50 candidates, rerank to top_k
+    max_chunks=5,
+)
+```
+
 By default uses BackendAI (Qwen3-VL-8B-Instruct), falls back to OpenAI if not configured.
+
+## Metadata Filtering
+
+Filter retrieval results by source filename or custom metadata fields.
+
+### source_filter — Substring Match
+
+`source_filter` matches against the chunk's source filename (case-sensitive substring):
+
+```python
+# Only return chunks from Samsung documents
+response = project.query("revenue growth", source_filter="SAMSUNG")
+
+# Only return chunks from 2024 reports
+response = project.query("revenue growth", source_filter="2024")
+
+# Combine with retrieval mode
+response = project.query("DRAM market", mode="semantic", source_filter="SAMSUNG_2024")
+```
+
+### metadata_filter — Equality Match
+
+`metadata_filter` filters by exact values in chunk metadata (AND logic for multiple keys):
+
+```python
+# Filter by exact source filename
+response = project.query(
+    "semiconductor revenue",
+    metadata_filter={"source": "TSMC_2024_ANNUAL.md"},
+)
+
+# Filter by multiple fields (AND logic)
+response = project.query(
+    "quarterly results",
+    metadata_filter={"company": "SAMSUNG", "year": 2024},
+)
+
+# List values match any (OR within a key)
+response = project.query(
+    "chip production",
+    metadata_filter={"company": ["SAMSUNG", "TSMC"]},
+)
+```
+
+### With Answer Generation
+
+Filters work with `query_with_answer()` too:
+
+```python
+response, answer = await project.query_with_answer(
+    query="What was the revenue?",
+    source_filter="SAMSUNG_2024",
+    max_chunks=5,
+)
+```
+
+See [examples/metadata_filtering.py](examples/metadata_filtering.py) for a complete example.
 
 ## Agent Integration
 
