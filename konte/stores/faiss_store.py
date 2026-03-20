@@ -46,7 +46,10 @@ class FAISSStore:
                 Defaults to settings.EMBEDDING_MODEL.
         """
         self._embedding_model = embedding_model or settings.EMBEDDING_MODEL
-        self._embeddings = OpenAIEmbeddings(model=self._embedding_model)
+        kwargs = {"model": self._embedding_model}
+        if settings.OPENAI_API_KEY:
+            kwargs["api_key"] = settings.OPENAI_API_KEY
+        self._embeddings = OpenAIEmbeddings(**kwargs)
         self._vectorstore: FAISS | None = None
         self._chunks: list[ContextualizedChunk] = []
 
