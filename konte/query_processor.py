@@ -68,7 +68,7 @@ def extract_search_keywords(query: str) -> list[str]:
         Output: ["Paypal", "positive", "working capital", "FY2022", "data"]
     """
     try:
-        llm = get_llm()
+        llm = get_llm(max_tokens=800)
         structured_llm = llm.with_structured_output(ExtractedKeywords)
         result = structured_llm.invoke(
             KEYWORD_EXTRACTION_PROMPT.format(query=query)
@@ -105,7 +105,7 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         List of clean keywords for BM25 search.
     """
     try:
-        llm = get_llm()
+        llm = get_llm(max_tokens=800)
         structured_llm = llm.with_structured_output(ExtractedKeywords)
         result = await structured_llm.ainvoke(
             KEYWORD_EXTRACTION_PROMPT.format(query=query)

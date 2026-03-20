@@ -1,6 +1,7 @@
 """Context generation module using LLM to generate chunk context."""
 
 import asyncio
+import importlib.resources
 from pathlib import Path
 
 import structlog
@@ -21,7 +22,7 @@ MAX_DELAY = 120.0  # seconds
 _llm_cache: dict[str, ChatOpenAI] = {}
 
 
-def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
+def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 400) -> ChatOpenAI:
     """Get or create a cached ChatOpenAI instance.
 
     Supports custom backends (vLLM, BackendAI) via BACKENDAI_ENDPOINT.
@@ -31,6 +32,7 @@ def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
     Args:
         model: Model name. Defaults to settings.CONTEXT_MODEL or BACKENDAI_MODEL_NAME.
         timeout: Request timeout in seconds.
+        max_tokens: Maximum tokens for LLM response.
 
     Returns:
         Cached ChatOpenAI instance.
@@ -40,7 +42,7 @@ def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
         model_name = settings.BACKENDAI_MODEL_NAME
         base_url = settings.BACKENDAI_ENDPOINT
         api_key = settings.BACKENDAI_API_KEY or "not-needed"
-        cache_key = f"backendai_{model_name}_{timeout}"
+        cache_key = f"backendai_{model_name}_{timeout}_{max_tokens}"
 
         if cache_key not in _llm_cache:
             logger.info(
@@ -55,13 +57,13 @@ def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
                 temperature=0,
                 timeout=timeout,
                 max_retries=2,
-                max_tokens=400,
+                max_tokens=max_tokens,
             )
         return _llm_cache[cache_key]
 
     # Default to OpenAI
     model_name = model or settings.CONTEXT_MODEL
-    cache_key = f"openai_{model_name}_{timeout}"
+    cache_key = f"openai_{model_name}_{timeout}_{max_tokens}"
 
     if cache_key not in _llm_cache:
         _llm_cache[cache_key] = ChatOpenAI(
@@ -69,22 +71,36 @@ def get_llm(model: str | None = None, timeout: float = 120.0) -> ChatOpenAI:
             temperature=0,
             timeout=timeout,
             max_retries=2,
-            max_tokens=400,
+            max_tokens=max_tokens,
         )
 
     return _llm_cache[cache_key]
+
+
+def _resolve_default_prompt_path() -> Path:
+    """Resolve default prompt path via importlib.resources or __file__ fallback."""
+    try:
+        ref = importlib.resources.files("konte").parent / "prompts" / "context_prompt.txt"
+        path = Path(str(ref))
+        if path.exists():
+            return path
+    except Exception:
+        pass
+    # Fallback: relative to this source file (works when running from source checkout)
+    return Path(__file__).parent.parent / "prompts" / "context_prompt.txt"
 
 
 def load_prompt_template(prompt_path: Path | None = None) -> str:
     """Load the context generation prompt template.
 
     Args:
-        prompt_path: Path to prompt file. Defaults to settings.PROMPT_PATH.
+        prompt_path: Path to prompt file. Defaults to settings.PROMPT_PATH,
+            then falls back to importlib.resources / __file__-relative resolution.
 
     Returns:
         Prompt template string with {segment} and {chunk} placeholders.
     """
-    path = prompt_path or settings.PROMPT_PATH
+    path = prompt_path or settings.PROMPT_PATH or _resolve_default_prompt_path()
     return Path(path).read_text(encoding="utf-8")
 
 
