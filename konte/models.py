@@ -80,6 +80,7 @@ class ProjectConfig(BaseModel):
     chunk_overlap: int = 80
 
     # Context
+    context_prompt_path: Path | None = None  # Per-project prompt override
     context_min_tokens: int = 100
     context_max_tokens: int = 200
 

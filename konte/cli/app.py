@@ -37,6 +37,12 @@ def create(
         "-s",
         help="Storage path (default: ~/.konte)",
     ),
+    prompt: Optional[Path] = typer.Option(
+        None,
+        "--prompt",
+        "-p",
+        help="Path to custom context generation prompt file",
+    ),
 ) -> None:
     """Create a new project."""
     try:
@@ -45,10 +51,19 @@ def create(
             console.print(f"[red]Error:[/red] Project '{name}' already exists")
             raise typer.Exit(1)
 
-        project = create_project(name, storage_path=path)
+        kwargs = {}
+        if prompt is not None:
+            if not prompt.exists():
+                console.print(f"[red]Error:[/red] Prompt file not found: {prompt}")
+                raise typer.Exit(1)
+            kwargs["context_prompt_path"] = prompt
+
+        project = create_project(name, storage_path=path, **kwargs)
         project.save()
         console.print(f"[green]Created project:[/green] {name}")
         console.print(f"  Path: {project.project_dir}")
+        if prompt:
+            console.print(f"  Prompt: {prompt}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -186,12 +201,22 @@ def build(
         "--bm25-only",
         help="Build only BM25 index",
     ),
+    prompt: Optional[Path] = typer.Option(
+        None,
+        "--prompt",
+        "-p",
+        help="Path to custom context generation prompt file (overrides project config)",
+    ),
 ) -> None:
     """Build indexes for a project."""
     path = storage_path or settings.STORAGE_PATH
 
     if not project_exists(name, storage_path=path):
         console.print(f"[red]Error:[/red] Project '{name}' not found")
+        raise typer.Exit(1)
+
+    if prompt is not None and not prompt.exists():
+        console.print(f"[red]Error:[/red] Prompt file not found: {prompt}")
         raise typer.Exit(1)
 
     try:
@@ -212,6 +237,7 @@ def build(
                     skip_context=skip_context,
                     enable_faiss=enable_faiss,
                     enable_bm25=enable_bm25,
+                    prompt_path=prompt,
                 )
 
             asyncio.run(run_build())
@@ -220,6 +246,8 @@ def build(
         console.print("[green]Build complete[/green]")
         if not skip_context:
             console.print("  Context generation: enabled")
+            if prompt:
+                console.print(f"  Prompt: {prompt}")
         console.print(f"  FAISS index: {'enabled' if enable_faiss else 'disabled'}")
         console.print(f"  BM25 index: {'enabled' if enable_bm25 else 'disabled'}")
     except Exception as e:
