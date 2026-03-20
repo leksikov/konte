@@ -8,7 +8,7 @@ import structlog
 
 from konte.chunker import create_chunks
 from konte.config import settings
-from konte.context import generate_contexts_batch
+from konte.context import generate_contexts_batch, load_prompt_template
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
 from konte.models import (
@@ -118,12 +118,41 @@ class Project:
         logger.info("documents_added", total_chunks=len(self._chunks))
         return len(all_chunks)
 
+    def set_metadata(
+        self,
+        metadata: dict[str, Any],
+        source: str | None = None,
+    ) -> int:
+        """Set custom metadata on chunks (post-hoc, before build).
+
+        Merges metadata into existing chunk metadata. Call after add_documents()
+        and before build().
+
+        Args:
+            metadata: Key-value pairs to merge into chunk metadata.
+            source: If provided, only apply to chunks from this source file.
+                Substring match on chunk.source (e.g. "report" matches "annual_report.pdf").
+
+        Returns:
+            Number of chunks updated.
+        """
+        updated = 0
+        for chunk in self._chunks:
+            if source is not None and source not in chunk.source:
+                continue
+            chunk.metadata.update(metadata)
+            updated += 1
+
+        logger.info("metadata_set", updated=updated, keys=list(metadata.keys()), source=source)
+        return updated
+
     async def build(
         self,
         skip_context: bool = False,
         enable_faiss: bool | None = None,
         enable_bm25: bool | None = None,
         resume: bool = True,
+        prompt_path: Path | None = None,
     ) -> None:
         """Build indexes from added documents.
 
@@ -132,6 +161,8 @@ class Project:
             enable_faiss: Enable FAISS index. Defaults to config setting.
             enable_bm25: Enable BM25 index. Defaults to config setting.
             resume: If True, resume from checkpoint if exists.
+            prompt_path: Path to custom context prompt. Priority:
+                prompt_path arg > config.context_prompt_path > settings.PROMPT_PATH.
         """
         if not self._chunks:
             logger.warning("build_no_chunks")
@@ -181,6 +212,10 @@ class Project:
         if checkpoint is None:
             checkpoint = BuildCheckpoint()
 
+        # Resolve prompt template: arg > config > settings default
+        resolved_prompt_path = prompt_path or self._config.context_prompt_path
+        prompt_template = load_prompt_template(resolved_prompt_path) if not skip_context else None
+
         logger.info(
             "context_generation_started",
             total_segments=total_segments,
@@ -207,6 +242,7 @@ class Project:
                 segment=segment_text,
                 chunks=segment_chunks,
                 model=self._config.context_model,
+                prompt_template=prompt_template,
                 skip_context=skip_context,
             )
             self._contextualized_chunks.extend(ctx_chunks)
@@ -413,14 +449,33 @@ class Project:
         return retrieval_response, answer
 
     def save(self) -> None:
-        """Save project state to disk."""
+        """Save project state to disk.
+
+        Stores storage_path and context_prompt_path as relative paths in config.json
+        so the project is portable across machines.
+        """
         project_dir = self.project_dir
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save config
+        # Save config with relative paths for portability
+        config_data = self._config.model_dump(mode="json")
+        storage_path = Path(config_data["storage_path"])
+        if storage_path.is_absolute():
+            try:
+                config_data["storage_path"] = str(storage_path.relative_to(project_dir.parent))
+            except ValueError:
+                config_data["storage_path"] = "."
+        if config_data.get("context_prompt_path"):
+            ctx_path = Path(config_data["context_prompt_path"])
+            if ctx_path.is_absolute():
+                try:
+                    config_data["context_prompt_path"] = str(ctx_path.relative_to(project_dir))
+                except ValueError:
+                    pass  # Keep absolute if not relative to project dir
+
         config_path = project_dir / "config.json"
         config_path.write_text(
-            self._config.model_dump_json(indent=2),
+            json.dumps(config_data, indent=2),
             encoding="utf-8",
         )
 
@@ -553,6 +608,9 @@ class Project:
     def open(cls, name: str, storage_path: Path | None = None) -> "Project":
         """Open an existing project.
 
+        Resolves relative paths in config.json back to absolute using the
+        actual storage location, so projects are portable across machines.
+
         Args:
             name: Project name.
             storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
@@ -561,12 +619,25 @@ class Project:
             Loaded Project instance.
         """
         path = storage_path or settings.STORAGE_PATH
-        config_path = path / name / "config.json"
+        project_dir = path / name
+        config_path = project_dir / "config.json"
 
         if not config_path.exists():
             raise FileNotFoundError(f"Project config not found: {config_path}")
 
         config_data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        # Resolve relative storage_path to actual storage location
+        saved_storage = Path(config_data.get("storage_path", ""))
+        if not saved_storage.is_absolute():
+            config_data["storage_path"] = str(path.resolve())
+
+        # Resolve relative context_prompt_path to project dir
+        if config_data.get("context_prompt_path"):
+            ctx_path = Path(config_data["context_prompt_path"])
+            if not ctx_path.is_absolute():
+                config_data["context_prompt_path"] = str((project_dir / ctx_path).resolve())
+
         config = ProjectConfig(**config_data)
 
         project = cls(config)
