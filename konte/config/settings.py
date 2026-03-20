@@ -55,8 +55,8 @@ class Settings(BaseSettings):
     # Concurrency
     MAX_CONCURRENT_CALLS: int = 1  # Sequential processing to avoid rate limits
 
-    # Prompt path (konte/config/settings.py -> konte -> prompts)
-    PROMPT_PATH: Path = Path(__file__).parent.parent.parent / "prompts" / "context_prompt.txt"
+    # Prompt path — None means resolve at usage time via importlib.resources or __file__ fallback
+    PROMPT_PATH: Path | None = None
 
     @field_validator("STORAGE_PATH", mode="before")
     @classmethod
@@ -66,8 +66,10 @@ class Settings(BaseSettings):
 
     @field_validator("PROMPT_PATH", mode="before")
     @classmethod
-    def resolve_prompt_path(cls, v: str | Path) -> Path:
+    def resolve_prompt_path(cls, v: str | Path | None) -> Path | None:
         """Resolve prompt path."""
+        if v is None:
+            return None
         return Path(v)
 
 
