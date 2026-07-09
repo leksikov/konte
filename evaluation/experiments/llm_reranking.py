@@ -37,15 +37,15 @@ else:
 LLM_CONCURRENCY = 10
 
 
-BINARY_FILTER_PROMPT = """주어진 질문에 대해 이 문서가 관련성이 있는지 판단하세요.
+BINARY_FILTER_PROMPT = """Decide whether the document below is relevant to the question.
 
-질문: {query}
+Question: {query}
 
-문서:
+Document:
 {document}
 
-이 문서가 질문에 답하는 데 도움이 되는 정보를 포함하고 있나요?
-"예" 또는 "아니오"로만 답하세요."""
+Does this document contain information that helps answer the question?
+Answer only "yes" or "no"."""
 
 
 BATCH_SCORE_PROMPT = """다음 질문에 대해 각 문서의 관련성을 0-10 점수로 평가하세요.
@@ -90,8 +90,9 @@ async def binary_filter_chunk(
             payload = {
                 "model": LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 10,
+                "max_tokens": 256,
                 "temperature": 0.0,
+                "chat_template_kwargs": {"enable_thinking": False},
             }
 
             response = await client.post(
@@ -102,7 +103,8 @@ async def binary_filter_chunk(
             response.raise_for_status()
             data = response.json()
 
-            answer = data["choices"][0]["message"]["content"].strip().lower()
+            content = data["choices"][0]["message"].get("content") or ""
+            answer = content.strip().lower()
             is_relevant = "예" in answer or "yes" in answer
 
             return (idx, is_relevant, chunk.score)

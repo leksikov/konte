@@ -80,3 +80,4 @@ checkpoints/*
 evaluation/debug/*
 evaluation/experiments/*
 docs/ppt_prep/
+CLAUDE.md
