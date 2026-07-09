@@ -120,6 +120,24 @@ def load_contexts_from_document(document_path: str, chunk_size: int = 2000) -> l
     return contexts
 
 
+STYLING_BY_LANGUAGE = {
+    "ko": dict(
+        scenario="한국어 WCO HS 해설서 기반 RAG 시스템 평가",
+        task="문서 내용에 기반한 다양한 유형의 한국어 질문을 생성합니다. "
+             "추론, 비교, 가설적 시나리오, 구체화 등 다양한 질문 유형을 포함하세요.",
+        input_format="한국어로 작성된 질문",
+        expected_output_format="한국어로 작성된 답변",
+    ),
+    "en": dict(
+        scenario="English HS code / customs tariff RAG evaluation",
+        task="Generate diverse English questions grounded in the document. "
+             "Include reasoning, comparative, hypothetical, concretizing, and constrained question types.",
+        input_format="An English question",
+        expected_output_format="An English answer",
+    ),
+}
+
+
 def generate_goldens(
     project_name: str | None = None,
     document_path: str | None = None,
@@ -127,6 +145,7 @@ def generate_goldens(
     num_goldens: int = 100,
     model: str = "gpt-4.1-mini",
     seed: int = 42,
+    language: str = "ko",
 ) -> list:
     """Generate test cases using DeepEval Synthesizer with pre-extracted contexts.
 
@@ -172,22 +191,22 @@ def generate_goldens(
         evolutions=EVOLUTIONS,
     )
 
-    # Configure styling for Korean language (but diverse question types)
-    styling_config = StylingConfig(
-        scenario="한국어 WCO HS 해설서 기반 RAG 시스템 평가",
-        task="문서 내용에 기반한 다양한 유형의 한국어 질문을 생성합니다. "
-             "추론, 비교, 가설적 시나리오, 구체화 등 다양한 질문 유형을 포함하세요.",
-        input_format="한국어로 작성된 질문",
-        expected_output_format="한국어로 작성된 답변",
-    )
+    styling_config = StylingConfig(**STYLING_BY_LANGUAGE[language])
 
-    print(f"\nInitializing Synthesizer with model: {model}")
+    from konte.config.settings import settings as _settings
+    if _settings.use_backendai:
+        from evaluation.custom_llm import BackendAIModel
+        synth_model = BackendAIModel()
+        print(f"\nInitializing Synthesizer with BackendAI model: {synth_model.model_name}")
+    else:
+        synth_model = model
+        print(f"\nInitializing Synthesizer with OpenAI model: {model}")
     print(f"Evolution types: {list(EVOLUTIONS.keys())}")
-    print(f"Language: Korean")
+    print(f"Language: {language}")
 
     # Initialize Synthesizer with Korean styling
     synthesizer = Synthesizer(
-        model=model,
+        model=synth_model,
         evolution_config=evolution_config,
         styling_config=styling_config,
     )
@@ -278,6 +297,12 @@ def main():
         default=42,
         help="Random seed for reproducibility",
     )
+    parser.add_argument(
+        "--language",
+        default="ko",
+        choices=list(STYLING_BY_LANGUAGE.keys()),
+        help="Language styling for generated questions",
+    )
     args = parser.parse_args()
 
     generate_goldens(
@@ -287,6 +312,7 @@ def main():
         num_goldens=args.num,
         model=args.model,
         seed=args.seed,
+        language=args.language,
     )
 
 

@@ -30,7 +30,8 @@ class BackendAIModel(DeepEvalBaseLLM):
                 api_key=self.api_key,
                 base_url=self.base_url,
                 temperature=0.0,
-                max_tokens=8000,
+                max_tokens=16000,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
         else:
             self.model_name = model_name or settings.CONTEXT_MODEL
@@ -40,7 +41,7 @@ class BackendAIModel(DeepEvalBaseLLM):
                 model=self.model_name,
                 api_key=self.api_key,
                 temperature=0.0,
-                max_tokens=8000,
+                max_tokens=16000,
             )
 
     def load_model(self):
@@ -125,13 +126,22 @@ class BackendAIModel(DeepEvalBaseLLM):
         except Exception:
             data = {}
 
+        # If schema has exactly one required str field and we have raw text,
+        # treat the raw text as that field's value (common for DeepEval Response{response: str}).
+        str_fields = [
+            n for n, fi in schema.model_fields.items()
+            if fi.annotation is str
+        ]
+        if not data and len(str_fields) == 1 and raw_response.strip():
+            data[str_fields[0]] = raw_response.strip()
+
         # Fill in missing required fields with defaults
         for field_name, field_info in schema.model_fields.items():
             if field_name not in data:
                 # Provide sensible defaults based on field type
                 annotation = field_info.annotation
                 if annotation == str or (hasattr(annotation, "__origin__") and annotation.__origin__ == str):
-                    data[field_name] = "unknown"
+                    data[field_name] = raw_response.strip() if raw_response.strip() else "unknown"
                 elif annotation == bool:
                     data[field_name] = False
                 elif annotation == int:

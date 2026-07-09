@@ -58,6 +58,7 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
                 timeout=timeout,
                 max_retries=2,
                 max_tokens=max_tokens,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
         return _llm_cache[cache_key]
 
