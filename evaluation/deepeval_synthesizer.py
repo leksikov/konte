@@ -11,7 +11,6 @@ from pathlib import Path
 
 from deepeval.synthesizer import Evolution, Synthesizer
 from deepeval.synthesizer.config import EvolutionConfig, StylingConfig
-from tqdm import tqdm
 
 # Evolution configuration - equal distribution for balanced question types
 EVOLUTIONS = {
@@ -122,14 +121,14 @@ def load_contexts_from_document(document_path: str, chunk_size: int = 2000) -> l
 
 STYLING_BY_LANGUAGE = {
     "ko": dict(
-        scenario="한국어 WCO HS 해설서 기반 RAG 시스템 평가",
+        scenario="한국어 문서 기반 RAG 시스템 평가",
         task="문서 내용에 기반한 다양한 유형의 한국어 질문을 생성합니다. "
              "추론, 비교, 가설적 시나리오, 구체화 등 다양한 질문 유형을 포함하세요.",
         input_format="한국어로 작성된 질문",
         expected_output_format="한국어로 작성된 답변",
     ),
     "en": dict(
-        scenario="English HS code / customs tariff RAG evaluation",
+        scenario="Document-grounded RAG evaluation",
         task="Generate diverse English questions grounded in the document. "
              "Include reasoning, comparative, hypothetical, concretizing, and constrained question types.",
         input_format="An English question",
