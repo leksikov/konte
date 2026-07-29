@@ -21,4 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured logging with structlog
 - Evaluation harness (DeepEval synthesizer + GEval LLM-as-judge metrics)
 
+### Changed
+
+- `dev` and `eval` installs moved from package extras to PEP 735 dependency
+  groups: use `uv sync` / `uv sync --group eval` (or pip ≥ 25.1:
+  `pip install --group dev`). `pip install -e ".[dev]"` no longer installs
+  anything and pip only warns about the unknown extra.
+
 [0.1.0]: https://github.com/leksikov/konte/releases/tag/v0.1.0

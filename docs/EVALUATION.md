@@ -57,12 +57,12 @@ Key finding: the answer model matters more than prompt tuning — gpt-4.1 outper
 Install the evaluation dependencies first:
 
 ```bash
-uv sync --group eval
+uv sync --group eval --inexact   # --inexact keeps any extras you already installed
 ```
 
 The reusable harness lives in `evaluation/`:
 
-- `deepeval_synthesizer.py` — generate a diverse test set from any Konte project (`python -m evaluation.deepeval_synthesizer --help`)
+- `deepeval_synthesizer.py` — generate a diverse test set from any Konte project (`uv run python -m evaluation.deepeval_synthesizer --help`)
 - `custom_metrics.py` / `prompts/eval_prompts.py` — GEval judge metrics (AnswerCorrectness, HSCodeCorrectness)
 - `custom_llm.py` — DeepEval model wrapper for any OpenAI-compatible endpoint
 

@@ -64,6 +64,13 @@ type(scope): Description
 
 Releases are published to PyPI by `.github/workflows/release.yml` via
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) — no API tokens.
+The workflow only publishes full releases (pre-releases run tests but skip the
+upload), gates publishing on lint + unit tests, and fails fast if the release
+tag does not match the `pyproject.toml` version.
+
+**Before the first public release**: verify the repository and its full git
+history are clean for redistribution — no non-redistributable third-party
+content, no internal endpoints or credentials.
 
 One-time setup on [pypi.org](https://pypi.org/manage/account/publishing/): add a
 **pending trusted publisher** for project `konte` with owner `leksikov`,
@@ -71,11 +78,13 @@ repository `konte`, workflow `release.yml`, environment `pypi`.
 
 Per release:
 
-1. Bump `version` in `pyproject.toml` and add a dated CHANGELOG entry (with its link reference)
-2. Commit, tag `vX.Y.Z`, and push the tag
+1. Bump `version` in `pyproject.toml`, run `uv lock` (the lockfile pins the
+   project version — CI fails on a stale lock), and add a dated CHANGELOG
+   entry (with its link reference)
+2. Commit, push to main, then tag `vX.Y.Z` and push the tag
 3. Create a GitHub release from the tag — publishing the release triggers the
-   workflow, which builds the sdist/wheel, validates metadata with
-   `twine check`, and uploads to PyPI
+   workflow, which runs the test suite, builds the sdist/wheel, validates
+   metadata with `twine check`, and uploads to PyPI
 4. After the first publish, add the PyPI version badge to the README:
    `[![PyPI](https://img.shields.io/pypi/v/konte)](https://pypi.org/project/konte/)`
 

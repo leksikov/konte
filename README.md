@@ -28,6 +28,7 @@ Using [uv](https://docs.astral.sh/uv/) (recommended):
 git clone https://github.com/leksikov/konte.git
 cd konte
 uv sync                   # library + CLI + dev tools, into .venv
+source .venv/bin/activate # or prefix every command below with `uv run`
 ```
 
 Or with pip:
@@ -35,6 +36,18 @@ Or with pip:
 ```bash
 pip install -e .          # library + CLI
 ```
+
+The command examples in this README assume an activated environment; with uv you can equivalently run them as `uv run konte ...`.
+
+**Optional extras** — the REST API server and web UI ship as extras:
+
+```bash
+pip install "konte[api]"            # FastAPI server (konte serve)
+pip install "konte[ui]"             # Gradio UI (konte ui)
+uv sync --extra api --extra ui      # source checkout equivalent
+```
+
+Note that `uv sync` is exact: name every extra/group you want in a single command (or pass `--inexact` to only add packages).
 
 Set your OpenAI API key (used for embeddings and context generation):
 
@@ -105,10 +118,10 @@ konte list
 konte info my_project
 konte delete my_project
 
-# REST API server (requires the [api] extra: uv sync --extra api)
+# REST API server (requires the [api] extra - see Installation)
 konte serve --host 0.0.0.0 --port 8000
 
-# Web UI (requires the [ui] extra: uv sync --extra ui)
+# Web UI (requires the [ui] extra - see Installation)
 konte ui --port 7860
 
 # Version
@@ -504,45 +517,36 @@ Contextual retrieval provides the largest gains (+25%) on complex multi-context 
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Ingestion["📄 Document Ingestion"]
-        A[Documents<br/>PDF, TXT, MD] --> B[Segmenter<br/>~8000 tokens]
-        B --> C[Chunker<br/>800 tokens]
-    end
-
-    subgraph Context["🧠 Context Generation"]
-        C --> D{Skip Context?}
-        D -->|No| E[LLM generates<br/>100-200 token context<br/>per chunk]
-        D -->|Yes| F[Raw chunks]
-        E --> G[Contextualized Chunks<br/>context + content]
-        F --> G
-    end
-
-    subgraph Indexing["📚 Index Building"]
-        G --> H{FAISS enabled?}
-        G --> I{BM25 enabled?}
-        H -->|Yes| J[Embed chunks]
-        J --> K[(FAISS Index)]
-        I -->|Yes| L[(BM25 Index)]
-    end
-
-    subgraph Retrieval["🔍 Retrieval"]
-        M[Query] --> N{Mode?}
-        N -->|Semantic| K
-        N -->|Lexical| L
-        N -->|Hybrid| O[Both indexes]
-        K --> P[Top-K results]
-        L --> P
-        O --> Q[Reciprocal Rank<br/>Fusion]
-        Q --> P
-    end
-
-    subgraph Response["📤 Response"]
-        P --> R[RetrievalResponse]
-        R --> S[suggested_action<br/>deliver / query_more / refine_query]
-        S --> T[Agent / Application]
-    end
+```text
+Documents (PDF / TXT / MD)
+            |
+            v
+Segmenter (~8000-token segments, 10% overlap)
+            |
+            v
+Chunker (800-token chunks, 10% overlap)
+            |
+            v
+LLM context generation (100-200 tokens per chunk,
+sees the full segment; optional via skip_context)
+            |
+            v
+Contextualized chunks (context + content)
+            |
+     +------+------+
+     |             |
+     v             v
+FAISS index    BM25 index
+(semantic)     (lexical)
+     |             |
+     +------+------+
+            |
+            v
+Hybrid retrieval (reciprocal rank fusion)
+            |
+            v
+RetrievalResponse: scored chunks + suggested_action
+(deliver / query_more / refine_query)
 ```
 
 Detailed diagrams: [architecture overview](https://github.com/leksikov/konte/blob/main/docs/architecture_overview.md) · [detailed pipeline](https://github.com/leksikov/konte/blob/main/docs/architecture_detailed.md)
