@@ -6,7 +6,12 @@ from pathlib import Path
 
 import structlog
 from langchain_openai import ChatOpenAI
-from openai import RateLimitError, APIStatusError, APITimeoutError, APIConnectionError, NotFoundError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    RateLimitError,
+)
 
 from konte.config import settings
 from konte.models import Chunk, ContextualizedChunk
@@ -81,14 +86,14 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
 def _resolve_default_prompt_path() -> Path:
     """Resolve default prompt path via importlib.resources or __file__ fallback."""
     try:
-        ref = importlib.resources.files("konte").parent / "prompts" / "context_prompt.txt"
+        ref = importlib.resources.files("konte") / "prompts" / "context_prompt.txt"
         path = Path(str(ref))
         if path.exists():
             return path
     except Exception:
         pass
     # Fallback: relative to this source file (works when running from source checkout)
-    return Path(__file__).parent.parent / "prompts" / "context_prompt.txt"
+    return Path(__file__).parent / "prompts" / "context_prompt.txt"
 
 
 def load_prompt_template(prompt_path: Path | None = None) -> str:
@@ -206,7 +211,7 @@ async def generate_contexts_batch(
                     chunk=chunk,
                     context=response.content.strip() if response.content else ""
                 )
-                for chunk, response in zip(chunks, responses)
+                for chunk, response in zip(chunks, responses, strict=True)
             ]
         except retryable_errors as e:
             delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)

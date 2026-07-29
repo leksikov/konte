@@ -1,8 +1,9 @@
 """Unit tests for settings module."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -40,12 +41,20 @@ class TestSettings:
             assert "~" not in str(s.STORAGE_PATH)
             assert isinstance(s.STORAGE_PATH, Path)
 
-    def test_prompt_path_is_path(self):
-        """Test that PROMPT_PATH is a Path object."""
+    def test_prompt_path_defaults_to_none(self):
+        """Test that PROMPT_PATH defaults to None (resolved at usage time)."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
             from konte.config import Settings
 
-            s = Settings()
+            s = Settings(PROMPT_PATH=None)
+            assert s.PROMPT_PATH is None
+
+    def test_prompt_path_coerced_to_path(self):
+        """Test that a configured PROMPT_PATH becomes a Path object."""
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
+            from konte.config import Settings
+
+            s = Settings(PROMPT_PATH="custom/context_prompt.txt")
             assert isinstance(s.PROMPT_PATH, Path)
             assert s.PROMPT_PATH.name == "context_prompt.txt"
 

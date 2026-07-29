@@ -1,0 +1,22 @@
+<segment>
+{segment}
+</segment>
+
+Here is a chunk extracted from the segment above. Generate contextual information that will improve search retrieval of this chunk.
+
+<chunk>
+{chunk}
+</chunk>
+
+## Instructions
+
+Do not summarize the chunk. Instead, provide additional context from the surrounding segment that situates this chunk within the overall document.
+
+Write 3-5 natural sentences covering:
+
+1. Where this chunk fits in the document's structure (section, topic, hierarchy)
+2. How it relates to preceding or parent topics in the segment
+3. Background information from the segment that helps interpret the chunk
+4. Related terms, entities, or identifiers from the segment that are not mentioned in the chunk itself
+
+Write a single paragraph with no labels or headings. Respond in the same language as the document.
