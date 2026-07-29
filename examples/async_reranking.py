@@ -18,7 +18,7 @@ that exposes a /score endpoint (e.g. serving Qwen3-Reranker-8B):
 import asyncio
 from pathlib import Path
 
-from konte import Project, delete_project
+from konte import Project, delete_project, settings
 
 SAMPLE_CONTENT = """
 # International Trade Classification Rules
@@ -106,58 +106,64 @@ async def main():
     content_file.parent.mkdir(parents=True, exist_ok=True)
     content_file.write_text(SAMPLE_CONTENT, encoding="utf-8")
 
-    project.add_documents([content_file])
-    await project.build(skip_context=True)
-    project.save()
-    print("Project ready.\n")
+    try:
+        project.add_documents([content_file])
+        await project.build(skip_context=True)
+        project.save()
+        print("Project ready.\n")
 
-    # --- 1. Standard query (no reranking) ---
-    print("=" * 60)
-    print("1. Standard query (no reranking)")
-    print("=" * 60)
+        # --- 1. Standard query (no reranking) ---
+        print("=" * 60)
+        print("1. Standard query (no reranking)")
+        print("=" * 60)
 
-    query = "How to classify a product with multiple functions?"
+        query = "How to classify a product with multiple functions?"
 
-    response_standard = await project.query_async(query=query, top_k=5)
+        response_standard = await project.query_async(query=query, top_k=5)
 
-    print(f"Query: '{query}'")
-    print(f"Top score: {response_standard.top_score:.3f}")
-    for i, r in enumerate(response_standard.results[:5], 1):
-        print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
+        print(f"Query: '{query}'")
+        print(f"Top score: {response_standard.top_score:.3f}")
+        for i, r in enumerate(response_standard.results[:5], 1):
+            print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
 
-    # --- 2. With LLM reranking ---
-    print("\n" + "=" * 60)
-    print("2. With LLM reranking (rerank=True)")
-    print("=" * 60)
+        if not settings.RERANKER_BASE_URL:
+            print("\nSkipping reranking demo: RERANKER_BASE_URL is not set.")
+            print("See the module docstring for how to configure a reranker endpoint.")
+            return
 
-    response_reranked = await project.query_async(
-        query=query,
-        top_k=5,
-        rerank=True,
-        rerank_initial_k=20,  # retrieve 20, rerank to top 5
-    )
+        # --- 2. With LLM reranking ---
+        print("\n" + "=" * 60)
+        print("2. With LLM reranking (rerank=True)")
+        print("=" * 60)
 
-    print(f"Query: '{query}'")
-    print(f"Top score: {response_reranked.top_score:.3f}")
-    for i, r in enumerate(response_reranked.results[:5], 1):
-        print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
+        response_reranked = await project.query_async(
+            query=query,
+            top_k=5,
+            rerank=True,
+            rerank_initial_k=20,  # retrieve 20, rerank to top 5
+        )
 
-    # --- 3. Compare ordering ---
-    print("\n" + "=" * 60)
-    print("3. Comparison: top result with vs without reranking")
-    print("=" * 60)
+        print(f"Query: '{query}'")
+        print(f"Top score: {response_reranked.top_score:.3f}")
+        for i, r in enumerate(response_reranked.results[:5], 1):
+            print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
 
-    if response_standard.results and response_reranked.results:
-        std_top = response_standard.results[0]
-        rnk_top = response_reranked.results[0]
-        print(f"Standard top:  [{std_top.score:.3f}] {std_top.content[:80]}...")
-        print(f"Reranked top:  [{rnk_top.score:.3f}] {rnk_top.content[:80]}...")
-        same = std_top.chunk_id == rnk_top.chunk_id
-        print(f"Same top result: {same}")
+        # --- 3. Compare ordering ---
+        print("\n" + "=" * 60)
+        print("3. Comparison: top result with vs without reranking")
+        print("=" * 60)
 
-    # --- Cleanup ---
-    delete_project(project_name, storage_path=storage_path)
-    print("\nDone!")
+        if response_standard.results and response_reranked.results:
+            std_top = response_standard.results[0]
+            rnk_top = response_reranked.results[0]
+            print(f"Standard top:  [{std_top.score:.3f}] {std_top.content[:80]}...")
+            print(f"Reranked top:  [{rnk_top.score:.3f}] {rnk_top.content[:80]}...")
+            same = std_top.chunk_id == rnk_top.chunk_id
+            print(f"Same top result: {same}")
+    finally:
+        # --- Cleanup ---
+        delete_project(project_name, storage_path=storage_path)
+        print("\nDone!")
 
 
 if __name__ == "__main__":

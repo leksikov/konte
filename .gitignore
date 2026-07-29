@@ -86,7 +86,8 @@ example_knowledge_base/
 test_dataset/
 docs/ppt_prep/
 
-# Internal research artifacts (kept local, not published)
+# Internal research artifacts kept only on the maintainer's machine.
+# These dirs/files exist locally but are not part of the public repo.
 evaluation/logs/
 evaluation/results/
 evaluation/trials/
@@ -104,7 +105,12 @@ evaluation/synthesize_dataset.py
 evaluation/synthesize_korean_dataset.py
 evaluation/synthesize_singapore_dataset.py
 experiments/
-scripts/build_*.py
-scripts/rebuild_*.py
+scripts/build_baseline_project.py
+scripts/build_combined_project.py
+scripts/build_knowledge_bases.py
+scripts/build_singapore_hs_code.py
+scripts/build_tariff_project.py
+scripts/build_wco_feb2026.py
+scripts/rebuild_wco_korean.py
 docs/knowledge_base_analysis.md
 examples/demo_source_filter_and_regex.py
