@@ -17,17 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up uv with Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --locked
 
       - name: Lint
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Run unit tests
-        run: pytest tests/unit -q
+        run: uv run pytest tests/unit -q
