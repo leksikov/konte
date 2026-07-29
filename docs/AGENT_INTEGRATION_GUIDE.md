@@ -745,12 +745,13 @@ if __name__ == "__main__":
 ### Configuration
 
 ```bash
-# BackendAI (default for answer generation)
-BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
-BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
-
-# Falls back to OpenAI if BackendAI not configured
+# OpenAI (default for answer generation)
 OPENAI_API_KEY=sk-...
+
+# Optional: any vLLM server with an OpenAI-compatible API
+# (used instead of OpenAI when both are set)
+BACKENDAI_ENDPOINT=https://your-vllm-endpoint/v1
+BACKENDAI_MODEL_NAME=your-model-name
 ```
 
 ---

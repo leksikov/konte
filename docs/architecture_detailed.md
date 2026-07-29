@@ -1,3 +1,8 @@
+# Detailed Pipeline Architecture
+
+Implementation-level flow of the full pipeline: document loading, segmentation and chunking with token counting, LLM context generation with retry handling, FAISS/BM25 index building, storage layout, hybrid retrieval with reciprocal rank fusion, score calculation, and the agent-facing response schema. For a quick overview see [architecture_overview.md](architecture_overview.md).
+
+```mermaid
 flowchart TB
     subgraph Input["📄 Input"]
         A[Document Files<br/>PDF, TXT, MD]
@@ -43,11 +48,11 @@ flowchart TB
     subgraph ContextGen["🧠 Context Generation"]
         Y --> Z{Skip Context?}
         Z -->|Yes| AA[Empty context]
-        Z -->|No| AB[Load prompt template<br/>from prompts/]
+        Z -->|No| AB[Load prompt template<br/>from konte/prompts/]
         AB --> AC[For each segment's chunks]
         AC --> AD[Build prompt:<br/>1. Segment text ~8000 tokens<br/>2. Chunk text ~800 tokens]
-        AD --> AE[Async semaphore<br/>max 10 parallel]
-        AE --> AF[Call OpenAI gpt-4.1]
+        AD --> AE[Parallel abatch<br/>per-segment concurrency]
+        AE --> AF[Call context LLM<br/>gpt-4.1-mini default]
         AF --> AG{Rate limited?}
         AG -->|Yes| AH[Exponential backoff<br/>retry]
         AH --> AF
@@ -96,17 +101,17 @@ flowchart TB
 
     subgraph RetrievalProcess["🔍 Retrieval Process"]
         BG --> BH{Mode?}
-        
+
         BH -->|Semantic| BI[FAISS search]
         BI --> BJ[Get top-N vectors<br/>by cosine similarity]
         BJ --> BK[Map faiss_idx<br/>to chunk_id]
         BK --> BL[Semantic Results<br/>+ scores]
-        
+
         BH -->|Lexical| BM[Tokenize query]
         BM --> BN[BM25 search]
         BN --> BO[Get top-N chunks<br/>by BM25 score]
         BO --> BP[Lexical Results<br/>+ scores]
-        
+
         BH -->|Hybrid| BQ[Both searches]
         BQ --> BI
         BQ --> BM
@@ -139,7 +144,7 @@ flowchart TB
         CB -->|No| CD{top_score >= 0.4?}
         CD -->|Yes| CE[suggested_action =<br/>'query_more']
         CD -->|No| CF[suggested_action =<br/>'refine_query']
-        
+
         CC --> CG[has_high_confidence<br/>= true]
         CE --> CH[has_high_confidence<br/>= false]
         CF --> CH
@@ -155,7 +160,7 @@ flowchart TB
         CC --> CN[suggested_action: str]
         CE --> CN
         CF --> CN
-        
+
         CJ --> CO[RetrievalResponse]
         CK --> CO
         CL --> CO
@@ -167,10 +172,10 @@ flowchart TB
         CQ --> CO
     end
 
-    subgraph AgnoIntegration["🤖 Agno Integration"]
+    subgraph AgentIntegration["🤖 Agent Integration"]
         CO --> CR[as_retriever]
         CR --> CS[Callable:<br/>query → RetrievalResponse]
-        CS --> CT[Agno Agent<br/>Tool]
+        CS --> CT[Agent Tool<br/>LangChain / Agno]
     end
 
     %% Styling
@@ -188,4 +193,5 @@ flowchart TB
     style ScoreCalc fill:#e1bee7
     style ActionLogic fill:#d1c4e9
     style Response fill:#c5cae9
-    style AgnoIntegration fill:#b2dfdb
+    style AgentIntegration fill:#b2dfdb
+```

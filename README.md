@@ -1,5 +1,9 @@
 # Konte
 
+[![CI](https://github.com/leksikov/konte/actions/workflows/ci.yml/badge.svg)](https://github.com/leksikov/konte/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Contextual RAG library that improves retrieval by prepending LLM-generated context to chunks before embedding and indexing.
 
 ## Problem
@@ -14,49 +18,24 @@ Konte implements [Anthropic's Contextual Retrieval](https://www.anthropic.com/ne
 2. **Contextual BM25** - Apply the same contextualization before building the BM25 lexical index
 3. **Hybrid Retrieval** - Combine semantic (FAISS) and lexical (BM25) search with reciprocal rank fusion
 
-This achieves up to **49% reduction** in failed retrievals (67% with reranking).
+This achieves up to **49% reduction** in failed retrievals (67% with reranking). On our own benchmark, contextual chunks + reranking improved answer accuracy by **+12% to +25%** over a no-context baseline — see [Evaluation](#evaluation).
 
 ## Installation
 
 ```bash
-pip install -e .
+git clone https://github.com/leksikov/konte.git
+cd konte
+pip install -e .          # library + CLI
+pip install -e ".[dev]"   # + tests and linting
 ```
 
-Optionally set your OpenAI API key (Backend.AI is used by default):
-```bash
-export OPENAI_API_KEY=sk-...  # Optional, for OpenAI embeddings
-```
-
-## CLI
-
-Konte includes a command-line interface:
+Set your OpenAI API key (used for embeddings and context generation by default):
 
 ```bash
-# Create a project
-konte create my_project
-
-# Add documents
-konte add my_project doc1.pdf doc2.md
-
-# Build indexes
-konte build my_project
-
-# Query (retrieval only)
-konte query my_project "What is the HS code for memory chips?"
-
-# Ask (full RAG with LLM answer)
-konte ask my_project "What is the HS code for memory chips?"
-konte ask my_project "What is the HS code for DDR5 RAM?" --show-sources
-
-# List projects
-konte list
-
-# Project info
-konte info my_project
-
-# Delete project
-konte delete my_project
+export OPENAI_API_KEY=sk-...
 ```
+
+Any vLLM server with an OpenAI-compatible API can be used instead for context and answer generation — see [Configuration](#configuration).
 
 ## Quick Start
 
@@ -93,6 +72,40 @@ async def main():
     print(f"High confidence: {response.has_high_confidence}")
 
 asyncio.run(main())
+```
+
+## CLI
+
+```bash
+# Create a project
+konte create my_project
+
+# Add documents
+konte add my_project doc1.pdf doc2.md
+
+# Build indexes
+konte build my_project
+
+# Query (retrieval only)
+konte query my_project "What was the revenue growth in Q3?"
+
+# Ask (full RAG with LLM answer)
+konte ask my_project "What was the revenue growth in Q3?"
+konte ask my_project "Which products drove the growth?" --show-sources
+
+# List projects / show info / delete
+konte list
+konte info my_project
+konte delete my_project
+
+# REST API server (requires: pip install -e ".[api]")
+konte serve --host 0.0.0.0 --port 8000
+
+# Web UI (requires: pip install -e ".[ui]")
+konte ui --port 7860
+
+# Version
+konte --version
 ```
 
 ## Loading Existing Projects
@@ -156,81 +169,24 @@ For standard RAG without LLM-generated context (faster, cheaper):
 await project.build(skip_context=True)
 ```
 
-## Performance Optimizations
+## Custom Context Prompts
 
-### vLLM/OpenAI Prefix Caching
+The context-generation prompt is a plain text template with two placeholders: `{segment}` (the ~8000-token surrounding segment) and `{chunk}` (the chunk to contextualize). The default prompt (`konte/prompts/context_prompt.txt`) is domain-neutral and responds in the document's language.
 
-Context generation is optimized for KV cache prefix caching:
-
-```
-Prompt structure: [SEGMENT ~8000 tokens] + [CHUNK ~800 tokens]
-```
-
-**How it works:**
-1. All chunks within a segment share the same prefix (segment text)
-2. Chunks are sent in parallel via `abatch(max_concurrency=len(chunks))`
-3. First request computes and caches the segment prefix KV states
-4. Subsequent chunk requests hit the cache - only compute the unique chunk suffix
-5. Segments are processed sequentially to maximize cache efficiency
-
-```
-Segment A (10 chunks):
-  Request 1: segment_A + chunk_1  → compute prefix, cache it
-  Request 2: segment_A + chunk_2  → cache hit, compute only chunk_2
-  Request 3: segment_A + chunk_3  → cache hit, compute only chunk_3
-  ...
-Then Segment B, etc.
-```
-
-Request order within a segment doesn't matter - whichever arrives first triggers caching.
-
-### Other Optimizations
-
-- **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
-- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls within segment
-
-## Logging
-
-Structured logging via structlog provides visibility into the ingestion pipeline:
-
-```
-2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
-2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=55
-2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
-2024-01-15 10:30:03 [info] generating_context_for_segment segment_key=('doc.pdf', 0) total_segments=5 num_chunks=11
-...
-2024-01-15 10:30:15 [info] context_generation_complete num_chunks=55 skipped=False
-2024-01-15 10:30:16 [info] faiss_index_built
-2024-01-15 10:30:16 [info] project_build_complete
-```
-
-Pipeline: 1 document → 5 segments (~8000 tokens each) → ~11 chunks per segment (~800 tokens) = 55 chunks total. Use debug level for granular token counts.
-
-## Index Options
+Domain-specific prompts substantially improve retrieval for specialized corpora. Override per project:
 
 ```python
-# FAISS only (no BM25)
-project = Project.create("semantic_only", enable_bm25=False)
-
-# BM25 only (no FAISS) - no embeddings needed
-project = Project.create("lexical_only", enable_faiss=False)
+project = Project.create("my_project", context_prompt_path=Path("my_prompt.txt"))
 ```
 
-## Configuration
-
-Set via environment variables or `.env` file:
+or via the CLI:
 
 ```bash
-OPENAI_API_KEY=sk-...
-STORAGE_PATH=~/.konte          # Project storage location
-EMBEDDING_MODEL=text-embedding-3-small
-CONTEXT_MODEL=gpt-4.1
-DEFAULT_TOP_K=20
-
-# BackendAI (for context/answer generation)
-BACKENDAI_ENDPOINT=https://qwen3vl.asia03.app.backend.ai/v1
-BACKENDAI_MODEL_NAME=Qwen3-VL-8B-Instruct
+konte create my_project --prompt my_prompt.txt
+konte build my_project --prompt my_prompt.txt
 ```
+
+or globally with the `PROMPT_PATH` environment variable. See [examples/prompts/](examples/prompts/) for domain-specific prompt examples (Korean customs-tariff classification).
 
 ## RAG Answer Generation
 
@@ -245,13 +201,13 @@ async def main():
 
     # Full RAG pipeline: retrieval + LLM answer
     response, answer = await project.query_with_answer(
-        query="What is the HS code for DDR5 RAM?",
+        query="What was the revenue growth in Q3?",
         mode="hybrid",
         max_chunks=5,
     )
 
     print(answer.answer)       # LLM-generated answer
-    print(answer.model)        # Model used (e.g., "Qwen3-VL-8B-Instruct")
+    print(answer.model)        # Model used (e.g., "gpt-4.1-mini")
     print(answer.sources_used) # Number of chunks used
 
     # Retrieval metadata is also available
@@ -260,6 +216,8 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Answers are generated with OpenAI by default, or with your own vLLM endpoint when `BACKENDAI_ENDPOINT` and `BACKENDAI_MODEL_NAME` are configured.
 
 ### Custom Prompt Templates
 
@@ -277,7 +235,7 @@ Provide the answer with references to source documents.
 Answer:"""
 
 response, answer = await project.query_with_answer(
-    query="What is the tariff rate for semiconductor imports?",
+    query="What are the main risk factors?",
     prompt_template=custom_prompt,
     max_chunks=10,
 )
@@ -285,18 +243,16 @@ response, answer = await project.query_with_answer(
 
 ### With Reranking
 
-Combine answer generation with LLM reranking for better retrieval quality:
+Combine answer generation with reranking for better retrieval quality. Reranking requires a vLLM server exposing a `/score` endpoint (e.g. serving Qwen3-Reranker-8B), configured via `RERANKER_BASE_URL`:
 
 ```python
 response, answer = await project.query_with_answer(
-    query="How to classify a multi-function device?",
-    rerank=True,           # Apply LLM reranking before answer generation
+    query="How do the two products compare?",
+    rerank=True,           # Rerank via RERANKER_BASE_URL before answer generation
     rerank_initial_k=50,   # Retrieve 50 candidates, rerank to top_k
     max_chunks=5,
 )
 ```
-
-By default uses BackendAI (Qwen3-VL-8B-Instruct), falls back to OpenAI if not configured.
 
 ## Metadata Filtering
 
@@ -370,25 +326,32 @@ print(response.has_high_confidence)  # True if top_score >= 0.7
 print(response.top_score)            # Highest result score (0-1)
 print(response.score_spread)         # Difference between top and bottom scores
 
-# Use as callable for Agno
+# Use as a plain callable tool
 retriever = project.as_retriever()
 response = retriever("my query")
 ```
 
+Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integration Guide](docs/AGENT_INTEGRATION_GUIDE.md) for:
+
+- LangChain RAG chains and custom retrievers
+- Agno tools and multi-project agents
+- Confidence-based agent decisions
+- Streaming responses
+
 ## RetrievalResponse Schema
 
+All models are Pydantic V2:
+
 ```python
-@dataclass
 class RetrievalResponse:
     results: list[RetrievalResult]  # Ranked results
-    query: str                       # Original query
-    total_found: int                 # Number of results
-    top_score: float                 # Highest score (0-1)
-    score_spread: float              # Score range
-    has_high_confidence: bool        # top_score >= 0.7
-    suggested_action: str            # "deliver", "query_more", "refine_query"
+    query: str                      # Original query
+    total_found: int                # Number of results
+    top_score: float                # Highest score (0-1)
+    score_spread: float             # Score range
+    has_high_confidence: bool       # top_score >= 0.7
+    suggested_action: str           # "deliver", "query_more", "refine_query"
 
-@dataclass
 class RetrievalResult:
     content: str      # Original chunk text
     context: str      # LLM-generated context
@@ -406,15 +369,15 @@ Query multiple knowledge bases in parallel:
 from konte import Project
 
 projects = [
-    Project.open("hs_codes"),
-    Project.open("gri_rules"),
-    Project.open("precedents"),
+    Project.open("annual_reports"),
+    Project.open("product_docs"),
+    Project.open("support_tickets"),
 ]
 
 # Query all projects
 results = {}
 for project in projects:
-    results[project.config.name] = project.query("memory chip classification")
+    results[project.config.name] = project.query("battery performance issues")
 
 # Merge and rank
 all_results = []
@@ -427,6 +390,89 @@ all_results.sort(key=lambda x: x[1].score, reverse=True)
 
 See [examples/parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) for a complete example.
 
+## Performance Optimizations
+
+### vLLM/OpenAI Prefix Caching
+
+Context generation is optimized for KV cache prefix caching:
+
+```
+Prompt structure: [SEGMENT ~8000 tokens] + [CHUNK ~800 tokens]
+```
+
+**How it works:**
+1. All chunks within a segment share the same prefix (segment text)
+2. Chunks are sent in parallel via `abatch(max_concurrency=len(chunks))`
+3. First request computes and caches the segment prefix KV states
+4. Subsequent chunk requests hit the cache - only compute the unique chunk suffix
+5. Segments are processed sequentially to maximize cache efficiency
+
+```
+Segment A (10 chunks):
+  Request 1: segment_A + chunk_1  → compute prefix, cache it
+  Request 2: segment_A + chunk_2  → cache hit, compute only chunk_2
+  Request 3: segment_A + chunk_3  → cache hit, compute only chunk_3
+  ...
+Then Segment B, etc.
+```
+
+Request order within a segment doesn't matter - whichever arrives first triggers caching.
+
+### Other Optimizations
+
+- **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
+- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls within segment
+- **Build Checkpointing**: Per-segment checkpoints allow interrupted builds to resume
+
+## Logging
+
+Structured logging via structlog provides visibility into the ingestion pipeline:
+
+```
+2024-01-15 10:30:01 [info] loading_document path=/data/doc.pdf
+2024-01-15 10:30:02 [info] document_chunked path=/data/doc.pdf num_chunks=55
+2024-01-15 10:30:02 [info] context_generation_started total_segments=5 skip_context=False
+2024-01-15 10:30:03 [info] generating_context_for_segment segment_key=('doc.pdf', 0) total_segments=5 num_chunks=11
+...
+2024-01-15 10:30:15 [info] context_generation_complete num_chunks=55 skipped=False
+2024-01-15 10:30:16 [info] faiss_index_built
+2024-01-15 10:30:16 [info] project_build_complete
+```
+
+Pipeline: 1 document → 5 segments (~8000 tokens each) → ~11 chunks per segment (~800 tokens) = 55 chunks total. Use debug level for granular token counts.
+
+## Index Options
+
+```python
+# FAISS only (no BM25)
+project = Project.create("semantic_only", enable_bm25=False)
+
+# BM25 only (no FAISS) - no embeddings needed
+project = Project.create("lexical_only", enable_faiss=False)
+```
+
+## Configuration
+
+Set via environment variables or `.env` file (see [.env.example](.env.example)):
+
+```bash
+OPENAI_API_KEY=sk-...          # Required unless a custom backend is set
+STORAGE_PATH=~/.konte          # Project storage location
+EMBEDDING_MODEL=text-embedding-3-small
+CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
+DEFAULT_TOP_K=20
+PROMPT_PATH=                   # Optional global context-prompt override
+
+# Optional: any vLLM server with an OpenAI-compatible API
+# (used instead of OpenAI for context/answer generation when both are set)
+BACKENDAI_ENDPOINT=https://your-vllm-endpoint/v1
+BACKENDAI_MODEL_NAME=your-model-name
+
+# Optional: reranker (vLLM /score endpoint), required only for rerank=True
+RERANKER_BASE_URL=https://your-vllm-endpoint/v1
+RERANKER_MODEL=Qwen3-Reranker-8B
+```
+
 ## Examples
 
 | Example | Demonstrates |
@@ -434,55 +480,80 @@ See [examples/parallel_multi_project_retrieval.py](examples/parallel_multi_proje
 | [basic_usage.py](examples/basic_usage.py) | Project CRUD, document loading, building, querying, retrieval modes |
 | [query_with_answer.py](examples/query_with_answer.py) | Full RAG pipeline, custom prompt templates, GeneratedAnswer model |
 | [metadata_filtering.py](examples/metadata_filtering.py) | source_filter, metadata_filter, combining filters with modes |
-| [async_reranking.py](examples/async_reranking.py) | Async querying, LLM reranking, comparing with/without reranking |
+| [async_reranking.py](examples/async_reranking.py) | Async querying, reranking, comparing with/without reranking |
 | [parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) | Multi-project querying, result merging |
-
-## Agent Integration
-
-Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integration Guide](docs/AGENT_INTEGRATION_GUIDE.md) for:
-
-- LangChain RAG chains and custom retrievers
-- Agno tools and multi-project agents
-- Confidence-based agent decisions
-- Streaming responses
+| [prompts/](examples/prompts/) | Domain-specific context prompt templates |
 
 ## Evaluation
 
-RAG evaluation using DeepEval with LLM-as-judge metrics. **Current best: 97-99% accuracy**.
+Evaluated end-to-end with DeepEval LLM-as-judge metrics on a customs-tariff classification case study (private Korean corpus, ~3,000 chunks):
 
-### Two Evaluation Types
+| Configuration | Exact lookup (100 q) | Diverse RAG (70 q) |
+|---------------|----------------------|--------------------|
+| **Contextual chunks + reranking** | **97%** | **98.6%** |
+| Baseline (no context, no reranking) | 85% | 74% |
 
-| Evaluation | Dataset | Questions | Pass Rate | Avg Score |
-|------------|---------|-----------|-----------|-----------|
-| **Diverse RAG** | `deepeval_goldens_korean_no_hypothetical.json` | 70 | **98.6%** | **0.831** |
-| **HS Code Lookup** | `synthetic_goldens_100_fixed.json` | 100 | **97.0%** | **0.940** |
-
-**Notes**: Diverse dataset filtered (30 hypothetical questions removed - require inference beyond source documents). HS Code dataset has 3 ground truth errors fixed.
-
-### Quick Start
-
-```bash
-# Run evaluation on diverse questions (recommended)
-python -m evaluation.experiments.llm_reranking \
-  --project wco_hs_explanatory_notes_korean \
-  --test-cases evaluation/data/synthetic/deepeval_goldens_korean_no_hypothetical.json \
-  --method binary --initial-k 100 --final-k 15 --max-cases 0 \
-  --output evaluation/experiments/results/llm_rerank_binary_deepeval_diverse.json
-
-python -m evaluation.experiments.run_deepeval_full binary deepeval_diverse answer
-
-# Or for HS code evaluation
-python -m evaluation.experiments.run_deepeval_full binary 100 hs_code
-```
-
-See [evaluation/EVALUATION_GUIDE.md](evaluation/EVALUATION_GUIDE.md) for test generation and detailed methodology.
+Contextual retrieval provides the largest gains (+25%) on complex multi-context questions. Full results, methodology, and instructions for evaluating your own corpus: [docs/EVALUATION.md](docs/EVALUATION.md).
 
 ## Architecture
 
-See the system flowcharts for detailed architecture:
-- [High-level flowchart](high_level_system_flowchart.md)
-- [Low-level flowchart](low_level_system_flowchart.md)
+```mermaid
+flowchart TB
+    subgraph Ingestion["📄 Document Ingestion"]
+        A[Documents<br/>PDF, TXT, MD] --> B[Segmenter<br/>~8000 tokens]
+        B --> C[Chunker<br/>800 tokens]
+    end
+
+    subgraph Context["🧠 Context Generation"]
+        C --> D{Skip Context?}
+        D -->|No| E[LLM generates<br/>100-200 token context<br/>per chunk]
+        D -->|Yes| F[Raw chunks]
+        E --> G[Contextualized Chunks<br/>context + content]
+        F --> G
+    end
+
+    subgraph Indexing["📚 Index Building"]
+        G --> H{FAISS enabled?}
+        G --> I{BM25 enabled?}
+        H -->|Yes| J[Embed chunks]
+        J --> K[(FAISS Index)]
+        I -->|Yes| L[(BM25 Index)]
+    end
+
+    subgraph Retrieval["🔍 Retrieval"]
+        M[Query] --> N{Mode?}
+        N -->|Semantic| K
+        N -->|Lexical| L
+        N -->|Hybrid| O[Both indexes]
+        K --> P[Top-K results]
+        L --> P
+        O --> Q[Reciprocal Rank<br/>Fusion]
+        Q --> P
+    end
+
+    subgraph Response["📤 Response"]
+        P --> R[RetrievalResponse]
+        R --> S[suggested_action<br/>deliver / query_more / refine_query]
+        S --> T[Agent / Application]
+    end
+```
+
+Detailed diagrams: [architecture overview](docs/architecture_overview.md) · [detailed pipeline](docs/architecture_detailed.md)
+
+## Troubleshooting
+
+**macOS: `OMP: Error #15` / libomp crash when importing FAISS**
+
+FAISS and other libraries may both load OpenMP. Set:
+
+```bash
+export KMP_DUPLICATE_LIB_OK=TRUE
+```
+
+## Contributing
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Run `pytest tests/unit` (no API keys needed) and `ruff check .` before submitting a PR.
 
 ## License
 
-MIT
+[MIT](LICENSE)
