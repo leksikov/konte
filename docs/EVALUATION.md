@@ -57,7 +57,7 @@ Key finding: the answer model matters more than prompt tuning — gpt-4.1 outper
 Install the evaluation dependencies first:
 
 ```bash
-pip install -e ".[eval]"
+uv sync --group eval
 ```
 
 The reusable harness lives in `evaluation/`:

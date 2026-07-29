@@ -4,11 +4,15 @@ Thanks for your interest in contributing!
 
 ## Development Setup
 
+Konte uses [uv](https://docs.astral.sh/uv/) for dependency management:
+
 ```bash
 git clone https://github.com/leksikov/konte.git
 cd konte
-pip install -e ".[dev]"
+uv sync   # creates .venv with the library, CLI, and dev tools from uv.lock
 ```
+
+If you prefer plain pip: `pip install -e .` plus `pip install --group dev` (pip ≥ 25.1).
 
 ## Running Tests
 
@@ -21,9 +25,9 @@ Tests are organized in three layers with pytest markers:
 | End-to-end | `tests/e2e/` | `OPENAI_API_KEY` (slow, full workflows) |
 
 ```bash
-pytest tests/unit          # fast, no API keys — run these before every PR
-pytest tests/integration   # requires OPENAI_API_KEY
-pytest                     # everything
+uv run pytest tests/unit          # fast, no API keys — run these before every PR
+uv run pytest tests/integration   # requires OPENAI_API_KEY
+uv run pytest                     # everything
 ```
 
 On macOS, if FAISS crashes with an OpenMP error, set `KMP_DUPLICATE_LIB_OK=TRUE`.
@@ -35,7 +39,7 @@ On macOS, if FAISS crashes with an OpenMP error, set `KMP_DUPLICATE_LIB_OK=TRUE`
 - Async-first: no threads, no mixing sync into async paths
 - `pathlib` for paths; configuration through `konte/config/settings.py` (env vars / `.env`)
 - `structlog` for logging
-- Lint with `ruff check .` before submitting
+- Lint with `uv run ruff check .` before submitting
 
 ## Commit Messages
 
@@ -53,5 +57,5 @@ type(scope): Description
 
 1. Fork and create a branch (`feat/...` or `fix/...`)
 2. Add or update tests for your change (unit tests must pass without API keys)
-3. Run `pytest tests/unit` and `ruff check .`
+3. Run `uv run pytest tests/unit` and `uv run ruff check .`
 4. Open a PR with a clear description of the motivation and the change

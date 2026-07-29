@@ -22,11 +22,18 @@ This achieves up to **49% reduction** in failed retrievals (67% with reranking).
 
 ## Installation
 
+Using [uv](https://docs.astral.sh/uv/) (recommended):
+
 ```bash
 git clone https://github.com/leksikov/konte.git
 cd konte
+uv sync                   # library + CLI + dev tools, into .venv
+```
+
+Or with pip:
+
+```bash
 pip install -e .          # library + CLI
-pip install -e ".[dev]"   # + tests and linting
 ```
 
 Set your OpenAI API key (used for embeddings and context generation):
@@ -98,10 +105,10 @@ konte list
 konte info my_project
 konte delete my_project
 
-# REST API server (requires: pip install -e ".[api]")
+# REST API server (requires the [api] extra: uv sync --extra api)
 konte serve --host 0.0.0.0 --port 8000
 
-# Web UI (requires: pip install -e ".[ui]")
+# Web UI (requires the [ui] extra: uv sync --extra ui)
 konte ui --port 7860
 
 # Version
@@ -552,7 +559,7 @@ export KMP_DUPLICATE_LIB_OK=TRUE
 
 ## Contributing
 
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Run `pytest tests/unit` (no API keys needed) and `ruff check .` before submitting a PR.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Run `uv run pytest tests/unit` (no API keys needed) and `uv run ruff check .` before submitting a PR.
 
 ## License
 
