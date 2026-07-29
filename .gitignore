@@ -45,6 +45,8 @@ coverage.xml
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -59,25 +61,50 @@ venv.bak/
 *.swo
 *~
 
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Agent tooling
+.claude/
+CLAUDE.md
+
+# Built indexes
+*.faiss
+*.pkl
+
 # Project specific
 .deepeval/
-evaluation/logs/
-evaluation/results/
-evaluation/experiments/results/*.json
-evaluation/experiments/results/*.log
-evaluation/data/synthetic/*.json
-evaluation/data/synthetic/*.log
-experiments/results/
-experiments/*.log
 tmp.sh
 *.log
+logs/
 .DS_Store
-debug/*
-evaluation/trials/*
-example_knowledge_base/*
-test_dataset/*
-checkpoints/*
-evaluation/debug/*
-evaluation/experiments/*
+debug/
+checkpoints/
+example_knowledge_base/
+test_dataset/
 docs/ppt_prep/
-CLAUDE.md
+
+# Internal research artifacts (kept local, not published)
+evaluation/logs/
+evaluation/results/
+evaluation/trials/
+evaluation/debug/
+evaluation/experiments/
+evaluation/data/
+evaluation/EVALUATION_GUIDE.md
+evaluation/EVALUATION_REPORT.md
+evaluation/SINGAPORE_HS_CODE_REPORT.md
+evaluation/test_dataset.py
+evaluation/evaluate_modes.py
+evaluation/run_evaluation.py
+evaluation/run_metrics_only.py
+evaluation/synthesize_dataset.py
+evaluation/synthesize_korean_dataset.py
+evaluation/synthesize_singapore_dataset.py
+experiments/
+scripts/build_*.py
+scripts/rebuild_*.py
+docs/knowledge_base_analysis.md
+examples/demo_source_filter_and_regex.py
