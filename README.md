@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/leksikov/konte/actions/workflows/ci.yml/badge.svg)](https://github.com/leksikov/konte/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/leksikov/konte/blob/main/LICENSE)
 
 Contextual RAG library that improves retrieval by prepending LLM-generated context to chunks before embedding and indexing.
 
@@ -193,7 +193,7 @@ konte create my_project --prompt my_prompt.txt
 konte build my_project --prompt my_prompt.txt
 ```
 
-or globally with the `PROMPT_PATH` environment variable. See [examples/prompts/](examples/prompts/) for domain-specific prompt examples (Korean customs-tariff classification).
+or globally with the `PROMPT_PATH` environment variable. See [examples/prompts/](https://github.com/leksikov/konte/tree/main/examples/prompts/) for domain-specific prompt examples (Korean customs-tariff classification).
 
 ## RAG Answer Generation
 
@@ -316,7 +316,7 @@ response, answer = await project.query_with_answer(
 )
 ```
 
-See [examples/metadata_filtering.py](examples/metadata_filtering.py) for a complete example.
+See [examples/metadata_filtering.py](https://github.com/leksikov/konte/blob/main/examples/metadata_filtering.py) for a complete example.
 
 ## Agent Integration
 
@@ -338,7 +338,7 @@ retriever = project.as_retriever()
 response = retriever("my query")
 ```
 
-Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integration Guide](docs/AGENT_INTEGRATION_GUIDE.md) for:
+Konte integrates with LangChain and Agno agent frameworks. See the [Agent Integration Guide](https://github.com/leksikov/konte/blob/main/docs/AGENT_INTEGRATION_GUIDE.md) for:
 
 - LangChain RAG chains and custom retrievers
 - Agno tools and multi-project agents
@@ -395,7 +395,7 @@ for name, response in results.items():
 all_results.sort(key=lambda x: x[1].score, reverse=True)
 ```
 
-See [examples/parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) for a complete example.
+See [examples/parallel_multi_project_retrieval.py](https://github.com/leksikov/konte/blob/main/examples/parallel_multi_project_retrieval.py) for a complete example.
 
 ## Performance Optimizations
 
@@ -460,7 +460,7 @@ project = Project.create("lexical_only", enable_faiss=False)
 
 ## Configuration
 
-Set via environment variables or `.env` file (see [.env.example](.env.example)):
+Set via environment variables or `.env` file (see [.env.example](https://github.com/leksikov/konte/blob/main/.env.example)):
 
 ```bash
 OPENAI_API_KEY=sk-...          # Required for embeddings (FAISS, the default)
@@ -484,12 +484,12 @@ RERANKER_MODEL=Qwen3-Reranker-8B
 
 | Example | Demonstrates |
 |---------|-------------|
-| [basic_usage.py](examples/basic_usage.py) | Project CRUD, document loading, building, querying, retrieval modes |
-| [query_with_answer.py](examples/query_with_answer.py) | Full RAG pipeline, custom prompt templates, GeneratedAnswer model |
-| [metadata_filtering.py](examples/metadata_filtering.py) | source_filter, metadata_filter, combining filters with modes |
-| [async_reranking.py](examples/async_reranking.py) | Async querying, reranking, comparing with/without reranking |
-| [parallel_multi_project_retrieval.py](examples/parallel_multi_project_retrieval.py) | Multi-project querying, result merging |
-| [prompts/](examples/prompts/) | Domain-specific context prompt templates |
+| [basic_usage.py](https://github.com/leksikov/konte/blob/main/examples/basic_usage.py) | Project CRUD, document loading, building, querying, retrieval modes |
+| [query_with_answer.py](https://github.com/leksikov/konte/blob/main/examples/query_with_answer.py) | Full RAG pipeline, custom prompt templates, GeneratedAnswer model |
+| [metadata_filtering.py](https://github.com/leksikov/konte/blob/main/examples/metadata_filtering.py) | source_filter, metadata_filter, combining filters with modes |
+| [async_reranking.py](https://github.com/leksikov/konte/blob/main/examples/async_reranking.py) | Async querying, reranking, comparing with/without reranking |
+| [parallel_multi_project_retrieval.py](https://github.com/leksikov/konte/blob/main/examples/parallel_multi_project_retrieval.py) | Multi-project querying, result merging |
+| [prompts/](https://github.com/leksikov/konte/tree/main/examples/prompts/) | Domain-specific context prompt templates |
 
 ## Evaluation
 
@@ -500,7 +500,7 @@ Evaluated end-to-end with DeepEval LLM-as-judge metrics on a customs-tariff clas
 | **Contextual chunks + reranking** | **97%** | **98.6%** |
 | Baseline (no context, no reranking) | 85% | 74% |
 
-Contextual retrieval provides the largest gains (+25%) on complex multi-context questions. Full results, methodology, and instructions for evaluating your own corpus: [docs/EVALUATION.md](docs/EVALUATION.md).
+Contextual retrieval provides the largest gains (+25%) on complex multi-context questions. Full results, methodology, and instructions for evaluating your own corpus: [docs/EVALUATION.md](https://github.com/leksikov/konte/blob/main/docs/EVALUATION.md).
 
 ## Architecture
 
@@ -545,7 +545,7 @@ flowchart TB
     end
 ```
 
-Detailed diagrams: [architecture overview](docs/architecture_overview.md) · [detailed pipeline](docs/architecture_detailed.md)
+Detailed diagrams: [architecture overview](https://github.com/leksikov/konte/blob/main/docs/architecture_overview.md) · [detailed pipeline](https://github.com/leksikov/konte/blob/main/docs/architecture_detailed.md)
 
 ## Troubleshooting
 
@@ -559,8 +559,8 @@ export KMP_DUPLICATE_LIB_OK=TRUE
 
 ## Contributing
 
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Run `uv run pytest tests/unit` (no API keys needed) and `uv run ruff check .` before submitting a PR.
+Contributions welcome — see [CONTRIBUTING.md](https://github.com/leksikov/konte/blob/main/CONTRIBUTING.md). Run `uv run pytest tests/unit` (no API keys needed) and `uv run ruff check .` before submitting a PR.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/leksikov/konte/blob/main/LICENSE)

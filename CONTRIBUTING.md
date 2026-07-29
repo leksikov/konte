@@ -59,3 +59,24 @@ type(scope): Description
 2. Add or update tests for your change (unit tests must pass without API keys)
 3. Run `uv run pytest tests/unit` and `uv run ruff check .`
 4. Open a PR with a clear description of the motivation and the change
+
+## Releasing (maintainers)
+
+Releases are published to PyPI by `.github/workflows/release.yml` via
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) — no API tokens.
+
+One-time setup on [pypi.org](https://pypi.org/manage/account/publishing/): add a
+**pending trusted publisher** for project `konte` with owner `leksikov`,
+repository `konte`, workflow `release.yml`, environment `pypi`.
+
+Per release:
+
+1. Bump `version` in `pyproject.toml` and add a dated CHANGELOG entry (with its link reference)
+2. Commit, tag `vX.Y.Z`, and push the tag
+3. Create a GitHub release from the tag — publishing the release triggers the
+   workflow, which builds the sdist/wheel, validates metadata with
+   `twine check`, and uploads to PyPI
+4. After the first publish, add the PyPI version badge to the README:
+   `[![PyPI](https://img.shields.io/pypi/v/konte)](https://pypi.org/project/konte/)`
+
+To dry-run locally without uploading: `uv build && uvx twine check dist/*`
