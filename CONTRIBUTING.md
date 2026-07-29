@@ -49,9 +49,9 @@ Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.
 type(scope): Description
 ```
 
-- `feat` (minor), `fix`/`perf` (patch); `!` or a `BREAKING CHANGE:` footer for major
+- `feat` (minor), `fix`/`perf` (patch); `!` after the type/scope for major (breaking change)
 - Non-bumping types: `chore`, `refactor`, `build`, `test`, `ci`, `docs`, `style`
-- Subject: imperative mood, capitalized, ≤50 chars, no trailing period
+- Subject only — no body: imperative mood, capitalized, under 50 chars, no trailing period
 
 ## Pull Requests
 
