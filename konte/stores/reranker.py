@@ -42,13 +42,16 @@ async def _score_single_chunk(
     semaphore: asyncio.Semaphore,
     score_endpoint: str,
     max_chars: int = MAX_RERANK_CHARS,
-) -> tuple[int, float]:
+) -> tuple[int, float | None]:
     """Score a single (query, document) pair using /score endpoint.
 
     Combines context (summary) + truncated raw content for best results:
     - Context provides key terms (HS codes, products)
     - Raw content provides actual document text
     - Total length capped to avoid length bias
+
+    Returns:
+        (idx, score), with score None if the request failed.
     """
     async with semaphore:
         try:
@@ -73,7 +76,7 @@ async def _score_single_chunk(
             return (idx, score)
         except Exception as e:
             logger.warning("score_chunk_failed", idx=idx, error=str(e))
-            return (idx, 0.0)
+            return (idx, None)
 
 
 async def rerank_chunks_with_score(
@@ -95,7 +98,10 @@ async def rerank_chunks_with_score(
         concurrency: Max concurrent score requests.
 
     Returns:
-        Reranked list of (chunk, relevance_score) tuples.
+        Reranked list of (chunk, relevance_score) tuples. If every score
+        request fails (unreachable endpoint, TLS error, wrong model), the
+        original retrieval order and scores are returned and an error is
+        logged; partial failures score the failed chunks 0.0.
 
     Raises:
         ValueError: If RERANKER_BASE_URL is not configured.
@@ -121,8 +127,21 @@ async def rerank_chunks_with_score(
             ]
             all_scores = await asyncio.gather(*tasks)
 
+            # Every request failed: misconfigured endpoint/model or TLS issue.
+            # Raise so the handler below falls back to the original scores
+            # instead of returning fabricated all-zero rankings.
+            if all(score is None for _, score in all_scores):
+                raise RuntimeError(
+                    f"all {len(all_scores)} rerank score requests to "
+                    f"{score_endpoint} failed; check RERANKER_BASE_URL, "
+                    "RERANKER_MODEL, and RERANKER_VERIFY_SSL"
+                )
+
+            # Partial failures score 0.0
+            scored = [(idx, score if score is not None else 0.0) for idx, score in all_scores]
+
             # Sort by score descending
-            sorted_scores = sorted(all_scores, key=lambda x: x[1], reverse=True)
+            sorted_scores = sorted(scored, key=lambda x: x[1], reverse=True)
 
             # Build reranked list
             reranked = [(chunks[idx][0], score) for idx, score in sorted_scores[:k]]
