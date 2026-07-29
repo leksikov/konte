@@ -5,10 +5,36 @@ on:
     types: [published]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -q
+
   publish:
+    # Pre-releases run tests but never publish to PyPI
+    if: ${{ !github.event.release.prerelease }}
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       # Required for PyPI Trusted Publishing (OIDC) - no API token needed
       id-token: write
 
@@ -18,6 +44,24 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
 
+      - name: Check release tag matches package version
+        run: |
+          VERSION="$(uv version --short)"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Release tag v${TAG} does not match pyproject.toml version ${VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Pin README links to the release tag
+        # The PyPI page for a version is immutable; point its links at the
+        # matching tag instead of the moving main branch
+        run: |
+          sed -i \
+            -e "s|/blob/main/|/blob/${GITHUB_REF_NAME}/|g" \
+            -e "s|/tree/main/|/tree/${GITHUB_REF_NAME}/|g" \
+            README.md
+
       - name: Build sdist and wheel
         run: uv build
 
@@ -25,4 +69,5 @@ jobs:
         run: uvx twine check dist/*
 
       - name: Publish to PyPI
-        run: uv publish
+        # --check-url makes re-runs after a partial upload skip existing files
+        run: uv publish --check-url https://pypi.org/simple/
