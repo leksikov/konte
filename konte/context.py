@@ -83,31 +83,33 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
     return _llm_cache[cache_key]
 
 
-def _resolve_default_prompt_path() -> Path:
-    """Resolve default prompt path via importlib.resources or __file__ fallback."""
-    try:
-        ref = importlib.resources.files("konte") / "prompts" / "context_prompt.txt"
-        path = Path(str(ref))
-        if path.exists():
-            return path
-    except Exception:
-        pass
-    # Fallback: relative to this source file (works when running from source checkout)
-    return Path(__file__).parent / "prompts" / "context_prompt.txt"
-
-
 def load_prompt_template(prompt_path: Path | None = None) -> str:
     """Load the context generation prompt template.
 
     Args:
         prompt_path: Path to prompt file. Defaults to settings.PROMPT_PATH,
-            then falls back to importlib.resources / __file__-relative resolution.
+            then falls back to the packaged default prompt.
 
     Returns:
         Prompt template string with {segment} and {chunk} placeholders.
+
+    Raises:
+        FileNotFoundError: If a configured prompt path does not exist.
     """
-    path = prompt_path or settings.PROMPT_PATH or _resolve_default_prompt_path()
-    return Path(path).read_text(encoding="utf-8")
+    path = prompt_path or settings.PROMPT_PATH
+    if path is not None:
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"Context prompt not found: {path}. The packaged default lives "
+                "at konte/prompts/context_prompt.txt and domain examples at "
+                "examples/prompts/; update PROMPT_PATH or the project's "
+                "context_prompt_path in config.json."
+            ) from e
+    # Packaged default - read via importlib.resources so zip/frozen installs work
+    ref = importlib.resources.files("konte") / "prompts" / "context_prompt.txt"
+    return ref.read_text(encoding="utf-8")
 
 
 def _format_prompt(template: str, segment: str, chunk: str) -> str:
