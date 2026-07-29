@@ -1,8 +1,9 @@
 """Project class - main interface for contextual RAG."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 
@@ -18,7 +19,7 @@ from konte.models import (
     ProjectConfig,
     RetrievalResponse,
 )
-from konte.stores import BM25Store, FAISSStore, Retriever, RetrievalMode
+from konte.stores import BM25Store, FAISSStore, RetrievalMode, Retriever
 
 logger = structlog.get_logger()
 
@@ -351,7 +352,7 @@ class Project:
             query: Query string.
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
-            rerank: If True, apply Qwen3-Reranker-8B reranking.
+            rerank: If True, rerank via the configured RERANKER_BASE_URL endpoint.
             rerank_initial_k: Number of candidates to retrieve before reranking.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
@@ -414,7 +415,7 @@ class Project:
             max_chunks: Maximum chunks to use for answer generation.
             prompt_template: Custom prompt template with {context} and {question} placeholders.
             timeout: LLM request timeout in seconds.
-            rerank: If True, apply Qwen3-Reranker-8B reranking.
+            rerank: If True, rerank via the configured RERANKER_BASE_URL endpoint.
             rerank_initial_k: Number of candidates to retrieve before reranking.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}

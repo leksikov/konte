@@ -8,13 +8,17 @@ Demonstrates:
 - rerank_initial_k parameter for controlling candidate pool
 
 Requires: OPENAI_API_KEY or BACKENDAI_ENDPOINT configured.
+Reranking additionally requires RERANKER_BASE_URL pointing at a vLLM server
+that exposes a /score endpoint (e.g. serving Qwen3-Reranker-8B):
+
+    RERANKER_BASE_URL=https://your-vllm-endpoint/v1
+    RERANKER_MODEL=Qwen3-Reranker-8B
 """
 
 import asyncio
 from pathlib import Path
 
 from konte import Project, delete_project
-
 
 SAMPLE_CONTENT = """
 # International Trade Classification Rules

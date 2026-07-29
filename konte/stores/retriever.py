@@ -346,8 +346,9 @@ class Retriever:
         metadata_filter: dict[str, Any] | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
-        """Retrieve with reranking using Qwen3-Reranker-8B.
+        """Retrieve with reranking via the configured reranker endpoint.
 
+        Requires settings.RERANKER_BASE_URL (see also RERANKER_MODEL).
         First retrieves initial_k candidates, then reranks to get top_k.
 
         Args:

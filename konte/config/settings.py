@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     BACKENDAI_MODEL_NAME: str | None = None
     BACKENDAI_API_KEY: str | None = None  # Optional API key for BackendAI
 
+    # Reranker (optional - requires a vLLM server exposing a /score endpoint)
+    RERANKER_BASE_URL: str | None = None
+    RERANKER_MODEL: str = "Qwen3-Reranker-8B"
+    RERANKER_VERIFY_SSL: bool = True
+
     # Storage
     STORAGE_PATH: Path = Path("~/.konte")
 
