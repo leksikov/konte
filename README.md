@@ -29,13 +29,13 @@ pip install -e .          # library + CLI
 pip install -e ".[dev]"   # + tests and linting
 ```
 
-Set your OpenAI API key (used for embeddings and context generation by default):
+Set your OpenAI API key (used for embeddings and context generation):
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-Any vLLM server with an OpenAI-compatible API can be used instead for context and answer generation — see [Configuration](#configuration).
+Any vLLM server with an OpenAI-compatible API can be used instead for context and answer generation — see [Configuration](#configuration). Note that embeddings always use OpenAI while FAISS is enabled (the default), so the key is only optional for BM25-only projects.
 
 ## Quick Start
 
@@ -456,7 +456,7 @@ project = Project.create("lexical_only", enable_faiss=False)
 Set via environment variables or `.env` file (see [.env.example](.env.example)):
 
 ```bash
-OPENAI_API_KEY=sk-...          # Required unless a custom backend is set
+OPENAI_API_KEY=sk-...          # Required for embeddings (FAISS, the default)
 STORAGE_PATH=~/.konte          # Project storage location
 EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
@@ -464,7 +464,7 @@ DEFAULT_TOP_K=20
 PROMPT_PATH=                   # Optional global context-prompt override
 
 # Optional: any vLLM server with an OpenAI-compatible API
-# (used instead of OpenAI for context/answer generation when both are set)
+# (replaces OpenAI for context/answer generation only - not embeddings)
 BACKENDAI_ENDPOINT=https://your-vllm-endpoint/v1
 BACKENDAI_MODEL_NAME=your-model-name
 
