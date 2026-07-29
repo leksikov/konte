@@ -20,3 +20,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prefix-caching-aware context generation (sequential segments, parallel chunks per segment)
 - Structured logging with structlog
 - Evaluation harness (DeepEval synthesizer + GEval LLM-as-judge metrics)
+
+[0.1.0]: https://github.com/leksikov/konte/releases/tag/v0.1.0
