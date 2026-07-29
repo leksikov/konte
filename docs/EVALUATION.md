@@ -54,6 +54,12 @@ Key finding: the answer model matters more than prompt tuning — gpt-4.1 outper
 
 ## Running Your Own Evaluation
 
+Install the evaluation dependencies first:
+
+```bash
+pip install -e ".[eval]"
+```
+
 The reusable harness lives in `evaluation/`:
 
 - `deepeval_synthesizer.py` — generate a diverse test set from any Konte project (`python -m evaluation.deepeval_synthesizer --help`)
