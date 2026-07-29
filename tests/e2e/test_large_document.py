@@ -5,7 +5,6 @@ with proper segmentation and without memory issues.
 """
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -231,7 +230,6 @@ class TestLargeDocumentSaveLoad:
         await project1.build(skip_context=False)
 
         num_chunks = len(project1._contextualized_chunks)
-        num_segments = len(project1._segments)
 
         # Save
         project1.save()

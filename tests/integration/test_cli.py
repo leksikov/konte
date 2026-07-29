@@ -1,7 +1,6 @@
 """Integration tests for CLI module (requires OPENAI_API_KEY)."""
 
 import os
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner

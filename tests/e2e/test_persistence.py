@@ -56,7 +56,7 @@ class TestSaveAndReload:
         assert len(response1.results) == len(response2.results)
 
         # Check result ordering is preserved
-        for r1, r2 in zip(response1.results, response2.results):
+        for r1, r2 in zip(response1.results, response2.results, strict=True):
             assert r1.chunk_id == r2.chunk_id
             assert r1.score == pytest.approx(r2.score, rel=1e-5)
             assert r1.content == r2.content

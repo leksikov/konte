@@ -4,18 +4,18 @@ import structlog
 from fastapi import FastAPI, HTTPException
 
 from konte import (
+    ProjectConfig,
+    RetrievalResponse,
     get_project,
     list_projects,
     project_exists,
-    RetrievalResponse,
-    ProjectConfig,
 )
 from konte.api.schemas import (
-    QueryRequest,
     AskRequest,
     AskResponse,
-    ProjectListResponse,
     ProjectExistsResponse,
+    ProjectListResponse,
+    QueryRequest,
 )
 
 logger = structlog.get_logger()

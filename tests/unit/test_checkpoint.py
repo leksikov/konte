@@ -1,7 +1,6 @@
 """Unit tests for build checkpoint functionality."""
 
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -36,8 +35,9 @@ class TestLoadCheckpoint:
 
     def test_load_checkpoint_returns_checkpoint_if_exists(self, tmp_path):
         """Test that _load_checkpoint returns BuildCheckpoint if file exists."""
-        from konte.project import Project
         import json
+
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
@@ -67,8 +67,8 @@ class TestSaveCheckpoint:
 
     def test_save_checkpoint_creates_file(self, tmp_path):
         """Test that _save_checkpoint creates checkpoint file."""
-        from konte.project import Project
         from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
         checkpoint = BuildCheckpoint(
@@ -83,8 +83,8 @@ class TestSaveCheckpoint:
 
     def test_save_checkpoint_creates_directory(self, tmp_path):
         """Test that _save_checkpoint creates directory if needed."""
-        from konte.project import Project
         from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="new_project", storage_path=tmp_path)
         checkpoint = BuildCheckpoint()
@@ -96,9 +96,10 @@ class TestSaveCheckpoint:
 
     def test_save_checkpoint_content_is_valid_json(self, tmp_path):
         """Test that saved checkpoint is valid JSON."""
-        from konte.project import Project
-        from konte.models import BuildCheckpoint
         import json
+
+        from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
         checkpoint = BuildCheckpoint(
@@ -123,8 +124,9 @@ class TestClearCheckpoint:
 
     def test_clear_checkpoint_removes_file(self, tmp_path):
         """Test that _clear_checkpoint removes checkpoint file."""
-        from konte.project import Project
         import json
+
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
@@ -155,9 +157,10 @@ class TestBuildResume:
 
     async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
         """Test that resume=False ignores existing checkpoint."""
-        from konte.project import Project
-        from konte.models import Chunk
         import json
+
+        from konte.models import Chunk
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
@@ -202,9 +205,10 @@ class TestBuildResume:
 
     async def test_build_resume_true_uses_checkpoint(self, tmp_path):
         """Test that resume=True uses existing checkpoint."""
-        from konte.project import Project
-        from konte.models import Chunk
         import json
+
+        from konte.models import Chunk
+        from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 

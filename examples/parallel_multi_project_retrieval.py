@@ -172,7 +172,7 @@ async def main():
 
     # Query
     query = "Samsung DDR4 RAM memory chip classification"
-    print(f"\n2. Querying all projects...")
+    print("\n2. Querying all projects...")
     print(f"   Query: '{query}'")
 
     responses = query_all_projects(projects, query, top_k=3)

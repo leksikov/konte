@@ -209,7 +209,7 @@ class TestCreateChunksDataFlow:
 
     def test_segments_map_contains_actual_segments(self):
         """Verify segments_map contains segment text, not full document."""
-        from konte.chunker import create_chunks, count_tokens
+        from konte.chunker import count_tokens, create_chunks
 
         # Create text large enough to produce MANY segments (10x segment size)
         text = "Word " * 10000  # ~10000 tokens

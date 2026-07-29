@@ -13,7 +13,6 @@ from pathlib import Path
 
 from konte import Project, delete_project
 
-
 # Separate documents to demonstrate multi-source filtering
 DOCS = {
     "SAMSUNG_2024_ANNUAL.md": """

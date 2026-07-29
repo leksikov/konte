@@ -3,11 +3,11 @@
 import gradio as gr
 
 from konte import (
+    ProjectConfig,
+    RetrievalResponse,
     get_project,
     list_projects,
     project_exists,
-    RetrievalResponse,
-    ProjectConfig,
 )
 
 

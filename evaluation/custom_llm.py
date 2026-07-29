@@ -3,10 +3,9 @@
 Uses LangChain's .with_structured_output() for Pydantic schema parsing.
 """
 
+from deepeval.models import DeepEvalBaseLLM
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
-
-from deepeval.models import DeepEvalBaseLLM
 
 from konte.config.settings import settings
 
@@ -140,15 +139,15 @@ class BackendAIModel(DeepEvalBaseLLM):
             if field_name not in data:
                 # Provide sensible defaults based on field type
                 annotation = field_info.annotation
-                if annotation == str or (hasattr(annotation, "__origin__") and annotation.__origin__ == str):
+                if annotation is str or (hasattr(annotation, "__origin__") and annotation.__origin__ is str):
                     data[field_name] = raw_response.strip() if raw_response.strip() else "unknown"
-                elif annotation == bool:
+                elif annotation is bool:
                     data[field_name] = False
-                elif annotation == int:
+                elif annotation is int:
                     data[field_name] = 0
-                elif annotation == float:
+                elif annotation is float:
                     data[field_name] = 0.0
-                elif hasattr(annotation, "__origin__") and annotation.__origin__ == list:
+                elif hasattr(annotation, "__origin__") and annotation.__origin__ is list:
                     data[field_name] = []
                 else:
                     data[field_name] = None

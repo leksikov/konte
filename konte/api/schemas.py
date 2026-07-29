@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from konte.models import RetrievalResponse
 from konte.generator import GeneratedAnswer
+from konte.models import RetrievalResponse
 
 
 class QueryRequest(BaseModel):

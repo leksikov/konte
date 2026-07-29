@@ -2,7 +2,6 @@
 
 from konte.config import settings
 from konte.generator import GeneratedAnswer, generate_answer
-from konte.query_processor import extract_search_keywords
 from konte.manager import (
     create_project,
     delete_project,
@@ -20,6 +19,7 @@ from konte.models import (
     RetrievalResult,
 )
 from konte.project import Project
+from konte.query_processor import extract_search_keywords
 
 __version__ = "0.1.0"
 __all__ = [

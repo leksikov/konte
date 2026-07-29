@@ -161,7 +161,7 @@ class TestRetrievalResponse:
 
     def test_retrieval_response_creation(self):
         """Test creating a valid RetrievalResponse."""
-        from konte.models import RetrievalResult, RetrievalResponse
+        from konte.models import RetrievalResponse, RetrievalResult
 
         results = [
             RetrievalResult(
@@ -256,8 +256,9 @@ class TestBuildCheckpoint:
 
     def test_checkpoint_serialization(self):
         """Test that BuildCheckpoint can be serialized to JSON."""
-        from konte.models import BuildCheckpoint
         import json
+
+        from konte.models import BuildCheckpoint
 
         checkpoint = BuildCheckpoint(
             completed_segments=["doc.pdf|0"],
@@ -292,8 +293,9 @@ class TestProjectConfig:
 
     def test_project_config_defaults(self):
         """Test ProjectConfig with default values."""
-        from konte.models import ProjectConfig
         from pathlib import Path
+
+        from konte.models import ProjectConfig
 
         config = ProjectConfig(
             name="test_project",
@@ -316,8 +318,9 @@ class TestProjectConfig:
 
     def test_project_config_custom_values(self):
         """Test ProjectConfig with custom values."""
-        from konte.models import ProjectConfig
         from pathlib import Path
+
+        from konte.models import ProjectConfig
 
         config = ProjectConfig(
             name="custom_project",
@@ -335,9 +338,10 @@ class TestProjectConfig:
 
     def test_project_config_serialization(self):
         """Test that ProjectConfig can be serialized to JSON."""
-        from konte.models import ProjectConfig
-        from pathlib import Path
         import json
+        from pathlib import Path
+
+        from konte.models import ProjectConfig
 
         config = ProjectConfig(
             name="test",

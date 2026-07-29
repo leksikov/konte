@@ -4,7 +4,7 @@
 import asyncio
 from pathlib import Path
 
-from konte import Project, create_project, get_project, list_projects, delete_project
+from konte import Project, delete_project, list_projects
 
 
 async def main():

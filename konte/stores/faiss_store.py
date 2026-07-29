@@ -251,7 +251,7 @@ class FAISSStore:
 
             # Build results from search output
             results = []
-            for i, (distance, faiss_idx) in enumerate(zip(distances[0], indices[0])):
+            for distance, faiss_idx in zip(distances[0], indices[0], strict=True):
                 if faiss_idx == -1:  # No result
                     continue
 

@@ -82,7 +82,7 @@ class TestBM25StoreQuery:
 
         results = store.query("tariff classification", top_k=5)
 
-        for chunk, score in results:
+        for _chunk, score in results:
             assert 0.0 <= score <= 1.0
 
     def test_query_exact_match_scores_high(self, sample_chunks):

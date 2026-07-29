@@ -1,7 +1,6 @@
 """End-to-end tests for CLI module (full workflow with real API calls)."""
 
 import os
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner

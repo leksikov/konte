@@ -283,9 +283,9 @@ class TestProjectCheckpoint:
 
     async def test_build_resume_continues_from_checkpoint(self, tmp_path):
         """Test that build resumes from checkpoint."""
-        from konte.project import Project
+
         from konte.models import BuildCheckpoint
-        import json
+        from konte.project import Project
 
         project = Project.create(name="resume_test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
@@ -322,8 +322,8 @@ class TestProjectCheckpoint:
 
     async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
         """Test that resume=False ignores existing checkpoint."""
-        from konte.project import Project
         from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="no_resume_test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
@@ -364,8 +364,8 @@ class TestProjectCheckpoint:
 
     def test_save_and_load_checkpoint(self, tmp_path):
         """Test checkpoint save and load round-trip."""
-        from konte.project import Project
         from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="roundtrip_test", storage_path=tmp_path)
 
@@ -388,8 +388,8 @@ class TestProjectCheckpoint:
 
     def test_clear_checkpoint(self, tmp_path):
         """Test checkpoint clearing."""
-        from konte.project import Project
         from konte.models import BuildCheckpoint
+        from konte.project import Project
 
         project = Project.create(name="clear_test", storage_path=tmp_path)
 
@@ -413,8 +413,8 @@ class TestProjectSegmentStorage:
 
     def test_segments_stored_not_full_document(self, tmp_path):
         """Verify segments map contains segment text, not full document."""
-        from konte.project import Project
         from konte.chunker import count_tokens
+        from konte.project import Project
 
         project = Project.create(
             name="segment_test",

@@ -3,7 +3,7 @@
 from konte.stores.base import Store
 from konte.stores.bm25_store import BM25Store
 from konte.stores.faiss_store import FAISSStore
-from konte.stores.retriever import Retriever, RetrievalMode, reciprocal_rank_fusion
+from konte.stores.retriever import RetrievalMode, Retriever, reciprocal_rank_fusion
 
 __all__ = [
     "Store",
