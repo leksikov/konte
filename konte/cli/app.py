@@ -3,7 +3,6 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -11,7 +10,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from konte import (
-    Project,
     create_project,
     delete_project,
     get_project,
@@ -28,16 +26,34 @@ app = typer.Typer(
 console = Console()
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from konte import __version__
+
+        console.print(f"konte {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False, "--version", callback=_version_callback, is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    """Contextual RAG CLI - Build and query document indexes with LLM-generated context."""
+
+
 @app.command("create")
 def create(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
         help="Storage path (default: ~/.konte)",
     ),
-    prompt: Optional[Path] = typer.Option(
+    prompt: Path | None = typer.Option(
         None,
         "--prompt",
         "-p",
@@ -66,12 +82,12 @@ def create(
             console.print(f"  Prompt: {prompt}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("list")
 def list_cmd(
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -100,7 +116,7 @@ def list_cmd(
 @app.command("delete")
 def delete(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -131,14 +147,14 @@ def delete(
         console.print(f"[green]Deleted project:[/green] {name}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("add")
 def add(
     name: str = typer.Argument(..., help="Project name"),
     files: list[Path] = typer.Argument(..., help="Document files to add"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -174,13 +190,13 @@ def add(
         console.print(f"  Total chunks: {num_chunks}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("build")
 def build(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -201,7 +217,7 @@ def build(
         "--bm25-only",
         help="Build only BM25 index",
     ),
-    prompt: Optional[Path] = typer.Option(
+    prompt: Path | None = typer.Option(
         None,
         "--prompt",
         "-p",
@@ -230,7 +246,7 @@ def build(
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Building indexes...", total=None)
+            progress.add_task("Building indexes...", total=None)
 
             async def run_build():
                 await project.build(
@@ -252,14 +268,14 @@ def build(
         console.print(f"  BM25 index: {'enabled' if enable_bm25 else 'disabled'}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("query")
 def query(
     name: str = typer.Argument(..., help="Project name"),
     query_text: str = typer.Argument(..., help="Query text"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -277,7 +293,7 @@ def query(
         "-m",
         help="Retrieval mode: hybrid, semantic, lexical",
     ),
-    filter_json: Optional[str] = typer.Option(
+    filter_json: str | None = typer.Option(
         None,
         "--filter",
         "-f",
@@ -302,7 +318,7 @@ def query(
             metadata_filter = json.loads(filter_json)
         except json.JSONDecodeError as e:
             console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
 
     try:
         project = get_project(name, storage_path=path)
@@ -327,14 +343,14 @@ def query(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("ask")
 def ask(
     name: str = typer.Argument(..., help="Project name"),
     question: str = typer.Argument(..., help="Question to answer"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -357,7 +373,7 @@ def ask(
         "-m",
         help="Retrieval mode: hybrid, semantic, lexical",
     ),
-    filter_json: Optional[str] = typer.Option(
+    filter_json: str | None = typer.Option(
         None,
         "--filter",
         "-f",
@@ -387,7 +403,7 @@ def ask(
             metadata_filter = json.loads(filter_json)
         except json.JSONDecodeError as e:
             console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
 
     try:
         project = get_project(name, storage_path=path)
@@ -413,7 +429,7 @@ def ask(
         console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
         if metadata_filter:
             console.print(f"[bold]Filter:[/bold] {metadata_filter}")
-        console.print(f"\n[bold green]Answer:[/bold green]")
+        console.print("\n[bold green]Answer:[/bold green]")
         console.print(answer.answer)
         console.print(f"\n[dim]Model: {answer.model} | Sources used: {answer.sources_used}[/dim]")
 
@@ -426,7 +442,7 @@ def ask(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command("serve")
@@ -449,7 +465,7 @@ def serve(
         from konte.api import run_server
     except ImportError:
         console.print("[red]Error:[/red] FastAPI not installed. Run: pip install konte[api]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     console.print(f"Starting API server at http://{host}:{port}")
     run_server(host=host, port=port)
@@ -480,7 +496,7 @@ def ui(
         from konte.ui import launch
     except ImportError:
         console.print("[red]Error:[/red] Gradio not installed. Run: pip install konte[ui]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     console.print(f"Starting Gradio UI at http://{host}:{port}")
     launch(server_name=host, server_port=port, share=share)
@@ -489,7 +505,7 @@ def ui(
 @app.command("info")
 def info(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Optional[Path] = typer.Option(
+    storage_path: Path | None = typer.Option(
         None,
         "--storage",
         "-s",
@@ -535,7 +551,7 @@ def info(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 def main() -> None:
