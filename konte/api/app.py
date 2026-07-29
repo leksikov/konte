@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from konte import (
     ProjectConfig,
     RetrievalResponse,
+    __version__,
     get_project,
     list_projects,
     project_exists,
@@ -23,7 +24,7 @@ logger = structlog.get_logger()
 app = FastAPI(
     title="Konte API",
     description="Contextual RAG API with hybrid retrieval",
-    version="0.1.0",
+    version=__version__,
 )
 
 

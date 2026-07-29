@@ -10,6 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from konte import (
+    __version__,
     create_project,
     delete_project,
     get_project,
@@ -28,8 +29,6 @@ console = Console()
 
 def _version_callback(value: bool) -> None:
     if value:
-        from konte import __version__
-
         console.print(f"konte {__version__}")
         raise typer.Exit()
 
@@ -41,7 +40,8 @@ def _main(
         help="Show version and exit.",
     ),
 ) -> None:
-    """Contextual RAG CLI - Build and query document indexes with LLM-generated context."""
+    # App help text lives in the typer.Typer(help=...) constructor above
+    pass
 
 
 @app.command("create")

@@ -250,3 +250,17 @@ class TestCLIBuildCommand:
         result = runner.invoke(app, ["build", "nonexistent", "--storage", str(tmp_path)])
         assert result.exit_code == 1
         assert "not found" in result.stdout
+
+
+@pytest.mark.unit
+class TestCLIVersion:
+    """Test CLI version flag."""
+
+    def test_version_flag(self):
+        """Test that --version prints the package version and exits cleanly."""
+        from konte import __version__
+        from konte.cli.app import app
+
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert f"konte {__version__}" in result.stdout

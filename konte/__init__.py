@@ -1,5 +1,7 @@
 """Konte - Contextual RAG library with hybrid retrieval."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from konte.config import settings
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.manager import (
@@ -21,7 +23,11 @@ from konte.models import (
 from konte.project import Project
 from konte.query_processor import extract_search_keywords
 
-__version__ = "0.1.0"
+# Single source of truth is pyproject.toml, read from installed metadata
+try:
+    __version__ = version("konte")
+except PackageNotFoundError:  # running from an uninstalled source tree
+    __version__ = "0.0.0+unknown"
 __all__ = [
     # Settings
     "settings",
