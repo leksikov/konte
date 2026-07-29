@@ -46,16 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=5.0.0",
-    "ruff>=0.6.0",
-    "fastapi>=0.115.0",  # tests/unit/test_api.py imports konte.api
-]
-eval = [
-    "deepeval",
-]
 api = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -67,6 +57,18 @@ server = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "gradio>=5.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "fastapi>=0.115.0",  # tests/unit/test_api.py imports konte.api
+]
+eval = [
+    "deepeval",
 ]
 
 [project.scripts]
