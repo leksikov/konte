@@ -198,7 +198,8 @@ class TestBuildResume:
                 ContextualizedChunk(chunk=chunk, context="new context")
             ]
 
-            await project.build(skip_context=True, enable_bm25=False, resume=False)
+            # BM25-only: FAISS would construct a real OpenAIEmbeddings client
+            await project.build(skip_context=True, enable_faiss=False, resume=False)
 
             # Should have called generate_contexts_batch (not skipped)
             assert mock_gen.called
@@ -248,7 +249,8 @@ class TestBuildResume:
                 ContextualizedChunk(chunk=chunk2, context="ctx2")
             ]
 
-            await project.build(skip_context=True, enable_bm25=False, resume=True)
+            # BM25-only: FAISS would construct a real OpenAIEmbeddings client
+            await project.build(skip_context=True, enable_faiss=False, resume=True)
 
             # Should have called once (only for segment 1)
             assert mock_gen.call_count == 1

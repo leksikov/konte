@@ -43,11 +43,12 @@ class TestSettings:
 
     def test_prompt_path_defaults_to_none(self):
         """Test that PROMPT_PATH defaults to None (resolved at usage time)."""
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.config import Settings
+        from konte.config import Settings
 
-            s = Settings(PROMPT_PATH=None)
-            assert s.PROMPT_PATH is None
+        # Check the field default itself so a reintroduced concrete default
+        # (pointing at a nonexistent file) fails this test
+        field_info = Settings.model_fields["PROMPT_PATH"]
+        assert field_info.default is None, "PROMPT_PATH should default to None"
 
     def test_prompt_path_coerced_to_path(self):
         """Test that a configured PROMPT_PATH becomes a Path object."""
