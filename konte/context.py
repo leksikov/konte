@@ -3,8 +3,10 @@
 import asyncio
 import importlib.resources
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 import structlog
+from langchain_openai import ChatOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -17,6 +19,7 @@ from konte.llm import get_llm, response_text
 from konte.models import Chunk, ContextualizedChunk
 
 __all__ = [
+    "call_limiter",
     "generate_context",
     "generate_contexts_batch",
     "get_llm",
@@ -30,6 +33,26 @@ BASE_DELAY = 2.0  # seconds
 MAX_DELAY = 120.0  # seconds
 
 _RETRYABLE_API_ERRORS = (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
+
+# A semaphore binds to the loop that first awaits it, and a process may run several.
+_limiters: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = (
+    WeakKeyDictionary()
+)
+
+
+def call_limiter() -> asyncio.Semaphore:
+    """Return the shared ceiling on context requests, settings.MAX_CONCURRENT_CALLS.
+
+    Returns:
+        The semaphore every context request on the running loop passes through.
+    """
+    loop = asyncio.get_running_loop()
+    limit = settings.concurrency_limit
+    cached = _limiters.get(loop)
+    if cached is None or cached[0] != limit:
+        cached = (limit, asyncio.Semaphore(limit))
+        _limiters[loop] = cached
+    return cached[1]
 
 
 def load_prompt_template(prompt_path: Path | None = None) -> str:
@@ -80,6 +103,72 @@ def _without_context(chunks: list[Chunk]) -> list[ContextualizedChunk]:
     return [ContextualizedChunk(chunk=chunk, context="") for chunk in chunks]
 
 
+async def _request_context(
+    llm: ChatOpenAI,
+    template: str,
+    segment: str,
+    chunk: Chunk,
+    limiter: asyncio.Semaphore,
+    max_attempts: int,
+) -> str:
+    """Ask for one chunk's context, retrying that chunk and no other.
+
+    The prompt carries the whole segment, so it is formatted under the limiter:
+    only the requests in flight hold a copy.
+
+    Args:
+        llm: Client to send the request through.
+        template: Prompt template with {segment} and {chunk} placeholders.
+        segment: The parent segment text (~8000 tokens).
+        chunk: The chunk to describe.
+        limiter: The in-flight ceiling to acquire for each attempt.
+        max_attempts: How many times to send the request before giving up.
+
+    Returns:
+        The generated context, or an empty string once the attempts run out.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with limiter:
+                response = await llm.ainvoke(_format_prompt(template, segment, chunk.content))
+        except _RETRYABLE_API_ERRORS as e:
+            error_type = type(e).__name__
+            status_code = getattr(e, "status_code", None)
+            if attempt == max_attempts:
+                logger.error(
+                    "api_retries_exhausted",
+                    chunk_id=chunk.chunk_id,
+                    error_type=error_type,
+                    status_code=status_code,
+                    error=str(e),
+                )
+                return ""
+            delay = min(BASE_DELAY * 2 ** (attempt - 1), MAX_DELAY)
+            logger.warning(
+                "api_error_retrying",
+                chunk_id=chunk.chunk_id,
+                attempt=attempt,
+                max_retries=max_attempts,
+                delay=delay,
+                error_type=error_type,
+                status_code=status_code,
+                error=str(e),
+            )
+            await asyncio.sleep(delay)
+        except Exception as e:
+            logger.error(
+                "context_generation_failed",
+                chunk_id=chunk.chunk_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            return ""
+        else:
+            return response_text(response)
+
+    return ""  # Unreachable: the last attempt either returns or gives up above.
+
+
 async def generate_context(
     segment: str,
     chunk: Chunk,
@@ -100,16 +189,14 @@ async def generate_context(
         Generated context string (100-200 tokens), or an empty string if the
         request failed.
     """
-    template = prompt_template or load_prompt_template()
-    llm = get_llm(model=model, timeout=timeout)
-    prompt = _format_prompt(template, segment, chunk.content)
-
-    try:
-        response = await llm.ainvoke(prompt)
-    except Exception as e:
-        logger.warning("context_generation_failed", chunk_id=chunk.chunk_id, error=str(e))
-        return ""
-    return response_text(response)
+    return await _request_context(
+        llm=get_llm(model=model, timeout=timeout),
+        template=prompt_template or load_prompt_template(),
+        segment=segment,
+        chunk=chunk,
+        limiter=call_limiter(),
+        max_attempts=1,
+    )
 
 
 async def generate_contexts_batch(
@@ -120,11 +207,10 @@ async def generate_contexts_batch(
     timeout: float = 120.0,
     skip_context: bool = False,
 ) -> list[ContextualizedChunk]:
-    """Generate context for multiple chunks using LLM batch.
+    """Generate context for multiple chunks using LLM.
 
-    Uses LangChain's abatch() for efficient parallel processing with
-    a single LLM instance, enabling OpenAI prompt caching.
-    Implements exponential backoff for rate limit errors.
+    One request per chunk, run concurrently up to the shared ceiling (see
+    call_limiter) and retried individually with exponential backoff.
 
     Args:
         segment: The parent segment text (~8000 tokens).
@@ -135,8 +221,8 @@ async def generate_contexts_batch(
         skip_context: If True, return chunks with empty context (standard RAG mode).
 
     Returns:
-        List of ContextualizedChunk objects. Every chunk carries an empty
-        context if the batch could not be generated.
+        List of ContextualizedChunk objects, in the order they were passed. A
+        chunk whose request could not be completed carries an empty context.
     """
     if skip_context:
         return _without_context(chunks)
@@ -146,46 +232,16 @@ async def generate_contexts_batch(
 
     template = prompt_template or load_prompt_template()
     llm = get_llm(model=model, timeout=timeout)
+    limiter = call_limiter()
 
-    prompts = [_format_prompt(template, segment, chunk.content) for chunk in chunks]
+    contexts = await asyncio.gather(
+        *(
+            _request_context(llm, template, segment, chunk, limiter, MAX_RETRIES)
+            for chunk in chunks
+        )
+    )
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            responses = await llm.abatch(prompts, config={"max_concurrency": len(prompts)})
-        except _RETRYABLE_API_ERRORS as e:
-            delay = min(BASE_DELAY * 2 ** (attempt - 1), MAX_DELAY)
-            error_type = type(e).__name__
-            status_code = getattr(e, "status_code", None)
-            logger.warning(
-                "api_error_retrying",
-                attempt=attempt,
-                max_retries=MAX_RETRIES,
-                delay=delay,
-                error_type=error_type,
-                status_code=status_code,
-                error=str(e),
-            )
-            if attempt == MAX_RETRIES:
-                logger.error(
-                    "api_retries_exhausted",
-                    error_type=error_type,
-                    status_code=status_code,
-                    error=str(e),
-                )
-                return _without_context(chunks)
-            await asyncio.sleep(delay)
-        except Exception as e:
-            logger.error(
-                "batch_context_generation_failed",
-                error_type=type(e).__name__,
-                error=str(e),
-            )
-            return _without_context(chunks)
-        else:
-            return [
-                ContextualizedChunk(chunk=chunk, context=response_text(response))
-                for chunk, response in zip(chunks, responses, strict=True)
-            ]
-
-    # Unreachable: the final attempt either returns a batch or the degraded form.
-    return _without_context(chunks)
+    return [
+        ContextualizedChunk(chunk=chunk, context=context)
+        for chunk, context in zip(chunks, contexts, strict=True)
+    ]

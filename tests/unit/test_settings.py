@@ -25,7 +25,8 @@ class TestSettings:
             assert s.CONTEXT_MIN_TOKENS == 100
             assert s.CONTEXT_MAX_TOKENS == 200
             assert s.DEFAULT_TOP_K == 20
-            assert s.MAX_CONCURRENT_CALLS == 1  # Sequential to avoid rate limits
+            assert s.MAX_CONCURRENT_CALLS == 16
+            assert s.concurrency_limit == 16
             assert s.CONFIDENCE_THRESHOLD == 0.7
             assert s.BM25_KEYWORD_EXTRACTION is True
 

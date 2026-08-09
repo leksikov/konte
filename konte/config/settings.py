@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     PRELOAD_PROJECTS: str = ""  # comma-separated names opened at API startup, "*" for all
 
     # Concurrency
-    MAX_CONCURRENT_CALLS: int = 1  # Sequential processing to avoid rate limits
+    MAX_CONCURRENT_CALLS: int = 16  # context and embedding requests in flight
 
     # Prompt path — None means resolve at usage time via importlib.resources or __file__ fallback
     PROMPT_PATH: Path | None = None
@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     def use_custom_llm(self) -> bool:
         """Check if the custom chat endpoint should be used instead of OpenAI."""
         return bool(self.LLM_BASE_URL and self.LLM_MODEL)
+
+    @property
+    def concurrency_limit(self) -> int:
+        """int: In-flight ceiling on outbound model calls, never below one."""
+        return max(1, self.MAX_CONCURRENT_CALLS)
 
     @field_validator("STORAGE_PATH", mode="before")
     @classmethod

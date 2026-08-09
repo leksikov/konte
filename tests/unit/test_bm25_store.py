@@ -136,7 +136,7 @@ class TestBM25StorePersistence:
 
         # Load into new store
         store2 = BM25Store()
-        store2.load(tmp_path)
+        store2.load(tmp_path, lambda: sample_chunks)
 
         assert not store2.is_empty
 
@@ -150,7 +150,52 @@ class TestBM25StorePersistence:
 
         store = BM25Store()
         with pytest.raises(FileNotFoundError):
-            store.load(tmp_path / "nonexistent")
+            store.load(tmp_path / "nonexistent", list)
+
+    def test_save_writes_no_chunk_payload(self, sample_chunks, tmp_path):
+        """Test that the lexical index stores no second copy of the corpus."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        store.save(tmp_path)
+
+        assert [p.name for p in tmp_path.iterdir()] == ["bm25.pkl"]
+
+    def test_save_removes_a_legacy_chunk_payload(self, sample_chunks, tmp_path):
+        """Test that rebuilding drops the copy an earlier version left behind."""
+        from konte.stores import BM25Store
+        from konte.stores.bm25_store import LEGACY_CHUNKS_FILENAME
+
+        (tmp_path / LEGACY_CHUNKS_FILENAME).write_text("[]", encoding="utf-8")
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        store.save(tmp_path)
+
+        assert not (tmp_path / LEGACY_CHUNKS_FILENAME).exists()
+
+    def test_load_defers_reading_the_corpus(self, sample_chunks, tmp_path):
+        """Test that loading an index does not pull its chunks in with it."""
+        from konte.stores import BM25Store
+
+        store1 = BM25Store()
+        store1.build_index(sample_chunks)
+        store1.save(tmp_path)
+
+        reads = []
+
+        def corpus():
+            reads.append(1)
+            return sample_chunks
+
+        store2 = BM25Store()
+        store2.load(tmp_path, corpus)
+        assert reads == []
+
+        store2.query("import duty rate", top_k=1)
+        store2.query("import duty rate", top_k=1)
+        assert reads == [1]
 
     def test_saved_chunks_preserved(self, sample_chunks, tmp_path):
         """Test that chunk data is preserved after save/load."""
@@ -161,7 +206,7 @@ class TestBM25StorePersistence:
         store1.save(tmp_path)
 
         store2 = BM25Store()
-        store2.load(tmp_path)
+        store2.load(tmp_path, lambda: sample_chunks)
 
         results = store2.query("test", top_k=1)
         chunk = results[0][0]
@@ -183,7 +228,7 @@ class TestBM25StorePersistence:
         store1.save(tmp_path)
 
         store2 = BM25Store()
-        store2.load(tmp_path)
+        store2.load(tmp_path, lambda: sample_chunks)
 
         # Query after load
         results2 = store2.query("electronic integrated circuits", top_k=3)

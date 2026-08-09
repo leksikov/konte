@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alongside it. `get_project()` keeps returning a private, mutable instance
 - `PROJECT_CACHE_SIZE` (default 4) and `PRELOAD_PROJECTS` settings, bounding how
   many projects a server holds and which ones it opens at startup
+- `FAISSStore.abuild_index()`, the concurrent counterpart to `build_index()`
 
 ### Changed
 
@@ -41,6 +42,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   term frequencies it already holds, so that was a second copy of the corpus to
   write and unpickle (~25MB → ~2MB on a 20k-chunk project). Existing index files
   still load; one written by this version cannot be read by an earlier release
+- A project keeps one copy of its chunk text where it kept three. `bm25_chunks.json`
+  is gone — it was `chunks.json` written a second time under another name, and the
+  lexical index now ranks the project's own chunks, reading them on the first
+  lexical query rather than at open. The FAISS docstore no longer repeats the
+  chunk and its context in metadata either: the page content already holds both
+  joined, so only the length of the cut is stored beside it. On a 2,000-chunk
+  corpus the project directory went from 4.97x to 2.94x the size of the text in
+  it, a 41% cut, and neither copy was ever read back. Indexes written before this
+  still load, both halves of their payload included
+- `BM25Store.load()` takes the corpus its index was built over; it no longer owns
+  a file of its own to read one from. `Store` no longer declares `load()` at all,
+  since the two stores legitimately need different things to come back
+- Context generation runs its segments concurrently instead of one after another,
+  against a single ceiling on requests in flight. `MAX_CONCURRENT_CALLS` is what
+  sets that ceiling — the setting existed but nothing read it, so a build was
+  paced by the sum of its segments' round trips while each segment's chunks went
+  out with no limit at all. It now defaults to 16 rather than a nominal 1, and a
+  build costs its total request volume divided by that number. Chunks stay in
+  segment order however the responses arrive, and each segment still checkpoints
+  as it lands, so an interrupted build resumes exactly as before
+- A chunk that hits a rate limit retries on its own. The whole segment used to go
+  back on the wire together, so one 429 among twenty chunks resent nineteen
+  answers that had already arrived — and a segment that exhausted its retries
+  lost the context for every chunk in it, not just the one that failed
+- Building the FAISS index embeds batches concurrently under the same ceiling,
+  keeping requests on the wire in a sliding window instead of sending the next
+  one only after the last came back. Batches are folded into the index in the
+  order they were submitted, so the index does not depend on which response
+  arrived first, and only the window's vectors are held before FAISS packs them
 
 - A filtered FAISS query resolves its filters through an inverted index over the
   docstore instead of reading every stored document and testing it. The index is

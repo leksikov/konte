@@ -70,14 +70,28 @@ class TestDeferredArtifacts:
 
         assert not any(name in reopened.__dict__ for name in _CORPUS_ARTIFACTS)
 
-    async def test_querying_does_not_parse_the_corpus(self, tmp_path):
-        """Test that a server answering queries never pays for the corpus."""
+    async def test_querying_parses_only_the_index_payload(self, tmp_path):
+        """Test that a lexical query reads its own chunks and nothing else."""
         await _built_project(tmp_path)
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
         reopened.query("tariff", mode="lexical")
 
-        assert not any(name in reopened.__dict__ for name in _CORPUS_ARTIFACTS)
+        assert "_contextualized_chunks" in reopened.__dict__
+        assert "_chunks" not in reopened.__dict__
+        assert "_segments" not in reopened.__dict__
+
+    async def test_the_corpus_is_parsed_once_for_every_query(self, tmp_path):
+        """Test that repeated queries do not re-read the chunks each time."""
+        await _built_project(tmp_path)
+
+        reopened = Project.open("persist_test", storage_path=tmp_path)
+        reopened.query("tariff", mode="lexical")
+        parsed = reopened._contextualized_chunks
+
+        reopened.query("circuits", mode="lexical")
+
+        assert reopened._contextualized_chunks is parsed
 
     async def test_reading_an_artifact_parses_only_that_one(self, tmp_path):
         """Test that touching one artifact does not drag in the others."""
@@ -106,16 +120,16 @@ class TestDeferredArtifacts:
 
         assert reopened._chunks == []
 
-    async def test_unreadable_corpus_still_serves_queries(self, tmp_path):
-        """Test that a damaged corpus artifact does not stop retrieval."""
+    async def test_a_damaged_artifact_surfaces_at_first_use(self, tmp_path):
+        """Test that a build-only artifact is not parsed, damaged or not."""
         await _built_project(tmp_path)
-        (tmp_path / "persist_test" / "chunks.json").write_text("{ttorn", encoding="utf-8")
+        (tmp_path / "persist_test" / "raw_chunks.json").write_text("{ttorn", encoding="utf-8")
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
 
         assert reopened.query("tariff", mode="lexical").total_found > 0
         with pytest.raises(ValueError):
-            _ = reopened._contextualized_chunks
+            _ = reopened._chunks
 
 
 @pytest.mark.unit

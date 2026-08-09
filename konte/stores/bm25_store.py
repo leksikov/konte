@@ -1,7 +1,8 @@
 """BM25 lexical search store."""
 
-import json
 import pickle
+from collections.abc import Callable, Sequence
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +12,15 @@ from rank_bm25 import BM25Okapi
 
 from konte.config import settings
 from konte.models import ContextualizedChunk, MetadataFilter
-from konte.storage import atomic_writer, write_json
+from konte.storage import atomic_writer
 from konte.stores.base import matches_filter_value
 
 logger = structlog.get_logger()
+
+# Returns the chunks an index was built over, in index order.
+Corpus = Callable[[], Sequence[ContextualizedChunk]]
+
+LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
 
 
 def _tokenize(text: str) -> list[str]:
@@ -66,6 +72,27 @@ def _normalize(scores: np.ndarray, minimum: float, maximum: float) -> np.ndarray
     return np.clip((scores - minimum) / value_range, 0.0, 1.0)
 
 
+def _filter_indices(
+    chunks: Sequence[ContextualizedChunk],
+    metadata_filter: MetadataFilter | None,
+    source_filter: str | None,
+) -> np.ndarray | None:
+    """Return corpus positions satisfying both filters, or None for no filter.
+
+    Filtering runs before ranking, so a restrictive filter still yields top_k
+    results instead of however many survive a global top-k.
+    """
+    if not metadata_filter and not source_filter:
+        return None
+
+    matched = enumerate(chunks)
+    if metadata_filter:
+        matched = ((i, c) for i, c in matched if _matches_filter(c, metadata_filter))
+    if source_filter:
+        matched = ((i, c) for i, c in matched if source_filter in c.chunk.source)
+    return np.fromiter((i for i, _ in matched), dtype=np.intp)
+
+
 def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
     """Return the positions of the k highest scores, best first.
 
@@ -86,7 +113,7 @@ class BM25Store:
     def __init__(self):
         """Initialize BM25 store."""
         self._index: BM25Okapi | None = None
-        self._chunks: list[ContextualizedChunk] = []
+        self._corpus: Corpus = list  # nothing indexed yet
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build BM25 index from contextualized chunks.
@@ -98,18 +125,17 @@ class BM25Store:
             logger.warning("bm25_build_empty_chunks")
             return
 
-        self._chunks = chunks
+        self._corpus = lambda: chunks
         self._index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
     def save(self, directory: Path) -> None:
-        """Save BM25 index and metadata to disk.
+        """Save the BM25 ranking model to disk.
 
-        The ranking model is pickled because rank_bm25 exposes no serialization
-        format of its own; the chunk payload is written as JSON alongside it.
-        The tokenized corpus is not stored — BM25Okapi scores from the
-        per-document term frequencies it already holds.
+        The model is pickled because rank_bm25 exposes no serialization format
+        of its own. The tokenized corpus is not stored — BM25Okapi scores from
+        the per-document term frequencies it already holds.
 
         Args:
             directory: Directory to save index files.
@@ -124,43 +150,35 @@ class BM25Store:
         with atomic_writer(directory / "bm25.pkl") as handle:
             pickle.dump({"index": self._index}, handle)
 
-        write_json(directory / "bm25_chunks.json", [c.to_storage_dict() for c in self._chunks])
+        # An earlier version kept a second copy of the corpus here.
+        (directory / LEGACY_CHUNKS_FILENAME).unlink(missing_ok=True)
 
         logger.info("bm25_index_saved", directory=str(directory))
 
-    def load(self, directory: Path) -> None:
-        """Load BM25 index and metadata from disk.
+    def load(self, directory: Path, corpus: Corpus) -> None:
+        """Load the BM25 ranking model from disk and bind it to a corpus.
 
         Args:
             directory: Directory containing index files.
+            corpus: Returns the chunks the index was built over, in index
+                order. Called on the first query, not here.
 
         Raises:
-            FileNotFoundError: If either index file is missing.
+            FileNotFoundError: If the index file is missing.
         """
         directory = Path(directory)
         index_path = directory / "bm25.pkl"
-        chunks_path = directory / "bm25_chunks.json"
 
         if not index_path.exists():
             raise FileNotFoundError(f"BM25 index not found: {index_path}")
-        if not chunks_path.exists():
-            raise FileNotFoundError(f"BM25 chunk data not found: {chunks_path}")
 
         # Unpickling executes arbitrary code: only load index dirs this library wrote.
         with index_path.open("rb") as f:
             data = pickle.load(f)
         self._index = data["index"]
+        self._corpus = cache(corpus)
 
-        self._chunks = [
-            ContextualizedChunk.from_storage_dict(item)
-            for item in json.loads(chunks_path.read_text(encoding="utf-8"))
-        ]
-
-        logger.info(
-            "bm25_index_loaded",
-            directory=str(directory),
-            num_chunks=len(self._chunks),
-        )
+        logger.info("bm25_index_loaded", directory=str(directory))
 
     def query(
         self,
@@ -184,11 +202,12 @@ class BM25Store:
             normalized to 0-1 across the surviving candidates, so they are only
             comparable within one response.
         """
-        if self._index is None or not self._chunks:
+        chunks = self._corpus()
+        if self._index is None or not chunks:
             logger.warning("bm25_query_empty_index")
             return []
 
-        candidates = self._filter_indices(metadata_filter, source_filter)
+        candidates = _filter_indices(chunks, metadata_filter, source_filter)
         if candidates is not None and not candidates.size:
             return []
 
@@ -207,31 +226,15 @@ class BM25Store:
         positions = ranked if candidates is None else candidates[ranked]
 
         return [
-            (self._chunks[position], score)
+            (chunks[position], score)
             for position, score in zip(positions.tolist(), normalized.tolist(), strict=True)
         ]
 
-    def _filter_indices(
-        self,
-        metadata_filter: MetadataFilter | None,
-        source_filter: str | None,
-    ) -> np.ndarray | None:
-        """Return corpus positions satisfying both filters, or None for no filter.
-
-        Filtering runs before ranking, so a restrictive filter still yields
-        top_k results instead of however many survive a global top-k.
-        """
-        if not metadata_filter and not source_filter:
-            return None
-
-        matched = enumerate(self._chunks)
-        if metadata_filter:
-            matched = ((i, c) for i, c in matched if _matches_filter(c, metadata_filter))
-        if source_filter:
-            matched = ((i, c) for i, c in matched if source_filter in c.chunk.source)
-        return np.fromiter((i for i, _ in matched), dtype=np.intp)
-
     @property
     def is_empty(self) -> bool:
-        """Check if the index is empty."""
-        return self._index is None or not self._chunks
+        """bool: True when there is no index to rank against.
+
+        Answered from the ranking model alone: counting the corpus here would
+        defeat deferring it.
+        """
+        return self._index is None

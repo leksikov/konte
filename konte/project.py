@@ -1,5 +1,6 @@
 """Project class - main interface for contextual RAG."""
 
+import asyncio
 import json
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -242,7 +243,7 @@ class Project:
         await self._generate_contexts(
             chunks_by_segment, completed, prompt_template, skip_context
         )
-        self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
+        await self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
 
         self._checkpoint.clear()
         logger.info("checkpoint_cleared")
@@ -604,7 +605,7 @@ class Project:
         prompt_template: str | None,
         skip_context: bool,
     ) -> None:
-        """Contextualize every not-yet-processed segment.
+        """Contextualize every not-yet-processed segment, concurrently.
 
         Each segment appends itself to the checkpoint log as it finishes, so an
         interrupted run resumes at a segment boundary.
@@ -616,37 +617,63 @@ class Project:
             skip_context=skip_context,
         )
 
-        with self._checkpoint.appending() as log:
-            for seg_key, segment_chunks in chunks_by_segment.items():
-                seg_key_str = _encode_segment_key(seg_key)
+        pending: list[tuple[SegmentKey, str]] = []
+        for seg_key in chunks_by_segment:
+            seg_key_str = _encode_segment_key(seg_key)
+            if seg_key_str in completed:
+                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
+                continue
+            pending.append((seg_key, seg_key_str))
 
-                if seg_key_str in completed:
-                    logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
-                    continue
+        segment_gate = asyncio.Semaphore(settings.concurrency_limit)
 
+        async def contextualize(
+            seg_key: SegmentKey,
+            seg_key_str: str,
+        ) -> tuple[str, list[ContextualizedChunk]]:
+            """Run one segment, tagged with the key it belongs to."""
+            segment_chunks = chunks_by_segment[seg_key]
+            async with segment_gate:
                 logger.info(
                     "generating_context_for_segment",
                     segment_key=seg_key_str,
                     total_segments=total_segments,
                     num_chunks=len(segment_chunks),
                 )
-                ctx_chunks = await generate_contexts_batch(
+                return seg_key_str, await generate_contexts_batch(
                     segment=self._segments.get(seg_key, ""),
                     chunks=segment_chunks,
                     model=self._config.context_model,
                     prompt_template=prompt_template,
                     skip_context=skip_context,
                 )
-                self._contextualized_chunks.extend(ctx_chunks)
 
-                log.append(seg_key_str, [c.to_storage_dict() for c in ctx_chunks])
-                completed.add(seg_key_str)
-                logger.info(
-                    "checkpoint_saved",
-                    segment_key=seg_key_str,
-                    completed=len(completed),
-                    total=total_segments,
-                )
+        produced: dict[str, list[ContextualizedChunk]] = {}
+
+        with self._checkpoint.appending() as log:
+            tasks = [asyncio.ensure_future(contextualize(*item)) for item in pending]
+            try:
+                for finished in asyncio.as_completed(tasks):
+                    seg_key_str, ctx_chunks = await finished
+                    produced[seg_key_str] = ctx_chunks
+                    log.append(seg_key_str, [c.to_storage_dict() for c in ctx_chunks])
+                    completed.add(seg_key_str)
+                    logger.info(
+                        "checkpoint_saved",
+                        segment_key=seg_key_str,
+                        completed=len(completed),
+                        total=total_segments,
+                    )
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
+        # Segment order, not the order the responses arrived.
+        self._contextualized_chunks.extend(
+            chunk for _, seg_key_str in pending for chunk in produced[seg_key_str]
+        )
 
         logger.info(
             "context_generation_complete",
@@ -654,11 +681,11 @@ class Project:
             skipped=skip_context,
         )
 
-    def _build_indexes(self, *, use_faiss: bool, use_bm25: bool) -> None:
+    async def _build_indexes(self, *, use_faiss: bool, use_bm25: bool) -> None:
         """Build the enabled indexes and wire a retriever over them."""
         if use_faiss:
             self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            self._faiss.build_index(self._contextualized_chunks)
+            await self._faiss.abuild_index(self._contextualized_chunks)
             logger.info("faiss_index_built")
 
         if use_bm25:
@@ -676,7 +703,9 @@ class Project:
 
         if (project_dir / "bm25.pkl").exists() and self._config.enable_bm25:
             self._bm25 = BM25Store()
-            self._bm25.load(project_dir)
+            # Passed as a callable: reading the chunks here would defeat the
+            # deferred parse.
+            self._bm25.load(project_dir, lambda: self._contextualized_chunks)
 
     def _portable_config(self) -> dict[str, Any]:
         """Serialize the config with absolute paths made relative where possible.

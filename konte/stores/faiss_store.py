@@ -1,6 +1,8 @@
 """FAISS vector store for semantic search using LangChain."""
 
-from collections import defaultdict
+import asyncio
+from collections import defaultdict, deque
+from collections.abc import Sequence
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -19,11 +21,23 @@ from konte.stores.base import matches_filter_value
 logger = structlog.get_logger()
 
 _RESERVED_METADATA_FIELDS = frozenset(
-    {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
+    {
+        "chunk_id",
+        "source",
+        "segment_idx",
+        "chunk_idx",
+        "context_length",
+        "context",
+        "original_content",
+    }
 )
 
 # Chunk payload, not filter keys: posting them would hash every chunk's full text.
-_UNPOSTED_METADATA_FIELDS = frozenset({"context", "original_content"})
+_UNPOSTED_METADATA_FIELDS = frozenset({"context_length", "context", "original_content"})
+
+# Documents per embedding request, kept well under the OpenAI embedding API's
+# 300K-token request limit.
+_EMBED_BATCH_SIZE = 100
 
 
 def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: MetadataFilter) -> bool:
@@ -39,8 +53,8 @@ def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: MetadataFil
 def _to_document(chunk: ContextualizedChunk) -> Document:
     """Flatten a chunk into the LangChain Document the index embeds and stores.
 
-    The original content and the generated context both ride along in metadata
-    so the chunk can be rebuilt from the index alone, without a side-car file.
+    The context's length rides along so the chunk can be rebuilt from the index
+    alone, without a side-car file and without a second copy of its text.
     """
     return Document(
         page_content=chunk.contextualized_content,
@@ -49,20 +63,38 @@ def _to_document(chunk: ContextualizedChunk) -> Document:
             "source": chunk.chunk.source,
             "segment_idx": chunk.chunk.segment_idx,
             "chunk_idx": chunk.chunk.chunk_idx,
-            "context": chunk.context,
-            "original_content": chunk.chunk.content,
+            "context_length": len(chunk.context),
             **chunk.chunk.metadata,
         },
     )
 
 
+def _split_content(doc: Document) -> tuple[str, str]:
+    """Recover a stored document's (context, original content).
+
+    ContextualizedChunk joins the two with a single space, so the context's
+    length locates the cut. An older index carries both halves outright.
+    """
+    metadata = doc.metadata
+
+    context = metadata.get("context")
+    if context is not None:
+        return context, metadata.get("original_content", "")
+
+    length = metadata.get("context_length")
+    if not isinstance(length, int) or length <= 0:
+        return "", doc.page_content
+    return doc.page_content[:length], doc.page_content[length + 1 :]
+
+
 def _from_document(doc: Document) -> ContextualizedChunk:
     """Rebuild a chunk from the flattened metadata written by _to_document()."""
     metadata = doc.metadata
+    context, content = _split_content(doc)
     return ContextualizedChunk(
         chunk=Chunk(
             chunk_id=metadata.get("chunk_id", ""),
-            content=metadata.get("original_content", ""),
+            content=content,
             source=metadata.get("source", ""),
             segment_idx=metadata.get("segment_idx", 0),
             chunk_idx=metadata.get("chunk_idx", 0),
@@ -72,8 +104,28 @@ def _from_document(doc: Document) -> ContextualizedChunk:
                 if key not in _RESERVED_METADATA_FIELDS
             },
         ),
-        context=metadata.get("context", ""),
+        context=context,
     )
+
+
+def _document_batches(
+    chunks: Sequence[ContextualizedChunk],
+    batch_size: int,
+) -> list[list[Document]]:
+    """Split the corpus into the units that go out as one embedding request."""
+    documents = [_to_document(chunk) for chunk in chunks]
+    return [
+        documents[start : start + batch_size] for start in range(0, len(documents), batch_size)
+    ]
+
+
+def _page_contents(documents: Sequence[Document]) -> list[str]:
+    """Return the text an embedding request carries for one batch."""
+    return [document.page_content for document in documents]
+
+
+# One embedding request that has been sent but not yet folded into the index.
+_PendingBatches = deque[tuple[int, list[Document], "asyncio.Future[list[list[float]]]"]]
 
 
 def _to_similarity(distance: float) -> float:
@@ -231,40 +283,106 @@ class FAISSStore:
     def build_index(
         self,
         chunks: list[ContextualizedChunk],
-        batch_size: int = 100,
+        batch_size: int = _EMBED_BATCH_SIZE,
     ) -> None:
         """Build FAISS index from contextualized chunks.
 
+        One request at a time; abuild_index() is the concurrent form.
+
         Args:
             chunks: List of contextualized chunks to index.
-            batch_size: Number of documents to embed per request. Kept well
-                under the OpenAI embedding API's 300K-token request limit.
+            batch_size: Number of documents to embed per request.
         """
-        if not chunks:
+        batches = _document_batches(chunks, batch_size)
+        if not batches:
             logger.warning("faiss_build_empty_chunks")
             return
 
-        documents = [_to_document(chunk) for chunk in chunks]
-        batches = [
-            documents[start : start + batch_size]
-            for start in range(0, len(documents), batch_size)
-        ]
+        self._reset()
+        for number, batch in enumerate(batches, start=1):
+            vectors = self._embeddings.embed_documents(_page_contents(batch))
+            self._absorb(number, len(batches), batch, vectors)
 
-        if len(batches) > 1:
-            logger.info("faiss_building_batch", batch=1, total_batches=len(batches))
-        self._vectorstore = FAISS.from_documents(
-            documents=batches[0],
-            embedding=self._embeddings,
-        )
-        for batch_num, batch in enumerate(batches[1:], start=2):
-            logger.info("faiss_building_batch", batch=batch_num, total_batches=len(batches))
-            self._vectorstore.add_documents(batch)
+        logger.info("faiss_index_built", num_chunks=len(chunks))
+
+    async def abuild_index(
+        self,
+        chunks: list[ContextualizedChunk],
+        batch_size: int = _EMBED_BATCH_SIZE,
+        max_concurrency: int | None = None,
+    ) -> None:
+        """Build FAISS index from contextualized chunks, embedding concurrently.
+
+        A sliding window keeps `max_concurrency` requests on the wire. Batches
+        are absorbed in the order they were submitted, so the index does not
+        depend on which response arrived first.
+
+        Args:
+            chunks: List of contextualized chunks to index.
+            batch_size: Number of documents to embed per request.
+            max_concurrency: Requests in flight. Defaults to
+                settings.MAX_CONCURRENT_CALLS.
+        """
+        batches = _document_batches(chunks, batch_size)
+        if not batches:
+            logger.warning("faiss_build_empty_chunks")
+            return
+
+        if max_concurrency is None:
+            max_concurrency = settings.concurrency_limit
+        window = max(1, max_concurrency)
+
+        self._reset()
+        pending: _PendingBatches = deque()
+
+        try:
+            for number, batch in enumerate(batches, start=1):
+                if len(pending) == window:
+                    await self._absorb_oldest(pending, len(batches))
+                request = self._embeddings.aembed_documents(_page_contents(batch))
+                pending.append((number, batch, asyncio.ensure_future(request)))
+            while pending:
+                await self._absorb_oldest(pending, len(batches))
+        except BaseException:
+            for _, _, task in pending:
+                task.cancel()
+            await asyncio.gather(*(task for _, _, task in pending), return_exceptions=True)
+            raise
+
+        logger.info("faiss_index_built", num_chunks=len(chunks))
+
+    async def _absorb_oldest(self, pending: "_PendingBatches", total_batches: int) -> None:
+        """Wait for the longest-outstanding request and fold it into the index."""
+        number, batch, task = pending.popleft()
+        self._absorb(number, total_batches, batch, await task)
+
+    def _absorb(
+        self,
+        number: int,
+        total_batches: int,
+        documents: list[Document],
+        vectors: list[list[float]],
+    ) -> None:
+        """Add one embedded batch, creating the vectorstore on the first."""
+        if total_batches > 1:
+            logger.info("faiss_building_batch", batch=number, total_batches=total_batches)
+
+        pairs = zip((document.page_content for document in documents), vectors, strict=True)
+        metadatas = [document.metadata for document in documents]
+
+        if self._vectorstore is None:
+            self._vectorstore = FAISS.from_embeddings(
+                text_embeddings=pairs,
+                embedding=self._embeddings,
+                metadatas=metadatas,
+            )
+        else:
+            self._vectorstore.add_embeddings(pairs, metadatas=metadatas)
+
+    def _reset(self) -> None:
+        """Drop whatever this store held, so a rebuild starts from nothing."""
+        self._vectorstore = None
         self._filter_index = None
-
-        logger.info(
-            "faiss_index_built",
-            num_chunks=len(chunks),
-        )
 
     def save(self, directory: Path) -> None:
         """Save FAISS index to disk.

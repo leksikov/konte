@@ -26,7 +26,10 @@ def matches_filter_value(actual: Any, expected: Any) -> bool:
 
 
 class Store(Protocol):
-    """Protocol defining the interface for retrieval stores."""
+    """Protocol defining the interface for retrieval stores.
+
+    Loading is outside it: a store may need more than a directory to come back.
+    """
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build index from contextualized chunks."""
@@ -34,10 +37,6 @@ class Store(Protocol):
 
     def save(self, directory: Path) -> None:
         """Save index to disk."""
-        ...
-
-    def load(self, directory: Path) -> None:
-        """Load index from disk."""
         ...
 
     def query(

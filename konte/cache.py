@@ -25,7 +25,6 @@ _ARTIFACT_FILENAMES = (
     "faiss.faiss",
     "faiss.pkl",
     "bm25.pkl",
-    "bm25_chunks.json",
 )
 
 Fingerprint = tuple[tuple[str, int, int], ...]
