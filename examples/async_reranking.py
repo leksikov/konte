@@ -7,7 +7,7 @@ Demonstrates:
 - Comparing results with and without reranking
 - rerank_initial_k parameter for controlling candidate pool
 
-Requires: OPENAI_API_KEY or BACKENDAI_ENDPOINT configured.
+Requires: OPENAI_API_KEY or LLM_BASE_URL configured.
 Reranking additionally requires RERANKER_BASE_URL pointing at a vLLM server
 that exposes a /score endpoint (e.g. serving Qwen3-Reranker-8B):
 

@@ -135,7 +135,7 @@ class ProjectConfig(BaseModel):
 
     # Models
     embedding_model: str = "text-embedding-3-small"
-    context_model: str | None = None  # Use Backend.AI or settings.CONTEXT_MODEL
+    context_model: str | None = None  # Defaults to settings.LLM_MODEL or CONTEXT_MODEL
 
     # Index options
     enable_faiss: bool = True

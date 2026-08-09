@@ -16,12 +16,12 @@ class Settings(BaseSettings):
     )
 
     # API Keys
-    OPENAI_API_KEY: str | None = None  # Optional - Backend.AI is default
+    OPENAI_API_KEY: str | None = None  # Still needed for embeddings when FAISS is on
 
-    # Custom Backend (vLLM with OpenAI schema)
-    BACKENDAI_ENDPOINT: str | None = None  # Disabled - using OpenAI
-    BACKENDAI_MODEL_NAME: str | None = None
-    BACKENDAI_API_KEY: str | None = None  # Optional API key for BackendAI
+    # Custom OpenAI-compatible chat endpoint (vLLM, Ollama, LM Studio, ...)
+    LLM_BASE_URL: str | None = None
+    LLM_MODEL: str | None = None
+    LLM_API_KEY: str | None = None
 
     # Reranker (optional - requires a vLLM server exposing a /score endpoint)
     RERANKER_BASE_URL: str | None = None
@@ -59,9 +59,9 @@ class Settings(BaseSettings):
     PROMPT_PATH: Path | None = None
 
     @property
-    def use_backendai(self) -> bool:
-        """Check if BackendAI custom endpoint should be used."""
-        return bool(self.BACKENDAI_ENDPOINT and self.BACKENDAI_MODEL_NAME)
+    def use_custom_llm(self) -> bool:
+        """Check if the custom chat endpoint should be used instead of OpenAI."""
+        return bool(self.LLM_BASE_URL and self.LLM_MODEL)
 
     @field_validator("STORAGE_PATH", mode="before")
     @classmethod

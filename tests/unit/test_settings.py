@@ -60,7 +60,7 @@ class TestSettings:
             assert s.PROMPT_PATH.name == "context_prompt.txt"
 
     def test_openai_api_key_optional(self):
-        """Test that OPENAI_API_KEY is optional (Backend.AI is default)."""
+        """Test that OPENAI_API_KEY is optional (a custom endpoint may replace it)."""
         from konte.config import Settings
 
         # Verify the field has default=None (making it optional)

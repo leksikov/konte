@@ -83,7 +83,7 @@ class TestGenerateContext:
         )
 
         # Context should mention something related to tariffs or classification
-        # Support both English and Korean (Backend.AI may generate Korean)
+        # Support both English and Korean (the model may answer in Korean)
         context_lower = context.lower()
         relevant_terms = [
             # English

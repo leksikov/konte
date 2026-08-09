@@ -193,10 +193,10 @@ def generate_goldens(
     styling_config = StylingConfig(**STYLING_BY_LANGUAGE[language])
 
     from konte.config.settings import settings as _settings
-    if _settings.use_backendai:
-        from evaluation.custom_llm import BackendAIModel
-        synth_model = BackendAIModel()
-        print(f"\nInitializing Synthesizer with BackendAI model: {synth_model.model_name}")
+    if _settings.use_custom_llm:
+        from evaluation.custom_llm import ConfiguredLLM
+        synth_model = ConfiguredLLM()
+        print(f"\nInitializing Synthesizer with custom model: {synth_model.model_name}")
     else:
         synth_model = model
         print(f"\nInitializing Synthesizer with OpenAI model: {model}")

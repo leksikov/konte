@@ -277,7 +277,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Answers are generated with OpenAI by default, or with your own vLLM endpoint when `BACKENDAI_ENDPOINT` and `BACKENDAI_MODEL_NAME` are configured.
+Answers are generated with OpenAI by default, or with your own OpenAI-compatible endpoint when `LLM_BASE_URL` and `LLM_MODEL` are configured.
 
 ### Custom Prompt Templates
 
@@ -523,13 +523,13 @@ CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
 DEFAULT_TOP_K=20
 PROMPT_PATH=                   # Optional global context-prompt override
 
-# Optional: any vLLM server with an OpenAI-compatible API
+# Optional: any OpenAI-compatible server (vLLM, Ollama, LM Studio, ...)
 # (replaces OpenAI for context/answer generation only - not embeddings)
-BACKENDAI_ENDPOINT=https://your-vllm-endpoint/v1
-BACKENDAI_MODEL_NAME=your-model-name
+LLM_BASE_URL=https://your-endpoint/v1
+LLM_MODEL=your-model-name
 
-# Optional: reranker (vLLM /score endpoint), required only for rerank=True
-RERANKER_BASE_URL=https://your-vllm-endpoint/v1
+# Optional: reranker (vLLM-style /score endpoint), required only for rerank=True
+RERANKER_BASE_URL=https://your-endpoint/v1
 RERANKER_MODEL=Qwen3-Reranker-8B
 ```
 

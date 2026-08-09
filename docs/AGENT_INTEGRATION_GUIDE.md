@@ -101,7 +101,7 @@ answer.sources_used  # Number of chunks used for generation
 
 ## Built-in RAG Answer Generation
 
-Konte includes built-in LLM answer generation using BackendAI (Qwen3-VL-8B-Instruct by default):
+Konte includes built-in LLM answer generation, using OpenAI by default:
 
 ### Basic Usage
 
@@ -736,7 +736,7 @@ if __name__ == "__main__":
 
 | Method | API | Best For |
 |--------|-----|----------|
-| **Full RAG** | `project.query_with_answer()` | Complete RAG with built-in LLM (BackendAI/OpenAI) |
+| **Full RAG** | `project.query_with_answer()` | Complete RAG with built-in LLM answer generation |
 | **Retrieval Only** | `project.query()` | Custom LLM pipelines, agent tools |
 | **LangChain** | Custom Retriever class | Existing LangChain apps, LCEL chains |
 | **Agno** | `@tool` decorated functions | Autonomous agents, multi-tool workflows |
@@ -748,10 +748,10 @@ if __name__ == "__main__":
 # OpenAI (default for answer generation)
 OPENAI_API_KEY=sk-...
 
-# Optional: any vLLM server with an OpenAI-compatible API
+# Optional: any OpenAI-compatible server (vLLM, Ollama, LM Studio, ...)
 # (used instead of OpenAI when both are set)
-BACKENDAI_ENDPOINT=https://your-vllm-endpoint/v1
-BACKENDAI_MODEL_NAME=your-model-name
+LLM_BASE_URL=https://your-endpoint/v1
+LLM_MODEL=your-model-name
 ```
 
 ---

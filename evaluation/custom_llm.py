@@ -1,4 +1,4 @@
-"""Custom LLM wrapper for DeepEval with OpenAI or BackendAI support.
+"""Custom LLM wrapper for DeepEval with OpenAI or custom-endpoint support.
 
 Uses LangChain's .with_structured_output() for Pydantic schema parsing.
 """
@@ -10,8 +10,8 @@ from pydantic import BaseModel
 from konte.config.settings import settings
 
 
-class BackendAIModel(DeepEvalBaseLLM):
-    """Custom LLM for DeepEval using OpenAI or BackendAI endpoint."""
+class ConfiguredLLM(DeepEvalBaseLLM):
+    """DeepEval judge model that follows the project's configured chat endpoint."""
 
     def __init__(
         self,
@@ -19,11 +19,10 @@ class BackendAIModel(DeepEvalBaseLLM):
         base_url: str | None = None,
         api_key: str | None = None,
     ):
-        # Use BackendAI if configured, otherwise use OpenAI
-        if settings.use_backendai:
-            self.model_name = model_name or settings.BACKENDAI_MODEL_NAME
-            self.base_url = base_url or settings.BACKENDAI_ENDPOINT
-            self.api_key = api_key or settings.BACKENDAI_API_KEY or "placeholder"
+        if settings.use_custom_llm:
+            self.model_name = model_name or settings.LLM_MODEL
+            self.base_url = base_url or settings.LLM_BASE_URL
+            self.api_key = api_key or settings.LLM_API_KEY or "placeholder"
             self._llm = ChatOpenAI(
                 model=self.model_name,
                 api_key=self.api_key,

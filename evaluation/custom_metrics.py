@@ -6,12 +6,12 @@ These metrics focus on factual correctness rather than format/length matching.
 from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCaseParams
 
-from evaluation.custom_llm import BackendAIModel
+from evaluation.custom_llm import ConfiguredLLM
 
 
 def create_factual_correctness_metric(
     threshold: float = 0.5,
-    model: BackendAIModel | None = None,
+    model: ConfiguredLLM | None = None,
 ) -> GEval:
     """Create a factual correctness metric that ignores format differences.
 
@@ -62,14 +62,14 @@ Score 0.0-0.3 if: Actual is missing most key facts or contains wrong information
             LLMTestCaseParams.ACTUAL_OUTPUT,
             LLMTestCaseParams.EXPECTED_OUTPUT,
         ],
-        model=model or BackendAIModel(),
+        model=model or ConfiguredLLM(),
         threshold=threshold,
     )
 
 
 def create_hs_code_accuracy_metric(
     threshold: float = 0.5,
-    model: BackendAIModel | None = None,
+    model: ConfiguredLLM | None = None,
 ) -> GEval:
     """Create a metric specifically for HS code accuracy.
 
@@ -106,14 +106,14 @@ Scoring:
             LLMTestCaseParams.ACTUAL_OUTPUT,
             LLMTestCaseParams.EXPECTED_OUTPUT,
         ],
-        model=model or BackendAIModel(),
+        model=model or ConfiguredLLM(),
         threshold=threshold,
     )
 
 
 def create_information_coverage_metric(
     threshold: float = 0.5,
-    model: BackendAIModel | None = None,
+    model: ConfiguredLLM | None = None,
 ) -> GEval:
     """Create a metric for information coverage (recall).
 
@@ -153,6 +153,6 @@ DO NOT penalize:
             LLMTestCaseParams.ACTUAL_OUTPUT,
             LLMTestCaseParams.EXPECTED_OUTPUT,
         ],
-        model=model or BackendAIModel(),
+        model=model or ConfiguredLLM(),
         threshold=threshold,
     )

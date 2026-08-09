@@ -1,7 +1,7 @@
 """Chat model clients for context generation, answering and query processing.
 
 Every outbound chat request goes through the factory in this module, so the
-Backend.AI / vLLM override, the client retry budget and the instance cache are
+custom-endpoint override, the client retry budget and the instance cache are
 each configured in exactly one place.
 """
 
@@ -65,14 +65,14 @@ def _build_client(
     return ChatOpenAI(**kwargs)
 
 
-def _build_backendai_client(
+def _build_custom_client(
     *,
     timeout: float,
     max_tokens: int | None,
     extra_body: dict[str, Any] | None,
     log_event: str,
 ) -> ChatOpenAI:
-    """Construct a client aimed at the configured Backend.AI / vLLM endpoint.
+    """Construct a client aimed at the configured custom chat endpoint.
 
     Args:
         timeout: Request timeout in seconds.
@@ -85,16 +85,16 @@ def _build_backendai_client(
     """
     logger.info(
         log_event,
-        endpoint=settings.BACKENDAI_ENDPOINT,
-        model=settings.BACKENDAI_MODEL_NAME,
+        base_url=settings.LLM_BASE_URL,
+        model=settings.LLM_MODEL,
     )
     return _build_client(
-        model=settings.BACKENDAI_MODEL_NAME or "",
+        model=settings.LLM_MODEL or "",
         timeout=timeout,
         max_tokens=max_tokens,
-        base_url=settings.BACKENDAI_ENDPOINT,
-        # vLLM endpoints usually need no credential, but the client refuses to send none.
-        api_key=settings.BACKENDAI_API_KEY or "not-needed",
+        base_url=settings.LLM_BASE_URL,
+        # Self-hosted endpoints often need no credential, but the client demands one.
+        api_key=settings.LLM_API_KEY or "not-needed",
         extra_body=extra_body,
     )
 
@@ -110,26 +110,25 @@ def _get_or_build(cache_key: str, build: Callable[[], ChatOpenAI]) -> ChatOpenAI
 def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 400) -> ChatOpenAI:
     """Get or create a cached client for context generation and query processing.
 
-    Routes to the Backend.AI / vLLM endpoint when BACKENDAI_ENDPOINT and
-    BACKENDAI_MODEL_NAME are both set and the caller did not ask for a different
-    model; otherwise talks to OpenAI.
+    Routes to the custom endpoint when LLM_BASE_URL and LLM_MODEL are both set
+    and the caller did not ask for a different model; otherwise talks to OpenAI.
 
     Args:
-        model: Model name. Defaults to settings.CONTEXT_MODEL or BACKENDAI_MODEL_NAME.
+        model: Model name. Defaults to settings.CONTEXT_MODEL or settings.LLM_MODEL.
         timeout: Request timeout in seconds.
         max_tokens: Maximum tokens for the LLM response.
 
     Returns:
         Cached ChatOpenAI instance.
     """
-    if settings.use_backendai and model in (None, settings.BACKENDAI_MODEL_NAME):
+    if settings.use_custom_llm and model in (None, settings.LLM_MODEL):
         return _get_or_build(
-            f"backendai_{settings.BACKENDAI_MODEL_NAME}_{timeout}_{max_tokens}",
-            lambda: _build_backendai_client(
+            f"custom_{settings.LLM_MODEL}_{timeout}_{max_tokens}",
+            lambda: _build_custom_client(
                 timeout=timeout,
                 max_tokens=max_tokens,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                log_event="using_backendai",
+                log_event="using_custom_llm",
             ),
         )
 
@@ -143,9 +142,9 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
 def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
     """Get or create a cached client for answer generation.
 
-    Uses Backend.AI when configured, otherwise OpenAI. Unlike the context client
-    this one sets no token ceiling and leaves server-side reasoning enabled, so
-    a reasoning model can deliberate before answering.
+    Uses the custom endpoint when configured, otherwise OpenAI. Unlike the
+    context client this one sets no token ceiling and leaves server-side
+    reasoning enabled, so a reasoning model can deliberate before answering.
 
     Args:
         timeout: Request timeout in seconds.
@@ -153,14 +152,14 @@ def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
     Returns:
         Cached ChatOpenAI instance.
     """
-    if settings.use_backendai:
+    if settings.use_custom_llm:
         return _get_or_build(
-            f"answer_backendai_{settings.BACKENDAI_MODEL_NAME}_{timeout}",
-            lambda: _build_backendai_client(
+            f"answer_custom_{settings.LLM_MODEL}_{timeout}",
+            lambda: _build_custom_client(
                 timeout=timeout,
                 max_tokens=None,
                 extra_body=None,
-                log_event="using_backendai_for_answer",
+                log_event="using_custom_llm_for_answer",
             ),
         )
 
@@ -191,8 +190,8 @@ def active_answer_model() -> str:
     """Return the model name that get_answer_llm() will talk to.
 
     Returns:
-        The Backend.AI model when that endpoint is active, else the OpenAI model.
+        The custom-endpoint model when that endpoint is active, else the OpenAI model.
     """
-    if settings.use_backendai:
-        return settings.BACKENDAI_MODEL_NAME or settings.CONTEXT_MODEL
+    if settings.use_custom_llm:
+        return settings.LLM_MODEL or settings.CONTEXT_MODEL
     return settings.CONTEXT_MODEL
