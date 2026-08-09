@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import NoReturn, cast, get_args
 
 import typer
 from rich.console import Console
@@ -18,6 +21,7 @@ from konte import (
     project_exists,
     settings,
 )
+from konte.models import MetadataFilter, RetrievalMode
 
 app = typer.Typer(
     name="konte",
@@ -25,6 +29,79 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+_RETRIEVAL_MODES: tuple[str, ...] = get_args(RetrievalMode)
+_MODE_HELP = f"Retrieval mode: {', '.join(_RETRIEVAL_MODES)}"
+
+_STORAGE_OPTION = typer.Option(
+    None,
+    "--storage",
+    "-s",
+    help="Storage path (default: ~/.konte)",
+)
+
+
+def _fail(message: str) -> NoReturn:
+    """Report a problem on stdout and exit with status 1."""
+    console.print(f"[red]Error:[/red] {message}")
+    raise typer.Exit(1)
+
+
+@contextmanager
+def _reporting_errors() -> Iterator[None]:
+    """Turn an unexpected failure into a one-line message instead of a traceback.
+
+    typer.Exit derives from Exception, so it is re-raised untouched; without
+    that a command which already reported a problem and exited would have its
+    exit code printed as a second, meaningless error.
+    """
+    try:
+        yield
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from None
+
+
+def _resolve_storage(storage_path: Path | None) -> Path:
+    """Return the storage root, falling back to the configured default."""
+    return storage_path or settings.STORAGE_PATH
+
+
+def _require_project(name: str, storage_path: Path) -> None:
+    """Exit with an error unless the named project exists."""
+    if not project_exists(name, storage_path=storage_path):
+        _fail(f"Project '{name}' not found")
+
+
+def _require_mode(mode: str) -> RetrievalMode:
+    """Validate a --mode value and narrow it to the retrieval mode type."""
+    if mode not in _RETRIEVAL_MODES:
+        _fail(f"Invalid mode: {mode}")
+    return cast(RetrievalMode, mode)
+
+
+def _parse_metadata_filter(filter_json: str | None) -> MetadataFilter | None:
+    """Parse the --filter argument, exiting with an error on malformed JSON."""
+    if not filter_json:
+        return None
+    try:
+        return json.loads(filter_json)
+    except json.JSONDecodeError as e:
+        _fail(f"Invalid JSON filter: {e}")
+
+
+@contextmanager
+def _spinner(description: str) -> Iterator[None]:
+    """Show an indeterminate progress spinner for a long-running step."""
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task(description, total=None)
+        yield
 
 
 def _version_callback(value: bool) -> None:
@@ -47,12 +124,7 @@ def _main(
 @app.command("create")
 def create(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
     prompt: Path | None = typer.Option(
         None,
         "--prompt",
@@ -61,41 +133,30 @@ def create(
     ),
 ) -> None:
     """Create a new project."""
-    try:
-        path = storage_path or settings.STORAGE_PATH
-        if project_exists(name, storage_path=path):
-            console.print(f"[red]Error:[/red] Project '{name}' already exists")
-            raise typer.Exit(1)
+    path = _resolve_storage(storage_path)
 
-        kwargs = {}
-        if prompt is not None:
-            if not prompt.exists():
-                console.print(f"[red]Error:[/red] Prompt file not found: {prompt}")
-                raise typer.Exit(1)
-            kwargs["context_prompt_path"] = prompt
+    if project_exists(name, storage_path=path):
+        _fail(f"Project '{name}' already exists")
+    if prompt is not None and not prompt.exists():
+        _fail(f"Prompt file not found: {prompt}")
 
-        project = create_project(name, storage_path=path, **kwargs)
+    with _reporting_errors():
+        overrides = {"context_prompt_path": prompt} if prompt is not None else {}
+        project = create_project(name, storage_path=path, **overrides)
         project.save()
+
         console.print(f"[green]Created project:[/green] {name}")
         console.print(f"  Path: {project.project_dir}")
         if prompt:
             console.print(f"  Prompt: {prompt}")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 @app.command("list")
 def list_cmd(
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
 ) -> None:
     """List all projects."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
     projects = list_projects(storage_path=path)
 
     if not projects:
@@ -107,8 +168,7 @@ def list_cmd(
     table.add_column("Path", style="dim")
 
     for proj_name in projects:
-        proj_path = path / proj_name
-        table.add_row(proj_name, str(proj_path))
+        table.add_row(proj_name, str(path / proj_name))
 
     console.print(table)
 
@@ -116,12 +176,7 @@ def list_cmd(
 @app.command("delete")
 def delete(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
     force: bool = typer.Option(
         False,
         "--force",
@@ -130,78 +185,47 @@ def delete(
     ),
 ) -> None:
     """Delete a project."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
+    if not force and not typer.confirm(f"Delete project '{name}'?"):
+        console.print("[dim]Cancelled[/dim]")
+        raise typer.Exit(0)
 
-    if not force:
-        confirm = typer.confirm(f"Delete project '{name}'?")
-        if not confirm:
-            console.print("[dim]Cancelled[/dim]")
-            raise typer.Exit(0)
-
-    try:
+    with _reporting_errors():
         delete_project(name, storage_path=path)
         console.print(f"[green]Deleted project:[/green] {name}")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 @app.command("add")
 def add(
     name: str = typer.Argument(..., help="Project name"),
     files: list[Path] = typer.Argument(..., help="Document files to add"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
 ) -> None:
     """Add documents to a project."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
+    for file_path in files:
+        if not file_path.exists():
+            _fail(f"File not found: {file_path}")
 
-    # Validate files exist
-    for f in files:
-        if not f.exists():
-            console.print(f"[red]Error:[/red] File not found: {f}")
-            raise typer.Exit(1)
-
-    try:
+    with _reporting_errors():
         project = get_project(name, storage_path=path)
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            progress.add_task("Adding documents...", total=None)
+        with _spinner("Adding documents..."):
             num_chunks = project.add_documents(files)
 
         project.save()
         console.print(f"[green]Added {len(files)} document(s)[/green]")
         console.print(f"  Total chunks: {num_chunks}")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 @app.command("build")
 def build(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
     skip_context: bool = typer.Option(
         False,
         "--skip-context",
@@ -225,38 +249,27 @@ def build(
     ),
 ) -> None:
     """Build indexes for a project."""
-    path = storage_path or settings.STORAGE_PATH
-
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
     if prompt is not None and not prompt.exists():
-        console.print(f"[red]Error:[/red] Prompt file not found: {prompt}")
-        raise typer.Exit(1)
+        _fail(f"Prompt file not found: {prompt}")
 
-    try:
+    enable_faiss = not bm25_only
+    enable_bm25 = not faiss_only
+
+    with _reporting_errors():
         project = get_project(name, storage_path=path)
 
-        enable_faiss = not bm25_only
-        enable_bm25 = not faiss_only
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            progress.add_task("Building indexes...", total=None)
-
-            async def run_build():
-                await project.build(
+        with _spinner("Building indexes..."):
+            asyncio.run(
+                project.build(
                     skip_context=skip_context,
                     enable_faiss=enable_faiss,
                     enable_bm25=enable_bm25,
                     prompt_path=prompt,
                 )
-
-            asyncio.run(run_build())
+            )
 
         project.save()
         console.print("[green]Build complete[/green]")
@@ -266,21 +279,13 @@ def build(
                 console.print(f"  Prompt: {prompt}")
         console.print(f"  FAISS index: {'enabled' if enable_faiss else 'disabled'}")
         console.print(f"  BM25 index: {'enabled' if enable_bm25 else 'disabled'}")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 @app.command("query")
 def query(
     name: str = typer.Argument(..., help="Project name"),
     query_text: str = typer.Argument(..., help="Query text"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
     top_k: int = typer.Option(
         5,
         "--top-k",
@@ -291,7 +296,7 @@ def query(
         "hybrid",
         "--mode",
         "-m",
-        help="Retrieval mode: hybrid, semantic, lexical",
+        help=_MODE_HELP,
     ),
     filter_json: str | None = typer.Option(
         None,
@@ -301,28 +306,17 @@ def query(
     ),
 ) -> None:
     """Query a project."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
+    retrieval_mode = _require_mode(mode)
+    metadata_filter = _parse_metadata_filter(filter_json)
 
-    if mode not in ("hybrid", "semantic", "lexical"):
-        console.print(f"[red]Error:[/red] Invalid mode: {mode}")
-        raise typer.Exit(1)
-
-    # Parse metadata filter
-    metadata_filter = None
-    if filter_json:
-        try:
-            metadata_filter = json.loads(filter_json)
-        except json.JSONDecodeError as e:
-            console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
-            raise typer.Exit(1) from None
-
-    try:
+    with _reporting_errors():
         project = get_project(name, storage_path=path)
-        response = project.query(query_text, mode=mode, top_k=top_k, metadata_filter=metadata_filter)
+        response = project.query(
+            query_text, mode=retrieval_mode, top_k=top_k, metadata_filter=metadata_filter
+        )
 
         console.print(f"\n[bold]Query:[/bold] {query_text}")
         console.print(f"[bold]Mode:[/bold] {mode}")
@@ -341,21 +335,12 @@ def query(
             console.print(f"\n{result.content[:500]}...")
             console.print()
 
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
-
 
 @app.command("ask")
 def ask(
     name: str = typer.Argument(..., help="Project name"),
     question: str = typer.Argument(..., help="Question to answer"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
     top_k: int = typer.Option(
         10,
         "--top-k",
@@ -371,7 +356,7 @@ def ask(
         "hybrid",
         "--mode",
         "-m",
-        help="Retrieval mode: hybrid, semantic, lexical",
+        help=_MODE_HELP,
     ),
     filter_json: str | None = typer.Option(
         None,
@@ -386,45 +371,25 @@ def ask(
     ),
 ) -> None:
     """Ask a question and get an LLM-generated answer (full RAG pipeline)."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
+    retrieval_mode = _require_mode(mode)
+    metadata_filter = _parse_metadata_filter(filter_json)
 
-    if mode not in ("hybrid", "semantic", "lexical"):
-        console.print(f"[red]Error:[/red] Invalid mode: {mode}")
-        raise typer.Exit(1)
-
-    # Parse metadata filter
-    metadata_filter = None
-    if filter_json:
-        try:
-            metadata_filter = json.loads(filter_json)
-        except json.JSONDecodeError as e:
-            console.print(f"[red]Error:[/red] Invalid JSON filter: {e}")
-            raise typer.Exit(1) from None
-
-    try:
+    with _reporting_errors():
         project = get_project(name, storage_path=path)
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            progress.add_task("Generating answer...", total=None)
-
-            async def run_query():
-                return await project.query_with_answer(
+        with _spinner("Generating answer..."):
+            retrieval_response, answer = asyncio.run(
+                project.query_with_answer(
                     query=question,
-                    mode=mode,
+                    mode=retrieval_mode,
                     top_k=top_k,
                     max_chunks=max_chunks,
                     metadata_filter=metadata_filter,
                 )
-
-            retrieval_response, answer = asyncio.run(run_query())
+            )
 
         console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
         if metadata_filter:
@@ -439,10 +404,6 @@ def ask(
                 console.print(f"\n[cyan]--- Source {i} (score: {result.score:.3f}) ---[/cyan]")
                 console.print(f"[dim]File:[/dim] {result.source}")
                 console.print(f"{result.content[:300]}...")
-
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 @app.command("serve")
@@ -505,21 +466,13 @@ def ui(
 @app.command("info")
 def info(
     name: str = typer.Argument(..., help="Project name"),
-    storage_path: Path | None = typer.Option(
-        None,
-        "--storage",
-        "-s",
-        help="Storage path (default: ~/.konte)",
-    ),
+    storage_path: Path | None = _STORAGE_OPTION,
 ) -> None:
     """Show project information."""
-    path = storage_path or settings.STORAGE_PATH
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
 
-    if not project_exists(name, storage_path=path):
-        console.print(f"[red]Error:[/red] Project '{name}' not found")
-        raise typer.Exit(1)
-
-    try:
+    with _reporting_errors():
         project = get_project(name, storage_path=path)
         config = project.config
 
@@ -536,22 +489,17 @@ def info(
         table.add_row("FAISS Enabled", str(config.enable_faiss))
         table.add_row("BM25 Enabled", str(config.enable_bm25))
 
-        # Check for index files
         project_dir = project.project_dir
-        has_faiss = (project_dir / "faiss.faiss").exists()
-        has_bm25 = (project_dir / "bm25.pkl").exists()
-        has_chunks = (project_dir / "chunks.json").exists()
-
         table.add_row("", "")
-        table.add_row("FAISS Index", "[green]exists[/green]" if has_faiss else "[dim]not built[/dim]")
-        table.add_row("BM25 Index", "[green]exists[/green]" if has_bm25 else "[dim]not built[/dim]")
-        table.add_row("Chunks", "[green]exists[/green]" if has_chunks else "[dim]not built[/dim]")
+        for label, filename in (
+            ("FAISS Index", "faiss.faiss"),
+            ("BM25 Index", "bm25.pkl"),
+            ("Chunks", "chunks.json"),
+        ):
+            exists = (project_dir / filename).exists()
+            table.add_row(label, "[green]exists[/green]" if exists else "[dim]not built[/dim]")
 
         console.print(table)
-
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1) from None
 
 
 def main() -> None:

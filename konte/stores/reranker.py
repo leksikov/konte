@@ -5,14 +5,13 @@ import asyncio
 import httpx
 import structlog
 
-from konte.config.settings import settings
+from konte.config import settings
 from konte.models import ContextualizedChunk
 
 logger = structlog.get_logger()
 
 # Concurrency for score-based reranking
 SCORE_CONCURRENCY = 20
-
 
 # Max chars for reranking - balance between length bias and including answer
 MAX_RERANK_CHARS = 1200
@@ -45,21 +44,17 @@ async def _score_single_chunk(
 ) -> tuple[int, float | None]:
     """Score a single (query, document) pair using /score endpoint.
 
-    Combines context (summary) + truncated raw content for best results:
-    - Context provides key terms (HS codes, products)
-    - Raw content provides actual document text
-    - Total length capped to avoid length bias
+    The generated context leads because it carries the identifiers and topic
+    terms the raw text often omits; the raw content follows so the reranker sees
+    the real wording. The pair is truncated because these models score shorter
+    documents higher regardless of relevance.
 
     Returns:
         (idx, score), with score None if the request failed.
     """
     async with semaphore:
         try:
-            # Combine: context (summary) + raw content, capped at max_chars
-            context = chunk.context or ""
-            raw = chunk.chunk.content
-            # Context first (has key terms), then raw content
-            doc_text = f"{context} {raw}"[:max_chars]
+            doc_text = f"{chunk.context or ''} {chunk.chunk.content}"[:max_chars]
             payload = {
                 "model": model,
                 "text_1": query,

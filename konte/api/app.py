@@ -18,6 +18,7 @@ from konte.api.schemas import (
     ProjectListResponse,
     QueryRequest,
 )
+from konte.project import Project
 
 logger = structlog.get_logger()
 
@@ -26,6 +27,23 @@ app = FastAPI(
     description="Contextual RAG API with hybrid retrieval",
     version=__version__,
 )
+
+
+def _load_project(name: str) -> Project:
+    """Load a project by name.
+
+    Args:
+        name: Project name.
+
+    Returns:
+        The loaded project.
+
+    Raises:
+        HTTPException: 404 when no project with that name exists.
+    """
+    if not project_exists(name):
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+    return get_project(name)
 
 
 @app.get("/health")
@@ -44,27 +62,19 @@ def list_all_projects() -> ProjectListResponse:
 @app.get("/projects/{name}", response_model=ProjectConfig)
 def get_project_info(name: str) -> ProjectConfig:
     """Get project configuration and info."""
-    if not project_exists(name):
-        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
-    project = get_project(name)
-    return project.config
+    return _load_project(name).config
 
 
 @app.get("/projects/{name}/exists", response_model=ProjectExistsResponse)
 def check_project_exists(name: str) -> ProjectExistsResponse:
     """Check if a project exists."""
-    exists = project_exists(name)
-    return ProjectExistsResponse(name=name, exists=exists)
+    return ProjectExistsResponse(name=name, exists=project_exists(name))
 
 
 @app.post("/projects/{name}/query", response_model=RetrievalResponse)
 def query_project(name: str, request: QueryRequest) -> RetrievalResponse:
     """Query a project for relevant chunks."""
-    if not project_exists(name):
-        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
-
-    project = get_project(name)
-    return project.query(
+    return _load_project(name).query(
         query=request.query,
         mode=request.mode,
         top_k=request.top_k,
@@ -74,10 +84,7 @@ def query_project(name: str, request: QueryRequest) -> RetrievalResponse:
 @app.post("/projects/{name}/ask", response_model=AskResponse)
 async def ask_project(name: str, request: AskRequest) -> AskResponse:
     """Query a project and generate an LLM answer."""
-    if not project_exists(name):
-        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
-
-    project = get_project(name)
+    project = _load_project(name)
     response, answer = await project.query_with_answer(
         query=request.query,
         mode=request.mode,

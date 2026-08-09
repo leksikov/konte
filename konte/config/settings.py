@@ -35,11 +35,6 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     CONTEXT_MODEL: str = "gpt-4.1-mini"  # OpenAI model for context/evaluation
 
-    @property
-    def use_backendai(self) -> bool:
-        """Check if BackendAI custom endpoint should be used."""
-        return bool(self.BACKENDAI_ENDPOINT and self.BACKENDAI_MODEL_NAME)
-
     # Segmentation
     SEGMENT_SIZE: int = 8000  # tokens
     SEGMENT_OVERLAP: int = 800  # tokens (10%)
@@ -63,19 +58,16 @@ class Settings(BaseSettings):
     # Prompt path — None means resolve at usage time via importlib.resources or __file__ fallback
     PROMPT_PATH: Path | None = None
 
+    @property
+    def use_backendai(self) -> bool:
+        """Check if BackendAI custom endpoint should be used."""
+        return bool(self.BACKENDAI_ENDPOINT and self.BACKENDAI_MODEL_NAME)
+
     @field_validator("STORAGE_PATH", mode="before")
     @classmethod
     def expand_storage_path(cls, v: str | Path) -> Path:
         """Expand ~ in storage path."""
         return Path(v).expanduser()
-
-    @field_validator("PROMPT_PATH", mode="before")
-    @classmethod
-    def resolve_prompt_path(cls, v: str | Path | None) -> Path | None:
-        """Resolve prompt path."""
-        if v is None:
-            return None
-        return Path(v)
 
 
 settings = Settings()

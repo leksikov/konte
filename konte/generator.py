@@ -1,18 +1,15 @@
 """RAG answer generation module using LLM to generate grounded answers from retrieved chunks."""
 
+from typing import Any
+
 import structlog
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from konte.config import settings
+from konte.llm import active_answer_model, get_answer_llm, response_text
 from konte.models import RetrievalResponse
 
 logger = structlog.get_logger()
 
-# Module-level LLM instance cache for answer generation
-_answer_llm_cache: dict[str, ChatOpenAI] = {}
-
-# Default answer generation prompt
 DEFAULT_ANSWER_PROMPT = """You are a helpful assistant that answers questions based on the provided context.
 
 Context (retrieved documents, ordered by relevance score):
@@ -26,8 +23,6 @@ Instructions:
 - If the context doesn't contain enough information to answer, say so clearly
 - Be concise and direct
 - Cite relevant parts of the context when helpful
-- When citing HS codes, always provide the most specific subheading available (e.g., "8446.10" not just "8446호", "2207.10" not just "2207호")
-- Use the normalized format with dots for subheadings (e.g., "0908.31", "8540.11", "9505.10")
 
 Answer:"""
 
@@ -40,55 +35,7 @@ class GeneratedAnswer(BaseModel):
     model: str
 
 
-def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
-    """Get or create a cached ChatOpenAI instance for answer generation.
-
-    Uses BackendAI by default if configured, otherwise falls back to OpenAI.
-
-    Args:
-        timeout: Request timeout in seconds.
-
-    Returns:
-        Cached ChatOpenAI instance.
-    """
-    if settings.use_backendai:
-        model_name = settings.BACKENDAI_MODEL_NAME
-        base_url = settings.BACKENDAI_ENDPOINT
-        api_key = settings.BACKENDAI_API_KEY or "not-needed"
-        cache_key = f"answer_backendai_{model_name}_{timeout}"
-
-        if cache_key not in _answer_llm_cache:
-            logger.info(
-                "using_backendai_for_answer",
-                endpoint=base_url,
-                model=model_name,
-            )
-            _answer_llm_cache[cache_key] = ChatOpenAI(
-                model=model_name,
-                base_url=base_url,
-                api_key=api_key,
-                temperature=0,
-                timeout=timeout,
-                max_retries=2,
-            )
-        return _answer_llm_cache[cache_key]
-
-    # Fallback to OpenAI
-    model_name = settings.CONTEXT_MODEL
-    cache_key = f"answer_openai_{model_name}_{timeout}"
-
-    if cache_key not in _answer_llm_cache:
-        _answer_llm_cache[cache_key] = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            timeout=timeout,
-            max_retries=2,
-        )
-
-    return _answer_llm_cache[cache_key]
-
-
-def _format_metadata(metadata: dict) -> str:
+def _format_metadata(metadata: dict[str, Any]) -> str:
     """Format metadata dict into readable string.
 
     Args:
@@ -97,11 +44,8 @@ def _format_metadata(metadata: dict) -> str:
     Returns:
         Formatted metadata string or empty string if no metadata.
     """
-    if not metadata:
-        return ""
-    # Format as key=value pairs, skip None values
-    parts = [f"{k}={v}" for k, v in metadata.items() if v is not None]
-    return " | ".join(parts) if parts else ""
+    parts = [f"{key}={value}" for key, value in metadata.items() if value is not None]
+    return " | ".join(parts)
 
 
 def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10) -> str:
@@ -117,20 +61,14 @@ def _format_context(retrieval_response: RetrievalResponse, max_chunks: int = 10)
     Returns:
         Formatted context string.
     """
-    chunks_to_use = retrieval_response.results[:max_chunks]
-
     context_parts = []
-    for i, result in enumerate(chunks_to_use, 1):
-        source = result.source or "unknown"
 
-        # Build header with score, source, and metadata
-        score_str = f"Score: {result.score:.3f}" if result.score is not None else "Score: N/A"
-        header = f"[{i}] {score_str} | Source: {source}"
+    for position, result in enumerate(retrieval_response.results[:max_chunks], 1):
+        header = f"[{position}] Score: {result.score:.3f} | Source: {result.source or 'unknown'}"
         metadata_str = _format_metadata(result.metadata)
         if metadata_str:
             header = f"{header} | {metadata_str}"
 
-        # Include context (LLM-generated summary) if available
         if result.context:
             chunk_text = f"Context: {result.context}\n\nContent: {result.content}"
         else:
@@ -158,42 +96,40 @@ async def generate_answer(
         timeout: LLM request timeout in seconds.
 
     Returns:
-        GeneratedAnswer with the LLM response and metadata.
+        GeneratedAnswer with the LLM response and metadata. A failed request
+        yields an answer describing the failure and zero sources used.
     """
+    model_name = active_answer_model()
+
     if not retrieval_response.results:
         return GeneratedAnswer(
             answer="No relevant documents were found to answer this question.",
             sources_used=0,
-            model=settings.BACKENDAI_MODEL_NAME or settings.CONTEXT_MODEL,
+            model=model_name,
         )
 
     template = prompt_template or DEFAULT_ANSWER_PROMPT
-    context = _format_context(retrieval_response, max_chunks)
-    prompt = template.format(context=context, question=question)
-
-    llm = get_answer_llm(timeout=timeout)
-    model_name = settings.BACKENDAI_MODEL_NAME if settings.use_backendai else settings.CONTEXT_MODEL
+    prompt = template.format(
+        context=_format_context(retrieval_response, max_chunks),
+        question=question,
+    )
+    sources_used = min(len(retrieval_response.results), max_chunks)
 
     try:
-        response = await llm.ainvoke(prompt)
-        answer_text = response.content.strip() if response.content else ""
-
-        logger.info(
-            "answer_generated",
-            question_length=len(question),
-            context_chunks=min(len(retrieval_response.results), max_chunks),
-            answer_length=len(answer_text),
-        )
-
-        return GeneratedAnswer(
-            answer=answer_text,
-            sources_used=min(len(retrieval_response.results), max_chunks),
-            model=model_name,
-        )
+        response = await get_answer_llm(timeout=timeout).ainvoke(prompt)
     except Exception as e:
-        logger.error("answer_generation_failed", error=str(e))
+        logger.error("answer_generation_failed", error_type=type(e).__name__, error=str(e))
         return GeneratedAnswer(
             answer=f"Failed to generate answer: {e}",
             sources_used=0,
             model=model_name,
         )
+
+    answer_text = response_text(response)
+    logger.info(
+        "answer_generated",
+        question_length=len(question),
+        context_chunks=sources_used,
+        answer_length=len(answer_text),
+    )
+    return GeneratedAnswer(answer=answer_text, sources_used=sources_used, model=model_name)

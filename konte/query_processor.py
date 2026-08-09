@@ -1,12 +1,14 @@
 """Query preprocessing for better BM25 retrieval (Korean and English)."""
 
 import structlog
+from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
-from konte.context import get_llm
+from konte.llm import get_llm
 
 logger = structlog.get_logger()
 
+_EXTRACTION_MAX_TOKENS = 800
 
 # English stopwords to filter in fallback tokenizer
 STOPWORDS = frozenset({
@@ -48,6 +50,21 @@ def _fallback_tokenize(query: str) -> list[str]:
     return [t for t in tokens if t.lower() not in STOPWORDS and len(t) > 1]
 
 
+def _extraction_request(query: str) -> tuple[Runnable, str]:
+    """Build the structured-output client and prompt for a keyword extraction.
+
+    Args:
+        query: Natural language query (Korean or English).
+
+    Returns:
+        Tuple of (client bound to the ExtractedKeywords schema, formatted prompt).
+    """
+    llm = get_llm(max_tokens=_EXTRACTION_MAX_TOKENS)
+    return llm.with_structured_output(ExtractedKeywords), KEYWORD_EXTRACTION_PROMPT.format(
+        query=query
+    )
+
+
 def extract_search_keywords(query: str) -> list[str]:
     """Extract keywords from query for BM25 search (supports Korean and English).
 
@@ -58,7 +75,8 @@ def extract_search_keywords(query: str) -> list[str]:
         query: Natural language query (Korean or English).
 
     Returns:
-        List of clean keywords for BM25 search.
+        List of clean keywords for BM25 search. Falls back to whitespace
+        tokenization with stopword filtering if the LLM call fails.
 
     Examples:
         Korean: "의류 탈수기는 어느 HS 코드에 분류되나요?"
@@ -68,28 +86,14 @@ def extract_search_keywords(query: str) -> list[str]:
         Output: ["Paypal", "positive", "working capital", "FY2022", "data"]
     """
     try:
-        llm = get_llm(max_tokens=800)
-        structured_llm = llm.with_structured_output(ExtractedKeywords)
-        result = structured_llm.invoke(
-            KEYWORD_EXTRACTION_PROMPT.format(query=query)
-        )
-
-        logger.debug(
-            "keywords_extracted",
-            query=query,
-            keywords=result.keywords,
-        )
-
-        return result.keywords
-
+        structured_llm, prompt = _extraction_request(query)
+        result = structured_llm.invoke(prompt)
     except Exception as e:
-        logger.warning(
-            "keyword_extraction_failed",
-            query=query,
-            error=str(e),
-        )
-        # Fallback with basic stopword filtering
+        logger.warning("keyword_extraction_failed", query=query, error=str(e))
         return _fallback_tokenize(query)
+
+    logger.debug("keywords_extracted", query=query, keywords=result.keywords)
+    return result.keywords
 
 
 async def extract_search_keywords_async(query: str) -> list[str]:
@@ -102,28 +106,15 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         query: Natural language query (Korean or English).
 
     Returns:
-        List of clean keywords for BM25 search.
+        List of clean keywords for BM25 search. Falls back to whitespace
+        tokenization with stopword filtering if the LLM call fails.
     """
     try:
-        llm = get_llm(max_tokens=800)
-        structured_llm = llm.with_structured_output(ExtractedKeywords)
-        result = await structured_llm.ainvoke(
-            KEYWORD_EXTRACTION_PROMPT.format(query=query)
-        )
-
-        logger.debug(
-            "keywords_extracted_async",
-            query=query,
-            keywords=result.keywords,
-        )
-
-        return result.keywords
-
+        structured_llm, prompt = _extraction_request(query)
+        result = await structured_llm.ainvoke(prompt)
     except Exception as e:
-        logger.warning(
-            "keyword_extraction_failed_async",
-            query=query,
-            error=str(e),
-        )
-        # Fallback with basic stopword filtering
+        logger.warning("keyword_extraction_failed_async", query=query, error=str(e))
         return _fallback_tokenize(query)
+
+    logger.debug("keywords_extracted_async", query=query, keywords=result.keywords)
+    return result.keywords

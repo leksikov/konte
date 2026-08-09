@@ -5,7 +5,6 @@ import importlib.resources
 from pathlib import Path
 
 import structlog
-from langchain_openai import ChatOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -14,73 +13,23 @@ from openai import (
 )
 
 from konte.config import settings
+from konte.llm import get_llm, response_text
 from konte.models import Chunk, ContextualizedChunk
+
+__all__ = [
+    "generate_context",
+    "generate_contexts_batch",
+    "get_llm",
+    "load_prompt_template",
+]
 
 logger = structlog.get_logger()
 
-# Rate limit retry configuration
 MAX_RETRIES = 10
 BASE_DELAY = 2.0  # seconds
 MAX_DELAY = 120.0  # seconds
 
-# Module-level LLM instance cache
-_llm_cache: dict[str, ChatOpenAI] = {}
-
-
-def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 400) -> ChatOpenAI:
-    """Get or create a cached ChatOpenAI instance.
-
-    Supports custom backends (vLLM, BackendAI) via BACKENDAI_ENDPOINT.
-    When BACKENDAI_ENDPOINT and BACKENDAI_MODEL_NAME are set, uses
-    custom endpoint with OpenAI-compatible API schema.
-
-    Args:
-        model: Model name. Defaults to settings.CONTEXT_MODEL or BACKENDAI_MODEL_NAME.
-        timeout: Request timeout in seconds.
-        max_tokens: Maximum tokens for LLM response.
-
-    Returns:
-        Cached ChatOpenAI instance.
-    """
-    # Use BackendAI if configured and model is None or matches Backend.AI model
-    if settings.use_backendai and (model is None or model == settings.BACKENDAI_MODEL_NAME):
-        model_name = settings.BACKENDAI_MODEL_NAME
-        base_url = settings.BACKENDAI_ENDPOINT
-        api_key = settings.BACKENDAI_API_KEY or "not-needed"
-        cache_key = f"backendai_{model_name}_{timeout}_{max_tokens}"
-
-        if cache_key not in _llm_cache:
-            logger.info(
-                "using_backendai",
-                endpoint=base_url,
-                model=model_name,
-            )
-            _llm_cache[cache_key] = ChatOpenAI(
-                model=model_name,
-                base_url=base_url,
-                api_key=api_key,
-                temperature=0,
-                timeout=timeout,
-                max_retries=2,
-                max_tokens=max_tokens,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-        return _llm_cache[cache_key]
-
-    # Default to OpenAI
-    model_name = model or settings.CONTEXT_MODEL
-    cache_key = f"openai_{model_name}_{timeout}_{max_tokens}"
-
-    if cache_key not in _llm_cache:
-        _llm_cache[cache_key] = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            timeout=timeout,
-            max_retries=2,
-            max_tokens=max_tokens,
-        )
-
-    return _llm_cache[cache_key]
+_RETRYABLE_API_ERRORS = (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
 
 
 def load_prompt_template(prompt_path: Path | None = None) -> str:
@@ -126,6 +75,11 @@ def _format_prompt(template: str, segment: str, chunk: str) -> str:
     return template.format(segment=segment, chunk=chunk)
 
 
+def _without_context(chunks: list[Chunk]) -> list[ContextualizedChunk]:
+    """Wrap chunks with an empty context, the degraded form used on any failure."""
+    return [ContextualizedChunk(chunk=chunk, context="") for chunk in chunks]
+
+
 async def generate_context(
     segment: str,
     chunk: Chunk,
@@ -143,7 +97,8 @@ async def generate_context(
         timeout: Request timeout in seconds.
 
     Returns:
-        Generated context string (100-200 tokens).
+        Generated context string (100-200 tokens), or an empty string if the
+        request failed.
     """
     template = prompt_template or load_prompt_template()
     llm = get_llm(model=model, timeout=timeout)
@@ -151,10 +106,10 @@ async def generate_context(
 
     try:
         response = await llm.ainvoke(prompt)
-        return response.content.strip()
     except Exception as e:
         logger.warning("context_generation_failed", chunk_id=chunk.chunk_id, error=str(e))
         return ""
+    return response_text(response)
 
 
 async def generate_contexts_batch(
@@ -180,13 +135,11 @@ async def generate_contexts_batch(
         skip_context: If True, return chunks with empty context (standard RAG mode).
 
     Returns:
-        List of ContextualizedChunk objects.
+        List of ContextualizedChunk objects. Every chunk carries an empty
+        context if the batch could not be generated.
     """
     if skip_context:
-        return [
-            ContextualizedChunk(chunk=chunk, context="")
-            for chunk in chunks
-        ]
+        return _without_context(chunks)
 
     if not chunks:
         return []
@@ -194,67 +147,45 @@ async def generate_contexts_batch(
     template = prompt_template or load_prompt_template()
     llm = get_llm(model=model, timeout=timeout)
 
-    # Format all prompts - segment stays the same (cacheable prefix)
     prompts = [_format_prompt(template, segment, chunk.content) for chunk in chunks]
 
-    # Retry with exponential backoff for rate limits and API errors
-    retryable_errors = (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
-
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Use abatch for efficient parallel processing with full concurrency
-            # All chunks share the same segment prefix, enabling vLLM prefix caching
-            responses = await llm.abatch(
-                prompts, config={"max_concurrency": len(prompts)}
-            )
-
-            return [
-                ContextualizedChunk(
-                    chunk=chunk,
-                    context=response.content.strip() if response.content else ""
-                )
-                for chunk, response in zip(chunks, responses, strict=True)
-            ]
-        except retryable_errors as e:
-            delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
+            responses = await llm.abatch(prompts, config={"max_concurrency": len(prompts)})
+        except _RETRYABLE_API_ERRORS as e:
+            delay = min(BASE_DELAY * 2 ** (attempt - 1), MAX_DELAY)
             error_type = type(e).__name__
-            status_code = getattr(e, 'status_code', None)
+            status_code = getattr(e, "status_code", None)
             logger.warning(
                 "api_error_retrying",
-                attempt=attempt + 1,
+                attempt=attempt,
                 max_retries=MAX_RETRIES,
                 delay=delay,
                 error_type=error_type,
                 status_code=status_code,
-                error=str(e)
+                error=str(e),
             )
-            if attempt < MAX_RETRIES - 1:
-                await asyncio.sleep(delay)
-            else:
+            if attempt == MAX_RETRIES:
                 logger.error(
                     "api_retries_exhausted",
                     error_type=error_type,
                     status_code=status_code,
-                    error=str(e)
+                    error=str(e),
                 )
-                return [
-                    ContextualizedChunk(chunk=chunk, context="")
-                    for chunk in chunks
-                ]
+                return _without_context(chunks)
+            await asyncio.sleep(delay)
         except Exception as e:
-            # Non-retryable error - log and continue with empty context
             logger.error(
                 "batch_context_generation_failed",
                 error_type=type(e).__name__,
-                error=str(e)
+                error=str(e),
             )
+            return _without_context(chunks)
+        else:
             return [
-                ContextualizedChunk(chunk=chunk, context="")
-                for chunk in chunks
+                ContextualizedChunk(chunk=chunk, context=response_text(response))
+                for chunk, response in zip(chunks, responses, strict=True)
             ]
 
-    # Should not reach here, but return empty context as fallback
-    return [
-        ContextualizedChunk(chunk=chunk, context="")
-        for chunk in chunks
-    ]
+    # Unreachable: the final attempt either returns a batch or the degraded form.
+    return _without_context(chunks)

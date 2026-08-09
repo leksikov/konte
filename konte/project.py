@@ -1,7 +1,8 @@
 """Project class - main interface for contextual RAG."""
 
 import json
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,55 @@ from konte.models import (
     BuildCheckpoint,
     Chunk,
     ContextualizedChunk,
+    MetadataFilter,
     ProjectConfig,
+    RetrievalMode,
     RetrievalResponse,
+    SegmentKey,
 )
-from konte.stores import BM25Store, FAISSStore, RetrievalMode, Retriever
+from konte.stores import BM25Store, FAISSStore, Retriever
 
 logger = structlog.get_logger()
+
+_SEGMENT_KEY_SEPARATOR = "|"
+
+
+def _encode_segment_key(key: SegmentKey) -> str:
+    """Flatten a (source, segment index) key into a JSON-safe string."""
+    source, index = key
+    return f"{source}{_SEGMENT_KEY_SEPARATOR}{index}"
+
+
+def _decode_segment_key(raw: str) -> SegmentKey:
+    """Parse a stored segment key.
+
+    Keys with no separator were written by an older format that recorded only
+    the segment index, so their source document is unrecoverable.
+    """
+    source, separator, index = raw.rpartition(_SEGMENT_KEY_SEPARATOR)
+    if not separator:
+        return ("unknown", int(raw))
+    return (source, int(index))
+
+
+def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
+    """Group chunks by the segment they were cut from, preserving order."""
+    grouped: defaultdict[SegmentKey, list[Chunk]] = defaultdict(list)
+    for chunk in chunks:
+        grouped[(chunk.source, chunk.segment_idx)].append(chunk)
+    return dict(grouped)
+
+
+def _write_json(path: Path, data: Any) -> None:
+    """Write data to path as indented UTF-8 JSON."""
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _read_json(path: Path) -> Any:
+    """Read UTF-8 JSON from path, or return None when the file is absent."""
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 class Project:
@@ -36,7 +80,7 @@ class Project:
         self._config = config
         self._chunks: list[Chunk] = []
         self._contextualized_chunks: list[ContextualizedChunk] = []
-        self._segments: dict[tuple[str, int], str] = {}  # (source, segment_idx) -> segment text
+        self._segments: dict[SegmentKey, str] = {}
         self._faiss: FAISSStore | None = None
         self._bm25: BM25Store | None = None
         self._retriever: Retriever | None = None
@@ -51,53 +95,25 @@ class Project:
         """Get project directory path."""
         return self._config.storage_path / self._config.name
 
-    def _checkpoint_path(self) -> Path:
-        """Get path to checkpoint file."""
-        return self.project_dir / "context_checkpoint.json"
-
-    def _load_checkpoint(self) -> BuildCheckpoint | None:
-        """Load checkpoint if exists."""
-        path = self._checkpoint_path()
-        if not path.exists():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return BuildCheckpoint(**data)
-
-    def _save_checkpoint(self, checkpoint: BuildCheckpoint) -> None:
-        """Save checkpoint to disk."""
-        self.project_dir.mkdir(parents=True, exist_ok=True)
-        self._checkpoint_path().write_text(
-            checkpoint.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-
-    def _clear_checkpoint(self) -> None:
-        """Remove checkpoint file after successful build."""
-        path = self._checkpoint_path()
-        if path.exists():
-            path.unlink()
-
-    def add_documents(self, file_paths: list[Path]) -> int:
+    def add_documents(self, file_paths: Sequence[str | Path]) -> int:
         """Add documents to the project.
 
         Loads, segments, and chunks documents.
 
         Args:
-            file_paths: List of document paths to add.
+            file_paths: Document paths to add.
 
         Returns:
             Number of chunks created.
         """
-        all_chunks = []
+        added = 0
 
-        for file_path in file_paths:
-            file_path = Path(file_path)
+        for raw_path in file_paths:
+            file_path = Path(raw_path)
             logger.info("loading_document", path=str(file_path))
 
-            content = load_document(file_path)
-
             chunks, segments_map = create_chunks(
-                text=content,
+                text=load_document(file_path),
                 source=file_path.name,
                 segment_size=self._config.segment_size,
                 segment_overlap=self._config.segment_overlap,
@@ -105,19 +121,14 @@ class Project:
                 chunk_overlap=self._config.chunk_overlap,
             )
 
-            # Store segment text for context generation
             self._segments.update(segments_map)
+            self._chunks.extend(chunks)
+            added += len(chunks)
 
-            all_chunks.extend(chunks)
-            logger.info(
-                "document_chunked",
-                path=str(file_path),
-                num_chunks=len(chunks),
-            )
+            logger.info("document_chunked", path=str(file_path), num_chunks=len(chunks))
 
-        self._chunks.extend(all_chunks)
         logger.info("documents_added", total_chunks=len(self._chunks))
-        return len(all_chunks)
+        return added
 
     def set_metadata(
         self,
@@ -164,6 +175,9 @@ class Project:
             resume: If True, resume from checkpoint if exists.
             prompt_path: Path to custom context prompt. Priority:
                 prompt_path arg > config.context_prompt_path > settings.PROMPT_PATH.
+
+        Raises:
+            ValueError: If both indexes are disabled.
         """
         if not self._chunks:
             logger.warning("build_no_chunks")
@@ -171,124 +185,24 @@ class Project:
 
         use_faiss = enable_faiss if enable_faiss is not None else self._config.enable_faiss
         use_bm25 = enable_bm25 if enable_bm25 is not None else self._config.enable_bm25
-
         if not use_faiss and not use_bm25:
             raise ValueError("At least one index (FAISS or BM25) must be enabled")
 
-        # Group chunks by segment for context generation
-        chunks_by_segment: dict[tuple[str, int], list[Chunk]] = {}
-        for chunk in self._chunks:
-            key = (chunk.source, chunk.segment_idx)
-            if key not in chunks_by_segment:
-                chunks_by_segment[key] = []
-            chunks_by_segment[key].append(chunk)
-
-        total_segments = len(chunks_by_segment)
-
-        # Load checkpoint if resuming
-        checkpoint: BuildCheckpoint | None = None
-        completed_set: set[str] = set()
-
-        if resume:
-            checkpoint = self._load_checkpoint()
-            if checkpoint:
-                completed_set = set(checkpoint.completed_segments)
-                self._contextualized_chunks = [
-                    ContextualizedChunk(
-                        chunk=Chunk(**item["chunk"]),
-                        context=item["context"],
-                    )
-                    for item in checkpoint.contextualized_chunks
-                ]
-                logger.info(
-                    "checkpoint_resumed",
-                    completed_segments=len(completed_set),
-                    total_segments=total_segments,
-                )
-            else:
-                self._contextualized_chunks = []
-        else:
-            self._contextualized_chunks = []
-
-        if checkpoint is None:
-            checkpoint = BuildCheckpoint()
-
-        # Resolve prompt template: arg > config > settings default
-        resolved_prompt_path = prompt_path or self._config.context_prompt_path
-        prompt_template = load_prompt_template(resolved_prompt_path) if not skip_context else None
-
-        logger.info(
-            "context_generation_started",
-            total_segments=total_segments,
-            skip_context=skip_context,
+        chunks_by_segment = _group_by_segment(self._chunks)
+        checkpoint, completed = self._restore_checkpoint(resume, len(chunks_by_segment))
+        prompt_template = (
+            None
+            if skip_context
+            else load_prompt_template(prompt_path or self._config.context_prompt_path)
         )
 
-        for seg_key, segment_chunks in chunks_by_segment.items():
-            seg_key_str = f"{seg_key[0]}|{seg_key[1]}"
-
-            # Skip if already completed
-            if seg_key_str in completed_set:
-                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
-                continue
-
-            segment_text = self._segments.get(seg_key, "")
-            logger.info(
-                "generating_context_for_segment",
-                segment_key=seg_key_str,
-                total_segments=total_segments,
-                num_chunks=len(segment_chunks),
-            )
-
-            ctx_chunks = await generate_contexts_batch(
-                segment=segment_text,
-                chunks=segment_chunks,
-                model=self._config.context_model,
-                prompt_template=prompt_template,
-                skip_context=skip_context,
-            )
-            self._contextualized_chunks.extend(ctx_chunks)
-
-            # Update and save checkpoint
-            checkpoint.completed_segments.append(seg_key_str)
-            checkpoint.contextualized_chunks.extend([
-                {"chunk": c.chunk.model_dump(), "context": c.context}
-                for c in ctx_chunks
-            ])
-            self._save_checkpoint(checkpoint)
-            logger.info(
-                "checkpoint_saved",
-                segment_key=seg_key_str,
-                completed=len(checkpoint.completed_segments),
-                total=total_segments,
-            )
-
-        logger.info(
-            "context_generation_complete",
-            num_chunks=len(self._contextualized_chunks),
-            skipped=skip_context,
+        await self._generate_contexts(
+            chunks_by_segment, checkpoint, completed, prompt_template, skip_context
         )
+        self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
 
-        # Build indexes
-        if use_faiss:
-            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            self._faiss.build_index(self._contextualized_chunks)
-            logger.info("faiss_index_built")
-
-        if use_bm25:
-            self._bm25 = BM25Store()
-            self._bm25.build_index(self._contextualized_chunks)
-            logger.info("bm25_index_built")
-
-        # Create retriever
-        self._retriever = Retriever(
-            faiss_store=self._faiss,
-            bm25_store=self._bm25,
-        )
-
-        # Clear checkpoint on successful build
         self._clear_checkpoint()
         logger.info("checkpoint_cleared")
-
         logger.info("project_build_complete")
 
     def query(
@@ -296,7 +210,7 @@ class Project:
         query: str,
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
         inject_evidence: str | None = None,
         inject_position: int | None = None,
@@ -315,25 +229,20 @@ class Project:
             inject_position: Position to inject (0=top, None=random).
 
         Returns:
-            RetrievalResponse with results.
+            RetrievalResponse with results, empty if the project was never built.
         """
         if self._retriever is None:
             logger.warning("query_no_retriever")
-            return RetrievalResponse(
-                results=[],
-                query=query,
-                total_found=0,
-                top_score=0.0,
-                score_spread=0.0,
-                has_high_confidence=False,
-                suggested_action="refine_query",
-            )
+            return RetrievalResponse.empty(query)
 
-        k = top_k or settings.DEFAULT_TOP_K
         return self._retriever.retrieve(
-            query, mode=mode, top_k=k, metadata_filter=metadata_filter,
+            query,
+            mode=mode,
+            top_k=top_k or settings.DEFAULT_TOP_K,
+            metadata_filter=metadata_filter,
             source_filter=source_filter,
-            inject_evidence=inject_evidence, inject_position=inject_position,
+            inject_evidence=inject_evidence,
+            inject_position=inject_position,
         )
 
     async def query_async(
@@ -343,7 +252,7 @@ class Project:
         top_k: int | None = None,
         rerank: bool = False,
         rerank_initial_k: int = 50,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Query the project (async, with optional reranking).
@@ -359,29 +268,31 @@ class Project:
             source_filter: Substring match on chunk source field.
 
         Returns:
-            RetrievalResponse with results.
+            RetrievalResponse with results, empty if the project was never built.
         """
         if self._retriever is None:
             logger.warning("query_no_retriever")
-            return RetrievalResponse(
-                results=[],
-                query=query,
-                total_found=0,
-                top_score=0.0,
-                score_spread=0.0,
-                has_high_confidence=False,
-                suggested_action="refine_query",
-            )
+            return RetrievalResponse.empty(query)
 
         k = top_k or settings.DEFAULT_TOP_K
 
         if rerank:
             return await self._retriever.retrieve_with_rerank(
-                query, mode=mode, top_k=k, initial_k=rerank_initial_k,
-                metadata_filter=metadata_filter, source_filter=source_filter,
+                query,
+                mode=mode,
+                top_k=k,
+                initial_k=rerank_initial_k,
+                metadata_filter=metadata_filter,
+                source_filter=source_filter,
             )
-        else:
-            return self._retriever.retrieve(query, mode=mode, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
+
+        return self._retriever.retrieve(
+            query,
+            mode=mode,
+            top_k=k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+        )
 
     def as_retriever(self) -> Callable[[str], RetrievalResponse]:
         """Return a callable retriever for Agno integration.
@@ -389,7 +300,7 @@ class Project:
         Returns:
             Callable that takes a query and returns RetrievalResponse.
         """
-        return lambda q: self.query(q)
+        return self.query
 
     async def query_with_answer(
         self,
@@ -401,7 +312,7 @@ class Project:
         timeout: float = 60.0,
         rerank: bool = False,
         rerank_initial_k: int = 50,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> tuple[RetrievalResponse, GeneratedAnswer]:
         """Query the project and generate an LLM answer from retrieved chunks.
@@ -424,13 +335,16 @@ class Project:
         Returns:
             Tuple of (RetrievalResponse, GeneratedAnswer).
         """
-        # First, retrieve chunks (with optional reranking)
         retrieval_response = await self.query_async(
-            query, mode=mode, top_k=top_k, rerank=rerank, rerank_initial_k=rerank_initial_k,
-            metadata_filter=metadata_filter, source_filter=source_filter,
+            query,
+            mode=mode,
+            top_k=top_k,
+            rerank=rerank,
+            rerank_initial_k=rerank_initial_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
         )
 
-        # Then, generate answer using LLM
         answer = await generate_answer(
             question=query,
             retrieval_response=retrieval_response,
@@ -458,50 +372,17 @@ class Project:
         project_dir = self.project_dir
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save config with relative paths for portability
-        config_data = self._config.model_dump(mode="json")
-        storage_path = Path(config_data["storage_path"])
-        if storage_path.is_absolute():
-            try:
-                config_data["storage_path"] = str(storage_path.relative_to(project_dir.parent))
-            except ValueError:
-                config_data["storage_path"] = "."
-        if config_data.get("context_prompt_path"):
-            ctx_path = Path(config_data["context_prompt_path"])
-            if ctx_path.is_absolute():
-                try:
-                    config_data["context_prompt_path"] = str(ctx_path.relative_to(project_dir))
-                except ValueError:
-                    pass  # Keep absolute if not relative to project dir
-
-        config_path = project_dir / "config.json"
-        config_path.write_text(
-            json.dumps(config_data, indent=2),
-            encoding="utf-8",
+        _write_json(project_dir / "config.json", self._portable_config())
+        _write_json(project_dir / "raw_chunks.json", [c.model_dump() for c in self._chunks])
+        _write_json(
+            project_dir / "segments.json",
+            {_encode_segment_key(key): text for key, text in self._segments.items()},
+        )
+        _write_json(
+            project_dir / "chunks.json",
+            [c.to_storage_dict() for c in self._contextualized_chunks],
         )
 
-        # Save raw chunks (before build)
-        raw_chunks_path = project_dir / "raw_chunks.json"
-        raw_chunks_data = [c.model_dump() for c in self._chunks]
-        raw_chunks_path.write_text(json.dumps(raw_chunks_data, indent=2), encoding="utf-8")
-
-        # Save segments (before build) - convert tuple keys to string for JSON
-        segments_path = project_dir / "segments.json"
-        segments_data = {f"{source}|{idx}": text for (source, idx), text in self._segments.items()}
-        segments_path.write_text(json.dumps(segments_data, indent=2), encoding="utf-8")
-
-        # Save contextualized chunks (after build)
-        chunks_path = project_dir / "chunks.json"
-        chunks_data = [
-            {
-                "chunk": c.chunk.model_dump(),
-                "context": c.context,
-            }
-            for c in self._contextualized_chunks
-        ]
-        chunks_path.write_text(json.dumps(chunks_data, indent=2), encoding="utf-8")
-
-        # Save indexes
         if self._faiss is not None:
             self._faiss.save(project_dir)
 
@@ -511,59 +392,32 @@ class Project:
         logger.info("project_saved", path=str(project_dir))
 
     def load(self) -> None:
-        """Load project state from disk."""
+        """Load project state from disk.
+
+        Raises:
+            FileNotFoundError: If the project directory does not exist.
+        """
         project_dir = self.project_dir
 
         if not project_dir.exists():
             raise FileNotFoundError(f"Project not found: {project_dir}")
 
-        # Load raw chunks (before build)
-        raw_chunks_path = project_dir / "raw_chunks.json"
-        if raw_chunks_path.exists():
-            raw_chunks_data = json.loads(raw_chunks_path.read_text(encoding="utf-8"))
-            self._chunks = [Chunk(**item) for item in raw_chunks_data]
+        raw_chunks = _read_json(project_dir / "raw_chunks.json")
+        if raw_chunks is not None:
+            self._chunks = [Chunk(**item) for item in raw_chunks]
 
-        # Load segments (before build) - parse string keys back to tuples
-        segments_path = project_dir / "segments.json"
-        if segments_path.exists():
-            segments_data = json.loads(segments_path.read_text(encoding="utf-8"))
-            self._segments = {}
-            for k, v in segments_data.items():
-                if "|" in k:  # New format: "source|idx"
-                    source, idx = k.rsplit("|", 1)
-                    self._segments[(source, int(idx))] = v
-                else:  # Backward compat: old int-only format
-                    self._segments[("unknown", int(k))] = v
+        segments = _read_json(project_dir / "segments.json")
+        if segments is not None:
+            self._segments = {_decode_segment_key(key): text for key, text in segments.items()}
 
-        # Load contextualized chunks (after build)
-        chunks_path = project_dir / "chunks.json"
-        if chunks_path.exists():
-            chunks_data = json.loads(chunks_path.read_text(encoding="utf-8"))
-            if chunks_data:  # Only load if not empty
-                self._contextualized_chunks = [
-                    ContextualizedChunk(
-                        chunk=Chunk(**item["chunk"]),
-                        context=item["context"],
-                    )
-                    for item in chunks_data
-                ]
+        contextualized = _read_json(project_dir / "chunks.json")
+        if contextualized:
+            self._contextualized_chunks = [
+                ContextualizedChunk.from_storage_dict(item) for item in contextualized
+            ]
 
-        # Load indexes
-        faiss_path = project_dir / "faiss.faiss"
-        if faiss_path.exists() and self._config.enable_faiss:
-            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            self._faiss.load(project_dir)
-
-        bm25_path = project_dir / "bm25.pkl"
-        if bm25_path.exists() and self._config.enable_bm25:
-            self._bm25 = BM25Store()
-            self._bm25.load(project_dir)
-
-        # Create retriever
-        self._retriever = Retriever(
-            faiss_store=self._faiss,
-            bm25_store=self._bm25,
-        )
+        self._load_indexes(project_dir)
+        self._retriever = Retriever(faiss_store=self._faiss, bm25_store=self._bm25)
 
         logger.info(
             "project_loaded",
@@ -576,7 +430,7 @@ class Project:
         cls,
         name: str,
         storage_path: Path | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> "Project":
         """Create a new project.
 
@@ -588,8 +442,7 @@ class Project:
         Returns:
             New Project instance.
         """
-        # Build defaults from settings (SSoT)
-        defaults = {
+        defaults: dict[str, Any] = {
             "storage_path": storage_path or settings.STORAGE_PATH,
             "segment_size": settings.SEGMENT_SIZE,
             "segment_overlap": settings.SEGMENT_OVERLAP,
@@ -600,10 +453,8 @@ class Project:
             "embedding_model": settings.EMBEDDING_MODEL,
             "context_model": settings.CONTEXT_MODEL,
         }
-        # Allow kwargs to override defaults
         defaults.update(kwargs)
-        config = ProjectConfig(name=name, **defaults)
-        return cls(config)
+        return cls(ProjectConfig(name=name, **defaults))
 
     @classmethod
     def open(cls, name: str, storage_path: Path | None = None) -> "Project":
@@ -618,6 +469,9 @@ class Project:
 
         Returns:
             Loaded Project instance.
+
+        Raises:
+            FileNotFoundError: If the project's config.json does not exist.
         """
         path = storage_path or settings.STORAGE_PATH
         project_dir = path / name
@@ -628,19 +482,176 @@ class Project:
 
         config_data = json.loads(config_path.read_text(encoding="utf-8"))
 
-        # Resolve relative storage_path to actual storage location
-        saved_storage = Path(config_data.get("storage_path", ""))
-        if not saved_storage.is_absolute():
+        if not Path(config_data.get("storage_path", "")).is_absolute():
             config_data["storage_path"] = str(path.resolve())
 
-        # Resolve relative context_prompt_path to project dir
-        if config_data.get("context_prompt_path"):
-            ctx_path = Path(config_data["context_prompt_path"])
-            if not ctx_path.is_absolute():
-                config_data["context_prompt_path"] = str((project_dir / ctx_path).resolve())
+        prompt_path = config_data.get("context_prompt_path")
+        if prompt_path and not Path(prompt_path).is_absolute():
+            config_data["context_prompt_path"] = str((project_dir / prompt_path).resolve())
 
-        config = ProjectConfig(**config_data)
-
-        project = cls(config)
+        project = cls(ProjectConfig(**config_data))
         project.load()
         return project
+
+    def _checkpoint_path(self) -> Path:
+        """Get path to checkpoint file."""
+        return self.project_dir / "context_checkpoint.json"
+
+    def _load_checkpoint(self) -> BuildCheckpoint | None:
+        """Load checkpoint if exists."""
+        data = _read_json(self._checkpoint_path())
+        return None if data is None else BuildCheckpoint(**data)
+
+    def _save_checkpoint(self, checkpoint: BuildCheckpoint) -> None:
+        """Save checkpoint to disk."""
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_path().write_text(
+            checkpoint.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+    def _clear_checkpoint(self) -> None:
+        """Remove checkpoint file after successful build."""
+        self._checkpoint_path().unlink(missing_ok=True)
+
+    def _restore_checkpoint(
+        self,
+        resume: bool,
+        total_segments: int,
+    ) -> tuple[BuildCheckpoint, set[str]]:
+        """Pick up an interrupted build, or start a fresh one.
+
+        Args:
+            resume: If False, any checkpoint on disk is ignored.
+            total_segments: Segment count, reported in the resume log line.
+
+        Returns:
+            Tuple of (checkpoint to append to, segment keys already contextualized).
+        """
+        self._contextualized_chunks = []
+
+        checkpoint = self._load_checkpoint() if resume else None
+        if checkpoint is None:
+            return BuildCheckpoint(), set()
+
+        self._contextualized_chunks = [
+            ContextualizedChunk.from_storage_dict(item)
+            for item in checkpoint.contextualized_chunks
+        ]
+        completed = set(checkpoint.completed_segments)
+        logger.info(
+            "checkpoint_resumed",
+            completed_segments=len(completed),
+            total_segments=total_segments,
+        )
+        return checkpoint, completed
+
+    async def _generate_contexts(
+        self,
+        chunks_by_segment: dict[SegmentKey, list[Chunk]],
+        checkpoint: BuildCheckpoint,
+        completed: set[str],
+        prompt_template: str | None,
+        skip_context: bool,
+    ) -> None:
+        """Contextualize every not-yet-processed segment.
+
+        The checkpoint is rewritten after each segment because context generation
+        is the expensive half of a build; an interrupted run then resumes at a
+        segment boundary instead of from the beginning.
+        """
+        total_segments = len(chunks_by_segment)
+        logger.info(
+            "context_generation_started",
+            total_segments=total_segments,
+            skip_context=skip_context,
+        )
+
+        for seg_key, segment_chunks in chunks_by_segment.items():
+            seg_key_str = _encode_segment_key(seg_key)
+
+            if seg_key_str in completed:
+                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
+                continue
+
+            logger.info(
+                "generating_context_for_segment",
+                segment_key=seg_key_str,
+                total_segments=total_segments,
+                num_chunks=len(segment_chunks),
+            )
+            ctx_chunks = await generate_contexts_batch(
+                segment=self._segments.get(seg_key, ""),
+                chunks=segment_chunks,
+                model=self._config.context_model,
+                prompt_template=prompt_template,
+                skip_context=skip_context,
+            )
+            self._contextualized_chunks.extend(ctx_chunks)
+
+            checkpoint.completed_segments.append(seg_key_str)
+            checkpoint.contextualized_chunks.extend(c.to_storage_dict() for c in ctx_chunks)
+            self._save_checkpoint(checkpoint)
+            logger.info(
+                "checkpoint_saved",
+                segment_key=seg_key_str,
+                completed=len(checkpoint.completed_segments),
+                total=total_segments,
+            )
+
+        logger.info(
+            "context_generation_complete",
+            num_chunks=len(self._contextualized_chunks),
+            skipped=skip_context,
+        )
+
+    def _build_indexes(self, *, use_faiss: bool, use_bm25: bool) -> None:
+        """Build the enabled indexes and wire a retriever over them."""
+        if use_faiss:
+            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
+            self._faiss.build_index(self._contextualized_chunks)
+            logger.info("faiss_index_built")
+
+        if use_bm25:
+            self._bm25 = BM25Store()
+            self._bm25.build_index(self._contextualized_chunks)
+            logger.info("bm25_index_built")
+
+        self._retriever = Retriever(faiss_store=self._faiss, bm25_store=self._bm25)
+
+    def _load_indexes(self, project_dir: Path) -> None:
+        """Attach whichever indexes exist on disk and are enabled in config."""
+        if (project_dir / "faiss.faiss").exists() and self._config.enable_faiss:
+            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
+            self._faiss.load(project_dir)
+
+        if (project_dir / "bm25.pkl").exists() and self._config.enable_bm25:
+            self._bm25 = BM25Store()
+            self._bm25.load(project_dir)
+
+    def _portable_config(self) -> dict[str, Any]:
+        """Serialize the config with absolute paths made relative where possible.
+
+        An absolute storage_path would pin the project to the machine that wrote
+        it, so it is stored relative to the project's parent directory and
+        rebased by open().
+        """
+        data = self._config.model_dump(mode="json")
+
+        storage_path = Path(data["storage_path"])
+        if storage_path.is_absolute():
+            try:
+                data["storage_path"] = str(storage_path.relative_to(self.project_dir.parent))
+            except ValueError:
+                data["storage_path"] = "."
+
+        prompt_path = data.get("context_prompt_path")
+        if prompt_path and Path(prompt_path).is_absolute():
+            try:
+                data["context_prompt_path"] = str(
+                    Path(prompt_path).relative_to(self.project_dir)
+                )
+            except ValueError:
+                pass  # Prompt lives outside the project; keep it absolute.
+
+        return data

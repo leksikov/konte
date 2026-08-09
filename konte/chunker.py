@@ -1,6 +1,7 @@
 """Chunker module for segmenting and chunking documents."""
 
 import re
+from functools import cache
 from pathlib import Path
 
 import structlog
@@ -8,9 +9,36 @@ import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from konte.config import settings
-from konte.models import Chunk
+from konte.models import Chunk, SegmentKey
 
 logger = structlog.get_logger()
+
+# o200k_base (gpt-4.1 and newer) is ~45% more token-efficient for Korean than cl100k_base.
+TOKEN_ENCODING_NAME = "o200k_base"
+
+# Sentence-aware separators: paragraphs > lines > sentences > words
+_SENTENCE_SEPARATORS = [
+    "\n\n",
+    "\n",
+    ". ",
+    "? ",
+    "! ",
+    "。",
+    " ",
+]
+
+_SOURCE_METADATA_PATTERN = re.compile(r"^(.+?)_(\d{4})", re.IGNORECASE)
+
+
+@cache
+def _get_encoding() -> tiktoken.Encoding:
+    """Return the shared tiktoken encoding, loading it on first use.
+
+    tiktoken downloads and caches the BPE table the first time an encoding is
+    resolved. Doing that at import time would make `import konte` reach out to
+    the network, so the cost is deferred to the first token count instead.
+    """
+    return tiktoken.get_encoding(TOKEN_ENCODING_NAME)
 
 
 def extract_metadata_from_source(source: str) -> dict[str, str]:
@@ -27,17 +55,13 @@ def extract_metadata_from_source(source: str) -> dict[str, str]:
     Returns:
         Dict with 'company' and 'year' keys (empty dict if not parsed).
     """
-    filename = Path(source).stem
-    match = re.match(r"^(.+?)_(\d{4})", filename, re.IGNORECASE)
-    if match:
-        return {
-            "company": match.group(1).upper(),
-            "year": match.group(2),
-        }
-    return {}
-
-# Use o200k_base encoding (used by gpt-4.1 and newer models - ~45% more efficient for Korean)
-_ENCODING = tiktoken.encoding_for_model("gpt-4.1")
+    match = _SOURCE_METADATA_PATTERN.match(Path(source).stem)
+    if match is None:
+        return {}
+    return {
+        "company": match.group(1).upper(),
+        "year": match.group(2),
+    }
 
 
 def count_tokens(text: str) -> int:
@@ -51,25 +75,13 @@ def count_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    return len(_ENCODING.encode(text))
-
-
-# Sentence-aware separators: paragraphs > lines > sentences > words
-_SENTENCE_SEPARATORS = [
-    "\n\n",
-    "\n",
-    ". ",
-    "? ",
-    "! ",
-    "。",
-    " ",
-]
+    return len(_get_encoding().encode(text))
 
 
 def _make_splitter(max_tokens: int, overlap_tokens: int) -> RecursiveCharacterTextSplitter:
     """Create a sentence-boundary-aware splitter with token counting."""
     return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-        encoding_name="o200k_base",
+        encoding_name=TOKEN_ENCODING_NAME,
         chunk_size=max_tokens,
         chunk_overlap=overlap_tokens,
         separators=_SENTENCE_SEPARATORS,
@@ -150,7 +162,7 @@ def create_chunks(
     segment_overlap: int | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> tuple[list[Chunk], dict[tuple[str, int], str]]:
+) -> tuple[list[Chunk], dict[SegmentKey, str]]:
     """Create Chunk objects from document text.
 
     First segments the document, then chunks each segment.
@@ -166,23 +178,22 @@ def create_chunks(
     Returns:
         Tuple of (List of Chunk objects, Dict mapping (source, segment_idx) to segment text).
     """
-    total_tokens = count_tokens(text)
-    logger.debug("segmentation_started", source=source, total_tokens=total_tokens)
+    logger.debug("segmentation_started", source=source, total_tokens=count_tokens(text))
 
-    chunks = []
-    segments_map: dict[tuple[str, int], str] = {}
-    segments = segment_document(text, segment_size, segment_overlap)
+    metadata = extract_metadata_from_source(source)
 
-    for seg_idx, segment in enumerate(segments):
-        segment_tokens = count_tokens(segment)
+    chunks: list[Chunk] = []
+    segments_map: dict[SegmentKey, str] = {}
+
+    for seg_idx, segment in enumerate(segment_document(text, segment_size, segment_overlap)):
         logger.debug(
             "segment_created",
             source=source,
             segment_index=seg_idx,
-            token_count=segment_tokens,
+            token_count=count_tokens(segment),
         )
-        key = (source, seg_idx)
-        segments_map[key] = segment
+        segments_map[(source, seg_idx)] = segment
+
         segment_chunks = chunk_segment(segment, chunk_size, chunk_overlap)
         logger.debug(
             "chunking_segment",
@@ -191,25 +202,22 @@ def create_chunks(
             num_chunks=len(segment_chunks),
         )
 
-        # Extract metadata from source filename
-        metadata = extract_metadata_from_source(source)
-
-        for chunk_idx, chunk_text in enumerate(segment_chunks):
-            chunk_id = f"{source}_s{seg_idx}_c{chunk_idx}"
-            chunk = Chunk(
-                chunk_id=chunk_id,
+        chunks.extend(
+            Chunk(
+                chunk_id=f"{source}_s{seg_idx}_c{chunk_idx}",
                 content=chunk_text,
                 source=source,
                 segment_idx=seg_idx,
                 chunk_idx=chunk_idx,
                 metadata=metadata,
             )
-            chunks.append(chunk)
+            for chunk_idx, chunk_text in enumerate(segment_chunks)
+        )
 
     logger.debug(
         "chunks_created",
         source=source,
-        total_segments=len(segments),
+        total_segments=len(segments_map),
         total_chunks=len(chunks),
     )
     return chunks, segments_map

@@ -1,18 +1,16 @@
 """Request and response schemas for the Konte API."""
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 from konte.generator import GeneratedAnswer
-from konte.models import RetrievalResponse
+from konte.models import RetrievalMode, RetrievalResponse
 
 
 class QueryRequest(BaseModel):
     """Request model for query endpoint."""
 
     query: str = Field(..., min_length=1, description="The search query")
-    mode: Literal["hybrid", "semantic", "lexical"] = Field(
+    mode: RetrievalMode = Field(
         default="hybrid",
         description="Retrieval mode",
     )
@@ -28,7 +26,7 @@ class AskRequest(BaseModel):
     """Request model for ask endpoint."""
 
     query: str = Field(..., min_length=1, description="The question to answer")
-    mode: Literal["hybrid", "semantic", "lexical"] = Field(
+    mode: RetrievalMode = Field(
         default="hybrid",
         description="Retrieval mode",
     )

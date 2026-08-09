@@ -17,6 +17,7 @@ from konte.models import (
     ContextualizedChunk,
     MetadataFilter,
     ProjectConfig,
+    RetrievalMode,
     RetrievalResponse,
     RetrievalResult,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "Chunk",
     "ContextualizedChunk",
     "MetadataFilter",
+    "RetrievalMode",
     "RetrievalResult",
     "RetrievalResponse",
     "ProjectConfig",

@@ -8,6 +8,9 @@ from pypdf import PdfReader
 
 logger = structlog.get_logger()
 
+_TEXT_SUFFIXES = frozenset({".txt", ".md"})
+_PDF_SUFFIX = ".pdf"
+
 
 def load_txt(file_path: Path) -> str:
     """Load content from a TXT file.
@@ -86,16 +89,11 @@ def load_document(file_path: Path) -> str:
     file_path = Path(file_path)
     suffix = file_path.suffix.lower()
 
-    loaders = {
-        ".txt": load_txt,
-        ".md": load_md,
-        ".pdf": load_pdf,
-    }
-
-    if suffix not in loaders:
-        raise ValueError(f"Unsupported file type: {suffix}")
-
-    return loaders[suffix](file_path)
+    if suffix == _PDF_SUFFIX:
+        return load_pdf(file_path)
+    if suffix in _TEXT_SUFFIXES:
+        return load_txt(file_path)
+    raise ValueError(f"Unsupported file type: {suffix}")
 
 
 async def load_txt_async(file_path: Path) -> str:
@@ -139,6 +137,9 @@ async def load_md_async(file_path: Path) -> str:
 async def load_document_async(file_path: Path) -> str:
     """Async version of load_document.
 
+    PDF extraction is CPU-bound with no async pypdf equivalent, so it runs
+    inline; only text files gain from the async path.
+
     Args:
         file_path: Path to the document file.
 
@@ -152,9 +153,8 @@ async def load_document_async(file_path: Path) -> str:
     file_path = Path(file_path)
     suffix = file_path.suffix.lower()
 
-    if suffix == ".pdf":
+    if suffix == _PDF_SUFFIX:
         return load_pdf(file_path)
-    elif suffix in (".txt", ".md"):
+    if suffix in _TEXT_SUFFIXES:
         return await load_txt_async(file_path)
-    else:
-        raise ValueError(f"Unsupported file type: {suffix}")
+    raise ValueError(f"Unsupported file type: {suffix}")

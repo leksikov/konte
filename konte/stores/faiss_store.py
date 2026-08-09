@@ -11,25 +11,104 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
 from konte.config import settings
-from konte.models import Chunk, ContextualizedChunk
+from konte.models import Chunk, ContextualizedChunk, MetadataFilter
+from konte.stores.base import matches_filter_value
+
+logger = structlog.get_logger()
+
+_RESERVED_METADATA_FIELDS = frozenset(
+    {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
+)
 
 
-def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: dict[str, Any]) -> bool:
+def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: MetadataFilter) -> bool:
     """Check if document metadata matches the filter (AND logic).
 
     Values can be a single value (equality) or a list (match any).
     """
-    for key, value in metadata_filter.items():
-        actual = metadata.get(key)
-        if isinstance(value, list):
-            if actual not in value:
-                return False
-        else:
-            if actual != value:
-                return False
-    return True
+    return all(
+        matches_filter_value(metadata.get(key), value) for key, value in metadata_filter.items()
+    )
 
-logger = structlog.get_logger()
+
+def _to_document(chunk: ContextualizedChunk) -> Document:
+    """Flatten a chunk into the LangChain Document the index embeds and stores.
+
+    The original content and the generated context both ride along in metadata
+    so the chunk can be rebuilt from the index alone, without a side-car file.
+    """
+    return Document(
+        page_content=chunk.contextualized_content,
+        metadata={
+            "chunk_id": chunk.chunk.chunk_id,
+            "source": chunk.chunk.source,
+            "segment_idx": chunk.chunk.segment_idx,
+            "chunk_idx": chunk.chunk.chunk_idx,
+            "context": chunk.context,
+            "original_content": chunk.chunk.content,
+            **chunk.chunk.metadata,
+        },
+    )
+
+
+def _from_document(doc: Document) -> ContextualizedChunk:
+    """Rebuild a chunk from the flattened metadata written by _to_document()."""
+    metadata = doc.metadata
+    return ContextualizedChunk(
+        chunk=Chunk(
+            chunk_id=metadata.get("chunk_id", ""),
+            content=metadata.get("original_content", ""),
+            source=metadata.get("source", ""),
+            segment_idx=metadata.get("segment_idx", 0),
+            chunk_idx=metadata.get("chunk_idx", 0),
+            metadata={
+                key: value
+                for key, value in metadata.items()
+                if key not in _RESERVED_METADATA_FIELDS
+            },
+        ),
+        context=metadata.get("context", ""),
+    )
+
+
+def _to_similarity(distance: float) -> float:
+    """Convert an L2 distance into a 0-1 score, where 1.0 is an exact match."""
+    return float(1.0 / (1.0 + distance))
+
+
+def _lookup_document(vectorstore: FAISS, docstore_id: str) -> Document | None:
+    """Fetch a stored Document by docstore id.
+
+    LangChain's docstore returns an error *string* instead of raising when an id
+    is missing, so the result has to be type-checked before it is used.
+    """
+    doc = vectorstore.docstore.search(docstore_id)
+    return doc if isinstance(doc, Document) else None
+
+
+def _document_passes(
+    doc: Document,
+    metadata_filter: MetadataFilter | None,
+    source_filter: str | None,
+) -> bool:
+    """Check a stored Document against both filter forms."""
+    if metadata_filter and not _matches_faiss_filter(doc.metadata, metadata_filter):
+        return False
+    return not source_filter or source_filter in doc.metadata.get("source", "")
+
+
+def _select_matching_ids(
+    vectorstore: FAISS,
+    metadata_filter: MetadataFilter | None,
+    source_filter: str | None,
+) -> list[int]:
+    """Return the FAISS internal ids whose documents satisfy the filters."""
+    return [
+        faiss_id
+        for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
+        if (doc := _lookup_document(vectorstore, docstore_id)) is not None
+        and _document_passes(doc, metadata_filter, source_filter)
+    ]
 
 
 class FAISSStore:
@@ -46,7 +125,7 @@ class FAISSStore:
                 Defaults to settings.EMBEDDING_MODEL.
         """
         self._embedding_model = embedding_model or settings.EMBEDDING_MODEL
-        kwargs = {"model": self._embedding_model}
+        kwargs: dict[str, Any] = {"model": self._embedding_model}
         if settings.OPENAI_API_KEY:
             kwargs["api_key"] = settings.OPENAI_API_KEY
         self._embeddings = OpenAIEmbeddings(**kwargs)
@@ -62,61 +141,29 @@ class FAISSStore:
 
         Args:
             chunks: List of contextualized chunks to index.
-            batch_size: Number of documents to embed per batch (default: 500).
+            batch_size: Number of documents to embed per request. Kept well
+                under the OpenAI embedding API's 300K-token request limit.
         """
         if not chunks:
             logger.warning("faiss_build_empty_chunks")
             return
 
         self._chunks = chunks
+        documents = [_to_document(chunk) for chunk in chunks]
+        batches = [
+            documents[start : start + batch_size]
+            for start in range(0, len(documents), batch_size)
+        ]
 
-        # Create LangChain Documents with metadata
-        documents = []
-        for chunk in chunks:
-            doc = Document(
-                page_content=chunk.contextualized_content,
-                metadata={
-                    "chunk_id": chunk.chunk.chunk_id,
-                    "source": chunk.chunk.source,
-                    "segment_idx": chunk.chunk.segment_idx,
-                    "chunk_idx": chunk.chunk.chunk_idx,
-                    "context": chunk.context,
-                    "original_content": chunk.chunk.content,
-                    **chunk.chunk.metadata,  # Include custom metadata
-                },
-            )
-            documents.append(doc)
-
-        # Build FAISS index in batches to avoid token limit errors
-        # OpenAI embedding API has 300K token limit per request
-        if len(documents) <= batch_size:
-            self._vectorstore = FAISS.from_documents(
-                documents=documents,
-                embedding=self._embeddings,
-            )
-        else:
-            # Build first batch
-            logger.info(
-                "faiss_building_batch",
-                batch=1,
-                total_batches=(len(documents) + batch_size - 1) // batch_size,
-            )
-            self._vectorstore = FAISS.from_documents(
-                documents=documents[:batch_size],
-                embedding=self._embeddings,
-            )
-
-            # Add remaining batches
-            for i in range(batch_size, len(documents), batch_size):
-                batch_num = (i // batch_size) + 1
-                total_batches = (len(documents) + batch_size - 1) // batch_size
-                logger.info(
-                    "faiss_building_batch",
-                    batch=batch_num,
-                    total_batches=total_batches,
-                )
-                batch_docs = documents[i : i + batch_size]
-                self._vectorstore.add_documents(batch_docs)
+        if len(batches) > 1:
+            logger.info("faiss_building_batch", batch=1, total_batches=len(batches))
+        self._vectorstore = FAISS.from_documents(
+            documents=batches[0],
+            embedding=self._embeddings,
+        )
+        for batch_num, batch in enumerate(batches[1:], start=2):
+            logger.info("faiss_building_batch", batch=batch_num, total_batches=len(batches))
+            self._vectorstore.add_documents(batch)
 
         logger.info(
             "faiss_index_built",
@@ -152,40 +199,23 @@ class FAISSStore:
         """
         directory = Path(directory)
 
-        # Check if index file exists
         index_path = directory / "faiss.faiss"
         if not index_path.exists():
             raise FileNotFoundError(f"FAISS index not found: {index_path}")
 
-        # LangChain FAISS load_local
         self._vectorstore = FAISS.load_local(
             str(directory),
             embeddings=self._embeddings,
             index_name="faiss",
-            allow_dangerous_deserialization=True,  # Required for loading pickle
+            # The docstore is a pickle: only load index dirs this library wrote.
+            allow_dangerous_deserialization=True,
         )
 
-        # Rebuild chunks from vectorstore docstore
-        self._chunks = []
-        standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
-        if self._vectorstore.docstore:
-            for doc_id in self._vectorstore.index_to_docstore_id.values():
-                doc = self._vectorstore.docstore.search(doc_id)
-                if doc and hasattr(doc, "metadata"):
-                    custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
-                    chunk = Chunk(
-                        chunk_id=doc.metadata.get("chunk_id", ""),
-                        content=doc.metadata.get("original_content", ""),
-                        source=doc.metadata.get("source", ""),
-                        segment_idx=doc.metadata.get("segment_idx", 0),
-                        chunk_idx=doc.metadata.get("chunk_idx", 0),
-                        metadata=custom_metadata,
-                    )
-                    ctx_chunk = ContextualizedChunk(
-                        chunk=chunk,
-                        context=doc.metadata.get("context", ""),
-                    )
-                    self._chunks.append(ctx_chunk)
+        self._chunks = [
+            _from_document(doc)
+            for docstore_id in self._vectorstore.index_to_docstore_id.values()
+            if (doc := _lookup_document(self._vectorstore, docstore_id)) is not None
+        ]
 
         logger.info(
             "faiss_index_loaded",
@@ -197,7 +227,7 @@ class FAISSStore:
         self,
         query: str,
         top_k: int | None = None,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the FAISS index.
@@ -219,93 +249,50 @@ class FAISSStore:
 
         k = top_k or settings.DEFAULT_TOP_K
 
-        # Pre-retrieval filtering: use FAISS IDSelector to search only matching documents
         if metadata_filter or source_filter:
-            # Find FAISS internal IDs that match the filter
-            valid_faiss_ids = []
-            for faiss_id, docstore_id in self._vectorstore.index_to_docstore_id.items():
-                doc = self._vectorstore.docstore.search(docstore_id)
-                if doc and hasattr(doc, "metadata"):
-                    if metadata_filter and not _matches_faiss_filter(doc.metadata, metadata_filter):
-                        continue
-                    if source_filter and source_filter not in doc.metadata.get("source", ""):
-                        continue
-                    valid_faiss_ids.append(faiss_id)
-
-            if not valid_faiss_ids:
-                return []
-
-            # Use FAISS IDSelectorArray for pre-filtered search
-            id_selector = faiss.IDSelectorArray(np.array(valid_faiss_ids, dtype=np.int64))
-            search_params = faiss.SearchParametersIVF(sel=id_selector)
-
-            # Embed the query
-            query_embedding = self._embeddings.embed_query(query)
-            query_vector = np.array([query_embedding], dtype=np.float32)
-
-            # Search only among filtered IDs
-            search_k = min(k, len(valid_faiss_ids))
-            distances, indices = self._vectorstore.index.search(
-                query_vector, search_k, params=search_params
+            return self._query_filtered(
+                self._vectorstore, query, k, metadata_filter, source_filter
             )
 
-            # Build results from search output
-            results = []
-            for distance, faiss_idx in zip(distances[0], indices[0], strict=True):
-                if faiss_idx == -1:  # No result
-                    continue
+        return [
+            (_from_document(doc), _to_similarity(distance))
+            for doc, distance in self._vectorstore.similarity_search_with_score(query, k=k)
+        ]
 
-                docstore_id = self._vectorstore.index_to_docstore_id.get(faiss_idx)
-                if not docstore_id:
-                    continue
+    def _query_filtered(
+        self,
+        vectorstore: FAISS,
+        query: str,
+        k: int,
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Search only the documents that satisfy the filters.
 
-                doc = self._vectorstore.docstore.search(docstore_id)
-                if not doc:
-                    continue
+        Filtering runs before the vector search via a FAISS id selector rather
+        than after it, so a restrictive filter still yields k results instead of
+        however many happen to survive from a global top-k.
+        """
+        valid_ids = _select_matching_ids(vectorstore, metadata_filter, source_filter)
+        if not valid_ids:
+            return []
 
-                similarity = 1.0 / (1.0 + distance)
-                standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
-                custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
-
-                chunk = Chunk(
-                    chunk_id=doc.metadata.get("chunk_id", ""),
-                    content=doc.metadata.get("original_content", ""),
-                    source=doc.metadata.get("source", ""),
-                    segment_idx=doc.metadata.get("segment_idx", 0),
-                    chunk_idx=doc.metadata.get("chunk_idx", 0),
-                    metadata=custom_metadata,
-                )
-                ctx_chunk = ContextualizedChunk(
-                    chunk=chunk,
-                    context=doc.metadata.get("context", ""),
-                )
-                results.append((ctx_chunk, float(similarity)))
-
-            return results
-
-        # No filter: use standard LangChain search
-        results_with_scores = self._vectorstore.similarity_search_with_score(query, k=k)
+        selector = faiss.IDSelectorArray(np.array(valid_ids, dtype=np.int64))
+        query_vector = np.array([self._embeddings.embed_query(query)], dtype=np.float32)
+        distances, indices = vectorstore.index.search(
+            query_vector,
+            min(k, len(valid_ids)),
+            params=faiss.SearchParametersIVF(sel=selector),
+        )
 
         results = []
-        for doc, distance in results_with_scores:
-            similarity = 1.0 / (1.0 + distance)
-            standard_fields = {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
-            custom_metadata = {k: v for k, v in doc.metadata.items() if k not in standard_fields}
-
-            chunk = Chunk(
-                chunk_id=doc.metadata.get("chunk_id", ""),
-                content=doc.metadata.get("original_content", ""),
-                source=doc.metadata.get("source", ""),
-                segment_idx=doc.metadata.get("segment_idx", 0),
-                chunk_idx=doc.metadata.get("chunk_idx", 0),
-                metadata=custom_metadata,
-            )
-            ctx_chunk = ContextualizedChunk(
-                chunk=chunk,
-                context=doc.metadata.get("context", ""),
-            )
-            results.append((ctx_chunk, float(similarity)))
-
+        for distance, faiss_idx in zip(distances[0], indices[0], strict=True):
+            if faiss_idx == -1:  # FAISS pads unfilled result slots with -1
+                continue
+            docstore_id = vectorstore.index_to_docstore_id.get(faiss_idx)
+            doc = _lookup_document(vectorstore, docstore_id) if docstore_id else None
+            if doc is not None:
+                results.append((_from_document(doc), _to_similarity(distance)))
         return results
 
     @property

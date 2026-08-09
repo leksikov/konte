@@ -1,5 +1,7 @@
 """Gradio UI for Konte contextual RAG."""
 
+from typing import get_args
+
 import gradio as gr
 
 from konte import (
@@ -9,12 +11,14 @@ from konte import (
     list_projects,
     project_exists,
 )
+from konte.models import RetrievalMode
+
+_RETRIEVAL_MODES: list[str] = list(get_args(RetrievalMode))
 
 
 def get_project_choices() -> list[str]:
     """Get list of available projects for dropdown."""
-    projects = list_projects()
-    return projects if projects else []
+    return list_projects()
 
 
 def format_results(response: RetrievalResponse) -> str:
@@ -165,7 +169,7 @@ def create_interface() -> gr.Blocks:
                         )
                         with gr.Row():
                             mode_select = gr.Radio(
-                                choices=["hybrid", "semantic", "lexical"],
+                                choices=_RETRIEVAL_MODES,
                                 value="hybrid",
                                 label="Retrieval Mode",
                             )
@@ -192,7 +196,7 @@ def create_interface() -> gr.Blocks:
                         )
                         with gr.Row():
                             ask_mode_select = gr.Radio(
-                                choices=["hybrid", "semantic", "lexical"],
+                                choices=_RETRIEVAL_MODES,
                                 value="hybrid",
                                 label="Retrieval Mode",
                             )

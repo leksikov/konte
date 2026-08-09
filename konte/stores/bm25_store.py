@@ -9,7 +9,8 @@ import structlog
 from rank_bm25 import BM25Okapi
 
 from konte.config import settings
-from konte.models import Chunk, ContextualizedChunk
+from konte.models import ContextualizedChunk, MetadataFilter
+from konte.stores.base import matches_filter_value
 
 logger = structlog.get_logger()
 
@@ -26,9 +27,18 @@ def _tokenize(text: str) -> list[str]:
     return text.lower().split()
 
 
-def _matches_filter(
-    chunk: ContextualizedChunk, metadata_filter: dict[str, Any]
-) -> bool:
+def _chunk_field(chunk: ContextualizedChunk, key: str) -> Any:
+    """Read a filterable field, preferring the chunk's own columns over metadata."""
+    if key == "source":
+        return chunk.chunk.source
+    if key == "segment_idx":
+        return chunk.chunk.segment_idx
+    if key == "chunk_idx":
+        return chunk.chunk.chunk_idx
+    return chunk.chunk.metadata.get(key)
+
+
+def _matches_filter(chunk: ContextualizedChunk, metadata_filter: MetadataFilter) -> bool:
     """Check if a chunk matches the metadata filter (AND logic).
 
     Values can be a single value (equality) or a list (match any).
@@ -40,24 +50,17 @@ def _matches_filter(
     Returns:
         True if all filter conditions match.
     """
-    chunk_metadata = chunk.chunk.metadata
-    for key, value in metadata_filter.items():
-        if key == "source":
-            actual = chunk.chunk.source
-        elif key == "segment_idx":
-            actual = chunk.chunk.segment_idx
-        elif key == "chunk_idx":
-            actual = chunk.chunk.chunk_idx
-        else:
-            actual = chunk_metadata.get(key)
+    return all(
+        matches_filter_value(_chunk_field(chunk, key), value)
+        for key, value in metadata_filter.items()
+    )
 
-        if isinstance(value, list):
-            if actual not in value:
-                return False
-        else:
-            if actual != value:
-                return False
-    return True
+
+def _normalize(score: float, minimum: float, value_range: float) -> float:
+    """Rescale a raw BM25 score into 0-1 against the filtered candidate set."""
+    if value_range <= 0:
+        return 0.0
+    return float(max(0.0, min(1.0, (score - minimum) / value_range)))
 
 
 class BM25Store:
@@ -80,19 +83,16 @@ class BM25Store:
             return
 
         self._chunks = chunks
-
-        # Tokenize contextualized content
-        self._tokenized_corpus = [
-            _tokenize(c.contextualized_content)
-            for c in chunks
-        ]
-
+        self._tokenized_corpus = [_tokenize(c.contextualized_content) for c in chunks]
         self._index = BM25Okapi(self._tokenized_corpus)
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
     def save(self, directory: Path) -> None:
         """Save BM25 index and metadata to disk.
+
+        The ranking model is pickled because rank_bm25 exposes no serialization
+        format of its own; the chunk payload is written as JSON alongside it.
 
         Args:
             directory: Directory to save index files.
@@ -104,9 +104,7 @@ class BM25Store:
             logger.warning("bm25_save_no_index")
             return
 
-        # Save BM25 index using pickle
-        index_path = directory / "bm25.pkl"
-        with open(index_path, "wb") as f:
+        with (directory / "bm25.pkl").open("wb") as f:
             pickle.dump(
                 {
                     "index": self._index,
@@ -115,16 +113,8 @@ class BM25Store:
                 f,
             )
 
-        # Save chunks data as JSON
-        chunks_path = directory / "bm25_chunks.json"
-        chunks_data = [
-            {
-                "chunk": c.chunk.model_dump(),
-                "context": c.context,
-            }
-            for c in self._chunks
-        ]
-        chunks_path.write_text(json.dumps(chunks_data), encoding="utf-8")
+        chunks_data = [c.to_storage_dict() for c in self._chunks]
+        (directory / "bm25_chunks.json").write_text(json.dumps(chunks_data), encoding="utf-8")
 
         logger.info("bm25_index_saved", directory=str(directory))
 
@@ -133,29 +123,28 @@ class BM25Store:
 
         Args:
             directory: Directory containing index files.
+
+        Raises:
+            FileNotFoundError: If either index file is missing.
         """
         directory = Path(directory)
-
         index_path = directory / "bm25.pkl"
         chunks_path = directory / "bm25_chunks.json"
 
         if not index_path.exists():
             raise FileNotFoundError(f"BM25 index not found: {index_path}")
+        if not chunks_path.exists():
+            raise FileNotFoundError(f"BM25 chunk data not found: {chunks_path}")
 
-        # Load BM25 index
-        with open(index_path, "rb") as f:
+        # Unpickling executes arbitrary code: only load index dirs this library wrote.
+        with index_path.open("rb") as f:
             data = pickle.load(f)
-            self._index = data["index"]
-            self._tokenized_corpus = data["tokenized_corpus"]
+        self._index = data["index"]
+        self._tokenized_corpus = data["tokenized_corpus"]
 
-        # Load chunks data
-        chunks_data = json.loads(chunks_path.read_text(encoding="utf-8"))
         self._chunks = [
-            ContextualizedChunk(
-                chunk=Chunk(**item["chunk"]),
-                context=item["context"],
-            )
-            for item in chunks_data
+            ContextualizedChunk.from_storage_dict(item)
+            for item in json.loads(chunks_path.read_text(encoding="utf-8"))
         ]
 
         logger.info(
@@ -168,7 +157,7 @@ class BM25Store:
         self,
         query: str,
         top_k: int | None = None,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the BM25 index.
@@ -182,60 +171,50 @@ class BM25Store:
                 Example: "JOHNSON" matches "JOHNSON_JOHNSON_2022_10K.md"
 
         Returns:
-            List of (chunk, score) tuples, sorted by score descending.
+            List of (chunk, score) tuples, sorted by score descending. Scores are
+            normalized to 0-1 across the surviving candidates, so they are only
+            comparable within one response.
         """
         if self._index is None or not self._chunks:
             logger.warning("bm25_query_empty_index")
             return []
 
-        k = top_k or settings.DEFAULT_TOP_K
+        candidates = self._filter_indices(metadata_filter, source_filter)
+        if not candidates:
+            return []
 
-        # Pre-retrieval filtering: identify valid chunk indices BEFORE ranking
+        # IDF is computed over the whole corpus, so scoring cannot be restricted
+        # to the candidates; only the ranking that follows is.
+        scores = self._index.get_scores(_tokenize(query))
+
+        k = min(top_k or settings.DEFAULT_TOP_K, len(candidates))
+        top_indices = sorted(candidates, key=lambda i: scores[i], reverse=True)[:k]
+
+        minimum = min(scores[i] for i in candidates)
+        maximum = max(scores[i] for i in candidates)
+        value_range = maximum - minimum if maximum != minimum else 1.0
+
+        return [
+            (self._chunks[idx], _normalize(scores[idx], minimum, value_range))
+            for idx in top_indices
+        ]
+
+    def _filter_indices(
+        self,
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> list[int]:
+        """Return corpus positions satisfying both filters.
+
+        Filtering runs before ranking, so a restrictive filter still yields
+        top_k results instead of however many survive a global top-k.
+        """
+        indices = list(range(len(self._chunks)))
         if metadata_filter:
-            valid_indices = [
-                i for i, chunk in enumerate(self._chunks)
-                if _matches_filter(chunk, metadata_filter)
-            ]
-            if not valid_indices:
-                return []
-        else:
-            valid_indices = list(range(len(self._chunks)))
-
+            indices = [i for i in indices if _matches_filter(self._chunks[i], metadata_filter)]
         if source_filter:
-            valid_indices = [
-                i for i in valid_indices
-                if source_filter in self._chunks[i].chunk.source
-            ]
-            if not valid_indices:
-                return []
-
-        k = min(k, len(valid_indices))
-
-        # Tokenize query
-        tokenized_query = _tokenize(query)
-
-        # Get BM25 scores (requires full corpus for IDF calculation)
-        scores = self._index.get_scores(tokenized_query)
-
-        # Rank only among filtered indices (pre-retrieval filtering)
-        top_indices = sorted(valid_indices, key=lambda i: scores[i], reverse=True)[:k]
-
-        # Normalize scores to 0-1 range based on filtered results only
-        filtered_scores = [scores[i] for i in valid_indices]
-        min_score = min(filtered_scores)
-        max_score = max(filtered_scores)
-        score_range = max_score - min_score if max_score != min_score else 1.0
-
-        results = []
-        for idx in top_indices:
-            if score_range > 0:
-                normalized_score = (scores[idx] - min_score) / score_range
-            else:
-                normalized_score = 0.0
-            normalized_score = max(0.0, min(1.0, normalized_score))
-            results.append((self._chunks[idx], float(normalized_score)))
-
-        return results
+            indices = [i for i in indices if source_filter in self._chunks[i].chunk.source]
+        return indices
 
     @property
     def is_empty(self) -> bool:

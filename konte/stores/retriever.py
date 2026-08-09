@@ -1,11 +1,18 @@
 """Hybrid retriever with reciprocal rank fusion."""
 
-from typing import Any, Literal
+import random
 
 import structlog
 
 from konte.config import settings
-from konte.models import ContextualizedChunk, RetrievalResponse, RetrievalResult
+from konte.models import (
+    ContextualizedChunk,
+    MetadataFilter,
+    RetrievalMode,
+    RetrievalResponse,
+    RetrievalResult,
+    SuggestedAction,
+)
 from konte.query_processor import extract_search_keywords
 from konte.stores.bm25_store import BM25Store
 from konte.stores.faiss_store import FAISSStore
@@ -13,13 +20,17 @@ from konte.stores.reranker import rerank_chunks_with_score
 
 logger = structlog.get_logger()
 
-RetrievalMode = Literal["hybrid", "semantic", "lexical"]
+ScoredChunks = list[tuple[ContextualizedChunk, float]]
+
+RRF_K = 60
+_FUSION_CANDIDATE_MULTIPLIER = 2
+_INJECTED_EVIDENCE_SCORE = 0.95
 
 
 def reciprocal_rank_fusion(
-    results_list: list[list[tuple[ContextualizedChunk, float]]],
-    k: int = 60,
-) -> list[tuple[ContextualizedChunk, float]]:
+    results_list: list[ScoredChunks],
+    k: int = RRF_K,
+) -> ScoredChunks:
     """Combine multiple ranked result lists using Reciprocal Rank Fusion.
 
     RRF score = sum(1 / (k + rank_i)) for each result list
@@ -29,41 +40,32 @@ def reciprocal_rank_fusion(
         k: Constant to prevent high ranks from dominating (default 60).
 
     Returns:
-        Combined list of (chunk, score) tuples sorted by RRF score.
+        Combined list of (chunk, score) tuples sorted by RRF score, rescaled so
+        the best result scores 1.0.
     """
-    # Map chunk_id to (chunk, rrf_score)
-    rrf_scores: dict[str, tuple[ContextualizedChunk, float]] = {}
+    fused: dict[str, tuple[ContextualizedChunk, float]] = {}
 
     for results in results_list:
         for rank, (chunk, _) in enumerate(results):
             chunk_id = chunk.chunk.chunk_id
-            rrf_score = 1.0 / (k + rank + 1)  # rank is 0-indexed
-
-            if chunk_id in rrf_scores:
-                existing_chunk, existing_score = rrf_scores[chunk_id]
-                rrf_scores[chunk_id] = (existing_chunk, existing_score + rrf_score)
+            contribution = 1.0 / (k + rank + 1)  # rank is 0-indexed
+            existing = fused.get(chunk_id)
+            if existing is None:
+                fused[chunk_id] = (chunk, contribution)
             else:
-                rrf_scores[chunk_id] = (chunk, rrf_score)
+                fused[chunk_id] = (existing[0], existing[1] + contribution)
 
-    # Sort by RRF score descending
-    sorted_results = sorted(
-        rrf_scores.values(),
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    ranked = sorted(fused.values(), key=lambda pair: pair[1], reverse=True)
+    if not ranked:
+        return []
 
-    # Normalize scores to 0-1 range
-    if sorted_results:
-        max_score = sorted_results[0][1]
-        if max_score > 0:
-            sorted_results = [
-                (chunk, score / max_score) for chunk, score in sorted_results
-            ]
-
-    return sorted_results
+    top_score = ranked[0][1]
+    if top_score <= 0:
+        return ranked
+    return [(chunk, score / top_score) for chunk, score in ranked]
 
 
-def _determine_suggested_action(top_score: float) -> Literal["deliver", "query_more", "refine_query"]:
+def _determine_suggested_action(top_score: float) -> SuggestedAction:
     """Determine suggested action based on top score.
 
     Args:
@@ -74,15 +76,14 @@ def _determine_suggested_action(top_score: float) -> Literal["deliver", "query_m
     """
     if top_score >= settings.CONFIDENCE_THRESHOLD:
         return "deliver"
-    elif top_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
+    if top_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
         return "query_more"
-    else:
-        return "refine_query"
+    return "refine_query"
 
 
 def _build_retrieval_response(
     query: str,
-    results: list[tuple[ContextualizedChunk, float]],
+    results: ScoredChunks,
     top_k: int,
 ) -> RetrievalResponse:
     """Build RetrievalResponse from retrieval results.
@@ -97,28 +98,25 @@ def _build_retrieval_response(
     """
     results = results[:top_k]
 
-    retrieval_results = [
-        RetrievalResult(
-            content=chunk.chunk.content,
-            context=chunk.context,
-            score=score,
-            source=chunk.chunk.source,
-            chunk_id=chunk.chunk.chunk_id,
-            metadata=chunk.chunk.metadata,
-        )
-        for chunk, score in results
-    ]
-
     top_score = results[0][1] if results else 0.0
     bottom_score = results[-1][1] if results else 0.0
-    score_spread = top_score - bottom_score
 
     return RetrievalResponse(
-        results=retrieval_results,
+        results=[
+            RetrievalResult(
+                content=chunk.chunk.content,
+                context=chunk.context,
+                score=score,
+                source=chunk.chunk.source,
+                chunk_id=chunk.chunk.chunk_id,
+                metadata=chunk.chunk.metadata,
+            )
+            for chunk, score in results
+        ],
         query=query,
         total_found=len(results),
         top_score=top_score,
-        score_spread=score_spread,
+        score_spread=top_score - bottom_score,
         has_high_confidence=top_score >= settings.CONFIDENCE_THRESHOLD,
         suggested_action=_determine_suggested_action(top_score),
     )
@@ -139,36 +137,28 @@ def _inject_evidence_result(
     Returns:
         New RetrievalResponse with evidence injected.
     """
-    import random
-
     evidence_result = RetrievalResult(
         content=evidence,
         context="[Ablation study: injected evidence]",
-        score=0.95,  # High but not 1.0 to blend with results
+        score=_INJECTED_EVIDENCE_SCORE,
         source="ablation_study",
         chunk_id="INJECTED_EVIDENCE",
         metadata={"injected": True},
     )
 
-    # Determine insertion position
     if position is None:
-        # Random position within results
-        max_pos = len(response.results)
-        actual_position = random.randint(0, max_pos)
+        insert_at = random.randint(0, len(response.results))
     else:
-        actual_position = min(position, len(response.results))
+        insert_at = min(position, len(response.results))
 
-    # Insert at position
     new_results = list(response.results)
-    new_results.insert(actual_position, evidence_result)
-
-    top_score = new_results[0].score if new_results else 0.0
+    new_results.insert(insert_at, evidence_result)
 
     return RetrievalResponse(
         results=new_results,
         query=response.query,
         total_found=len(new_results),
-        top_score=top_score,
+        top_score=new_results[0].score if new_results else 0.0,
         score_spread=response.score_spread,
         has_high_confidence=True,
         suggested_action="deliver",
@@ -192,11 +182,21 @@ class Retriever:
         self._faiss = faiss_store
         self._bm25 = bm25_store
 
+    @property
+    def _has_semantic(self) -> bool:
+        """True when a vector index is attached and non-empty."""
+        return self._faiss is not None and not self._faiss.is_empty
+
+    @property
+    def _has_lexical(self) -> bool:
+        """True when a lexical index is attached and non-empty."""
+        return self._bm25 is not None and not self._bm25.is_empty
+
     def retrieve_semantic(
         self,
         query: str,
         top_k: int | None = None,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using FAISS semantic search only.
@@ -211,12 +211,10 @@ class Retriever:
             RetrievalResponse with results.
         """
         k = top_k or settings.DEFAULT_TOP_K
-
-        if self._faiss is None or self._faiss.is_empty:
+        if not self._has_semantic:
             logger.warning("semantic_retrieval_no_index")
-            return _build_retrieval_response(query, [], k)
 
-        results = self._faiss.query(query, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
+        results = self._semantic_results(query, k, metadata_filter, source_filter)
         return _build_retrieval_response(query, results, k)
 
     def retrieve_lexical(
@@ -224,7 +222,7 @@ class Retriever:
         query: str,
         top_k: int | None = None,
         use_keyword_extraction: bool = True,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using BM25 lexical search only.
@@ -240,12 +238,12 @@ class Retriever:
             RetrievalResponse with results.
         """
         k = top_k or settings.DEFAULT_TOP_K
-
-        if self._bm25 is None or self._bm25.is_empty:
+        if not self._has_lexical:
             logger.warning("lexical_retrieval_no_index")
-            return _build_retrieval_response(query, [], k)
 
-        results = self._get_lexical_results(query, k, use_keyword_extraction, metadata_filter, source_filter)
+        results = self._lexical_results(
+            query, k, use_keyword_extraction, metadata_filter, source_filter
+        )
         return _build_retrieval_response(query, results, k)
 
     def retrieve_hybrid(
@@ -253,7 +251,7 @@ class Retriever:
         query: str,
         top_k: int | None = None,
         use_keyword_extraction: bool = True,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve using both FAISS and BM25 with rank fusion.
@@ -272,40 +270,24 @@ class Retriever:
         """
         k = top_k or settings.DEFAULT_TOP_K
 
-        has_faiss = self._faiss is not None and not self._faiss.is_empty
-        has_bm25 = self._bm25 is not None and not self._bm25.is_empty
-
-        if not has_faiss and not has_bm25:
+        if not self._has_semantic and not self._has_lexical:
             logger.warning("hybrid_retrieval_no_indexes")
-            return _build_retrieval_response(query, [], k)
-
-        if not has_faiss:
+        elif not self._has_semantic:
             logger.warning("hybrid_fallback_to_lexical")
-            return self.retrieve_lexical(
-                query, top_k=k, use_keyword_extraction=use_keyword_extraction,
-                metadata_filter=metadata_filter, source_filter=source_filter,
-            )
-
-        if not has_bm25:
+        elif not self._has_lexical:
             logger.warning("hybrid_fallback_to_semantic")
-            return self.retrieve_semantic(query, top_k=k, metadata_filter=metadata_filter, source_filter=source_filter)
 
-        # Get results from both indexes (more than top_k to allow for fusion)
-        fetch_k = k * 2
-        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
-        bm25_results = self._get_lexical_results(query, fetch_k, use_keyword_extraction, metadata_filter, source_filter)
-
-        # Fuse results
-        fused = reciprocal_rank_fusion([faiss_results, bm25_results])
-
-        return _build_retrieval_response(query, fused, k)
+        results = self._hybrid_results(
+            query, k, use_keyword_extraction, metadata_filter, source_filter
+        )
+        return _build_retrieval_response(query, results, k)
 
     def retrieve(
         self,
         query: str,
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
         inject_evidence: str | None = None,
         inject_position: int | None = None,
@@ -325,13 +307,18 @@ class Retriever:
             RetrievalResponse with results and agent hints.
         """
         if mode == "semantic":
-            response = self.retrieve_semantic(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
+            response = self.retrieve_semantic(
+                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+            )
         elif mode == "lexical":
-            response = self.retrieve_lexical(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
+            response = self.retrieve_lexical(
+                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+            )
         else:
-            response = self.retrieve_hybrid(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
+            response = self.retrieve_hybrid(
+                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+            )
 
-        # Inject evidence for ablation study
         if inject_evidence:
             response = _inject_evidence_result(response, inject_evidence, inject_position)
 
@@ -343,7 +330,7 @@ class Retriever:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         initial_k: int = 50,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
         """Retrieve with reranking via the configured reranker endpoint.
@@ -364,59 +351,75 @@ class Retriever:
         """
         k = top_k or settings.DEFAULT_TOP_K
 
-        # Get initial candidates
-        if mode == "semantic":
-            initial_results = self._get_semantic_results(query, initial_k, metadata_filter, source_filter)
-        elif mode == "lexical":
-            initial_results = self._get_lexical_results(query, initial_k, metadata_filter=metadata_filter, source_filter=source_filter)
-        else:
-            initial_results = self._get_hybrid_results(query, initial_k, metadata_filter, source_filter)
-
+        initial_results = self._results_for_mode(
+            query,
+            mode,
+            initial_k,
+            # Deliberate: reranked hybrid has always fed BM25 the raw query.
+            # Enabling extraction here would shift every reranked hybrid result.
+            use_keyword_extraction=mode != "hybrid",
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+        )
         if not initial_results:
             return _build_retrieval_response(query, [], k)
 
-        # Rerank candidates using score endpoint (reliable individual scoring)
         reranked = await rerank_chunks_with_score(query, initial_results, top_k=k)
-
         return _build_retrieval_response(query, reranked, k)
 
-    def _get_semantic_results(
+    def _results_for_mode(
+        self,
+        query: str,
+        mode: RetrievalMode,
+        top_k: int,
+        use_keyword_extraction: bool,
+        metadata_filter: MetadataFilter | None = None,
+        source_filter: str | None = None,
+    ) -> ScoredChunks:
+        """Rank with one mode without wrapping the outcome in a response."""
+        if mode == "semantic":
+            return self._semantic_results(query, top_k, metadata_filter, source_filter)
+        if mode == "lexical":
+            return self._lexical_results(
+                query, top_k, use_keyword_extraction, metadata_filter, source_filter
+            )
+        return self._hybrid_results(
+            query, top_k, use_keyword_extraction, metadata_filter, source_filter
+        )
+
+    def _semantic_results(
         self,
         query: str,
         top_k: int,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> list[tuple[ContextualizedChunk, float]]:
-        """Get raw semantic results."""
+    ) -> ScoredChunks:
+        """Rank with the vector index alone; empty when it is unavailable."""
         if self._faiss is None or self._faiss.is_empty:
             return []
-        return self._faiss.query(query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
+        return self._faiss.query(
+            query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+        )
 
-    def _get_lexical_results(
+    def _lexical_results(
         self,
         query: str,
         top_k: int,
         use_keyword_extraction: bool = True,
-        metadata_filter: dict[str, Any] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> list[tuple[ContextualizedChunk, float]]:
-        """Get raw lexical results.
+    ) -> ScoredChunks:
+        """Rank with the lexical index alone; empty when it is unavailable.
 
-        Args:
-            query: Query string.
-            top_k: Number of results.
-            use_keyword_extraction: If True, extract keywords for better Korean BM25.
-            metadata_filter: Filter results by metadata (equality match, AND logic).
-            source_filter: Substring match on chunk source field.
-
-        Returns:
-            List of (chunk, score) tuples.
+        BM25 has no notion of stopwords or Korean particles, so a raw
+        natural-language question dilutes every term that matters. Keyword
+        extraction reduces the query to content words first.
         """
         if self._bm25 is None or self._bm25.is_empty:
             return []
 
+        search_query = query
         if use_keyword_extraction:
-            # Extract clean keywords for better Korean BM25 matching
             keywords = extract_search_keywords(query)
             search_query = " ".join(keywords)
             logger.debug(
@@ -425,35 +428,33 @@ class Retriever:
                 keywords=keywords,
                 search_query=search_query,
             )
-        else:
-            search_query = query
 
-        return self._bm25.query(search_query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter)
+        return self._bm25.query(
+            search_query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+        )
 
-    def _get_hybrid_results(
+    def _hybrid_results(
         self,
         query: str,
         top_k: int,
-        metadata_filter: dict[str, Any] | None = None,
+        use_keyword_extraction: bool = True,
+        metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> list[tuple[ContextualizedChunk, float]]:
-        """Get raw hybrid results with rank fusion."""
-        has_faiss = self._faiss is not None and not self._faiss.is_empty
-        has_bm25 = self._bm25 is not None and not self._bm25.is_empty
+    ) -> ScoredChunks:
+        """Fuse both indexes, degrading to whichever one is available."""
+        if not self._has_semantic:
+            return self._lexical_results(
+                query, top_k, use_keyword_extraction, metadata_filter, source_filter
+            )
+        if not self._has_lexical:
+            return self._semantic_results(query, top_k, metadata_filter, source_filter)
 
-        if not has_faiss and not has_bm25:
-            return []
-
-        if not has_faiss:
-            return self._get_lexical_results(query, top_k, metadata_filter=metadata_filter, source_filter=source_filter)
-
-        if not has_bm25:
-            return self._get_semantic_results(query, top_k, metadata_filter, source_filter)
-
-        # Get from both and fuse
-        fetch_k = top_k * 2
-        faiss_results = self._faiss.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
-        bm25_results = self._bm25.query(query, top_k=fetch_k, metadata_filter=metadata_filter, source_filter=source_filter)
-
-        fused = reciprocal_rank_fusion([faiss_results, bm25_results])
-        return fused[:top_k]
+        fetch_k = top_k * _FUSION_CANDIDATE_MULTIPLIER
+        return reciprocal_rank_fusion(
+            [
+                self._semantic_results(query, fetch_k, metadata_filter, source_filter),
+                self._lexical_results(
+                    query, fetch_k, use_keyword_extraction, metadata_filter, source_filter
+                ),
+            ]
+        )
