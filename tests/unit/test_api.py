@@ -1,9 +1,17 @@
 """Unit tests for API module."""
 
+import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
+
+# konte/api/__init__.py rebinds the name `app` to the FastAPI instance, which
+# shadows the konte.api.app submodule as an attribute of konte.api. A string
+# target like patch("konte.api.app.project_exists") therefore resolves to the
+# FastAPI instance on Python < 3.12, whose mock._get_target walks attributes
+# instead of using pkgutil.resolve_name. Resolve the module explicitly instead.
+api_app = importlib.import_module("konte.api.app")
 
 
 @pytest.mark.unit
@@ -84,7 +92,7 @@ class TestAPIEndpoints:
 
     def test_list_projects_empty(self):
         """Test listing projects when none exist."""
-        with patch("konte.api.app.list_projects") as mock_list:
+        with patch.object(api_app, "list_projects") as mock_list:
             mock_list.return_value = []
 
             from fastapi.testclient import TestClient
@@ -101,7 +109,7 @@ class TestAPIEndpoints:
 
     def test_list_projects_with_projects(self):
         """Test listing projects."""
-        with patch("konte.api.app.list_projects") as mock_list:
+        with patch.object(api_app, "list_projects") as mock_list:
             mock_list.return_value = ["project1", "project2"]
 
             from fastapi.testclient import TestClient
@@ -118,7 +126,7 @@ class TestAPIEndpoints:
 
     def test_project_not_found(self):
         """Test 404 for non-existent project."""
-        with patch("konte.api.app.project_exists") as mock_exists:
+        with patch.object(api_app, "project_exists") as mock_exists:
             mock_exists.return_value = False
 
             from fastapi.testclient import TestClient
@@ -133,7 +141,7 @@ class TestAPIEndpoints:
 
     def test_project_exists_true(self):
         """Test project exists endpoint returns true."""
-        with patch("konte.api.app.project_exists") as mock_exists:
+        with patch.object(api_app, "project_exists") as mock_exists:
             mock_exists.return_value = True
 
             from fastapi.testclient import TestClient
@@ -150,7 +158,7 @@ class TestAPIEndpoints:
 
     def test_project_exists_false(self):
         """Test project exists endpoint returns false."""
-        with patch("konte.api.app.project_exists") as mock_exists:
+        with patch.object(api_app, "project_exists") as mock_exists:
             mock_exists.return_value = False
 
             from fastapi.testclient import TestClient
@@ -179,7 +187,7 @@ class TestAPIEndpoints:
 
     def test_query_project_not_found(self):
         """Test query returns 404 for non-existent project."""
-        with patch("konte.api.app.project_exists") as mock_exists:
+        with patch.object(api_app, "project_exists") as mock_exists:
             mock_exists.return_value = False
 
             from fastapi.testclient import TestClient
@@ -217,8 +225,8 @@ class TestAPIEndpoints:
         mock_project = MagicMock()
         mock_project.query.return_value = mock_response
 
-        with patch("konte.api.app.project_exists") as mock_exists:
-            with patch("konte.api.app.get_project") as mock_get:
+        with patch.object(api_app, "project_exists") as mock_exists:
+            with patch.object(api_app, "get_project") as mock_get:
                 mock_exists.return_value = True
                 mock_get.return_value = mock_project
 
