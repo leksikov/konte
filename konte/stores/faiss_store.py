@@ -1,5 +1,7 @@
 """FAISS vector store for semantic search using LangChain."""
 
+from collections import defaultdict
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,9 @@ logger = structlog.get_logger()
 _RESERVED_METADATA_FIELDS = frozenset(
     {"chunk_id", "source", "segment_idx", "chunk_idx", "context", "original_content"}
 )
+
+# Chunk payload, not filter keys: posting them would hash every chunk's full text.
+_UNPOSTED_METADATA_FIELDS = frozenset({"context", "original_content"})
 
 
 def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: MetadataFilter) -> bool:
@@ -111,6 +116,97 @@ def _select_matching_ids(
     ]
 
 
+class _FilterIndex:
+    """Inverted index over a docstore: field value -> the FAISS ids carrying it."""
+
+    __slots__ = ("_absent", "_all_ids", "_postings", "_unposted")
+
+    def __init__(self, vectorstore: FAISS) -> None:
+        postings: dict[str, dict[Any, list[int]]] = defaultdict(lambda: defaultdict(list))
+        unposted = set(_UNPOSTED_METADATA_FIELDS)
+        all_ids: list[int] = []
+
+        for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items():
+            doc = _lookup_document(vectorstore, docstore_id)
+            if doc is None:
+                continue
+            all_ids.append(faiss_id)
+            for key, value in doc.metadata.items():
+                if key in unposted:
+                    continue
+                try:
+                    postings[key][value].append(faiss_id)
+                except TypeError:
+                    unposted.add(key)
+
+        self._all_ids = all_ids
+        self._postings = {key: dict(values) for key, values in postings.items()}
+        self._unposted = unposted
+        self._absent: dict[str, frozenset[int]] = {}
+
+    def select(
+        self,
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> list[int] | None:
+        """Return the ids satisfying both filters, or None if the index cannot answer.
+
+        None (a filtered field has no posting list) means the caller must fall
+        back to scanning; an empty list means the filters matched nothing.
+        """
+        fields = set(metadata_filter or ())
+        if source_filter:
+            fields.add("source")
+        if fields & self._unposted:
+            return None
+
+        matches = [self._ids_for(key, value) for key, value in (metadata_filter or {}).items()]
+        if source_filter:
+            matches.append(self._ids_matching_source(source_filter))
+        if not matches:
+            return list(self._all_ids)
+
+        # set.intersection walks its receiver, so lead with the smallest.
+        matches.sort(key=len)
+        return sorted(set.intersection(*matches))
+
+    def _ids_for(self, field: str, expected: Any) -> set[int]:
+        """Ids whose field satisfies one filter value; a list means match-any."""
+        postings = self._postings.get(field, {})
+        wanted = expected if isinstance(expected, list) else (expected,)
+
+        matched: set[int] = set()
+        for value in wanted:
+            try:
+                posted = postings.get(value)
+            except TypeError:  # an unhashable filter value equals no posted one
+                continue
+            if posted:
+                matched.update(posted)
+            if value is None:
+                matched.update(self._absent_from(field))
+        return matched
+
+    def _ids_matching_source(self, needle: str) -> set[int]:
+        """Ids whose source contains the needle."""
+        return set(
+            chain.from_iterable(
+                ids
+                for source, ids in self._postings.get("source", {}).items()
+                if isinstance(source, str) and needle in source
+            )
+        )
+
+    def _absent_from(self, field: str) -> frozenset[int]:
+        """Ids of documents carrying no such field — metadata.get() reads them as None."""
+        absent = self._absent.get(field)
+        if absent is None:
+            posted = chain.from_iterable(self._postings.get(field, {}).values())
+            absent = frozenset(self._all_ids).difference(posted)
+            self._absent[field] = absent
+        return absent
+
+
 class FAISSStore:
     """FAISS vector store for semantic search on contextualized chunks."""
 
@@ -130,6 +226,7 @@ class FAISSStore:
             kwargs["api_key"] = settings.OPENAI_API_KEY
         self._embeddings = OpenAIEmbeddings(**kwargs)
         self._vectorstore: FAISS | None = None
+        self._filter_index: _FilterIndex | None = None
 
     def build_index(
         self,
@@ -162,6 +259,7 @@ class FAISSStore:
         for batch_num, batch in enumerate(batches[1:], start=2):
             logger.info("faiss_building_batch", batch=batch_num, total_batches=len(batches))
             self._vectorstore.add_documents(batch)
+        self._filter_index = None
 
         logger.info(
             "faiss_index_built",
@@ -211,6 +309,7 @@ class FAISSStore:
             # The docstore is a pickle: only load index dirs this library wrote.
             allow_dangerous_deserialization=True,
         )
+        self._filter_index = None
 
         logger.info(
             "faiss_index_loaded",
@@ -268,7 +367,7 @@ class FAISSStore:
         than after it, so a restrictive filter still yields k results instead of
         however many happen to survive from a global top-k.
         """
-        valid_ids = _select_matching_ids(vectorstore, metadata_filter, source_filter)
+        valid_ids = self._matching_ids(vectorstore, metadata_filter, source_filter)
         if not valid_ids:
             return []
 
@@ -289,6 +388,20 @@ class FAISSStore:
             if doc is not None:
                 results.append((_from_document(doc), _to_similarity(distance)))
         return results
+
+    def _matching_ids(
+        self,
+        vectorstore: FAISS,
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> list[int]:
+        """Resolve the filters to FAISS ids, indexing the docstore on first use."""
+        if self._filter_index is None:
+            self._filter_index = _FilterIndex(vectorstore)
+        selected = self._filter_index.select(metadata_filter, source_filter)
+        if selected is None:
+            return _select_matching_ids(vectorstore, metadata_filter, source_filter)
+        return selected
 
     @property
     def is_empty(self) -> bool:

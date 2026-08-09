@@ -5,6 +5,7 @@ import pickle
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import structlog
 from rank_bm25 import BM25Okapi
 
@@ -57,11 +58,26 @@ def _matches_filter(chunk: ContextualizedChunk, metadata_filter: MetadataFilter)
     )
 
 
-def _normalize(score: float, minimum: float, value_range: float) -> float:
-    """Rescale a raw BM25 score into 0-1 against the filtered candidate set."""
+def _normalize(scores: np.ndarray, minimum: float, maximum: float) -> np.ndarray:
+    """Rescale raw BM25 scores into 0-1 against the filtered candidate set."""
+    value_range = maximum - minimum
     if value_range <= 0:
-        return 0.0
-    return float(max(0.0, min(1.0, (score - minimum) / value_range)))
+        return np.zeros_like(scores)
+    return np.clip((scores - minimum) / value_range, 0.0, 1.0)
+
+
+def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
+    """Return the positions of the k highest scores, best first.
+
+    Splitting on the k-th score rather than argpartition's k-th position is
+    what makes ties reproducible: a score tied across the cut resolves to the
+    lower position.
+    """
+    threshold = np.partition(scores, -k)[-k]
+    above = np.flatnonzero(scores > threshold)
+    tied = np.flatnonzero(scores == threshold)
+    top = np.concatenate((above, tied[: k - above.size]))
+    return top[np.argsort(-scores[top], kind="stable")]
 
 
 class BM25Store:
@@ -173,41 +189,47 @@ class BM25Store:
             return []
 
         candidates = self._filter_indices(metadata_filter, source_filter)
-        if not candidates:
+        if candidates is not None and not candidates.size:
             return []
 
         # IDF is computed over the whole corpus, so scoring cannot be restricted
         # to the candidates; only the ranking that follows is.
         scores = self._index.get_scores(_tokenize(query))
+        if candidates is not None:
+            scores = scores[candidates]
 
-        k = min(top_k or settings.DEFAULT_TOP_K, len(candidates))
-        top_indices = sorted(candidates, key=lambda i: scores[i], reverse=True)[:k]
+        k = min(top_k or settings.DEFAULT_TOP_K, scores.size)
+        if k <= 0:
+            return []
 
-        minimum = min(scores[i] for i in candidates)
-        maximum = max(scores[i] for i in candidates)
-        value_range = maximum - minimum if maximum != minimum else 1.0
+        ranked = _rank_top_k(scores, k)
+        normalized = _normalize(scores[ranked], scores.min(), scores.max())
+        positions = ranked if candidates is None else candidates[ranked]
 
         return [
-            (self._chunks[idx], _normalize(scores[idx], minimum, value_range))
-            for idx in top_indices
+            (self._chunks[position], score)
+            for position, score in zip(positions.tolist(), normalized.tolist(), strict=True)
         ]
 
     def _filter_indices(
         self,
         metadata_filter: MetadataFilter | None,
         source_filter: str | None,
-    ) -> list[int]:
-        """Return corpus positions satisfying both filters.
+    ) -> np.ndarray | None:
+        """Return corpus positions satisfying both filters, or None for no filter.
 
         Filtering runs before ranking, so a restrictive filter still yields
         top_k results instead of however many survive a global top-k.
         """
-        indices = list(range(len(self._chunks)))
+        if not metadata_filter and not source_filter:
+            return None
+
+        matched = enumerate(self._chunks)
         if metadata_filter:
-            indices = [i for i in indices if _matches_filter(self._chunks[i], metadata_filter)]
+            matched = ((i, c) for i, c in matched if _matches_filter(c, metadata_filter))
         if source_filter:
-            indices = [i for i in indices if source_filter in self._chunks[i].chunk.source]
-        return indices
+            matched = ((i, c) for i, c in matched if source_filter in c.chunk.source)
+        return np.fromiter((i for i, _ in matched), dtype=np.intp)
 
     @property
     def is_empty(self) -> bool:

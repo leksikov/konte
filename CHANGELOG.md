@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write and unpickle (~25MB → ~2MB on a 20k-chunk project). Existing index files
   still load; one written by this version cannot be read by an earlier release
 
+- A filtered FAISS query resolves its filters through an inverted index over the
+  docstore instead of reading every stored document and testing it. The index is
+  built on the first filtered query and dropped whenever the vectorstore is
+  replaced, so an unfiltered workload never pays for it. On a 100k-chunk project
+  selecting the matching ids cost 16–42ms per query; it now costs 0.05–0.4ms,
+  for ~30MB of postings. A filter on a field whose values cannot be hashed still
+  falls back to the scan
+- The BM25 query path ranks with NumPy rather than four full passes over the
+  corpus in Python: an unfiltered query no longer materializes an N-element
+  candidate list, the top k comes from a linear partition instead of sorting
+  every chunk through a Python comparison key, and the normalization bounds come
+  from the score array directly. On 100k chunks an unfiltered query went 84ms →
+  68ms, leaving 3.6ms above what scoring itself costs. Results are unchanged,
+  ties included
 - Keyword extraction runs on `KEYWORD_EXTRACTION_TIMEOUT` (5s) without retries
   instead of the 120s context-generation budget with two retries, cutting the
   worst case a stalled endpoint can impose on one query from ~360s to 5s
