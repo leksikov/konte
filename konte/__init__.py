@@ -22,7 +22,11 @@ from konte.models import (
     RetrievalResult,
 )
 from konte.project import Project
-from konte.query_processor import extract_search_keywords
+from konte.query_processor import (
+    clear_keyword_cache,
+    extract_search_keywords,
+    extract_search_keywords_async,
+)
 
 # Single source of truth is pyproject.toml, read from installed metadata
 try:
@@ -54,4 +58,6 @@ __all__ = [
     "generate_answer",
     # Query processor
     "extract_search_keywords",
+    "extract_search_keywords_async",
+    "clear_keyword_cache",
 ]

@@ -210,6 +210,7 @@ class Project:
         query: str,
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
         inject_evidence: str | None = None,
@@ -217,10 +218,15 @@ class Project:
     ) -> RetrievalResponse:
         """Query the project (sync, no reranking).
 
+        With keyword extraction on, lexical and hybrid modes spend one blocking
+        LLM call per distinct query; pass False for a purely in-memory lookup.
+
         Args:
             query: Query string.
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
             source_filter: Substring match on chunk source field.
@@ -239,6 +245,7 @@ class Project:
             query,
             mode=mode,
             top_k=top_k or settings.DEFAULT_TOP_K,
+            use_keyword_extraction=use_keyword_extraction,
             metadata_filter=metadata_filter,
             source_filter=source_filter,
             inject_evidence=inject_evidence,
@@ -252,6 +259,7 @@ class Project:
         top_k: int | None = None,
         rerank: bool = False,
         rerank_initial_k: int = 50,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
@@ -263,6 +271,10 @@ class Project:
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
             rerank: If True, rerank via the configured RERANKER_BASE_URL endpoint.
             rerank_initial_k: Number of candidates to retrieve before reranking.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows
+                settings.BM25_KEYWORD_EXTRACTION, except under rerank=True with
+                mode="hybrid", where BM25 has always seen the raw query.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
             source_filter: Substring match on chunk source field.
@@ -282,14 +294,16 @@ class Project:
                 mode=mode,
                 top_k=k,
                 initial_k=rerank_initial_k,
+                use_keyword_extraction=use_keyword_extraction,
                 metadata_filter=metadata_filter,
                 source_filter=source_filter,
             )
 
-        return self._retriever.retrieve(
+        return await self._retriever.retrieve_async(
             query,
             mode=mode,
             top_k=k,
+            use_keyword_extraction=use_keyword_extraction,
             metadata_filter=metadata_filter,
             source_filter=source_filter,
         )
@@ -312,6 +326,7 @@ class Project:
         timeout: float = 60.0,
         rerank: bool = False,
         rerank_initial_k: int = 50,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> tuple[RetrievalResponse, GeneratedAnswer]:
@@ -328,6 +343,9 @@ class Project:
             timeout: LLM request timeout in seconds.
             rerank: If True, rerank via the configured RERANKER_BASE_URL endpoint.
             rerank_initial_k: Number of candidates to retrieve before reranking.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call on top of answer generation. None follows
+                settings.BM25_KEYWORD_EXTRACTION.
             metadata_filter: Filter results by metadata (equality match, AND logic).
                 Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
             source_filter: Substring match on chunk source field.
@@ -341,6 +359,7 @@ class Project:
             top_k=top_k,
             rerank=rerank,
             rerank_initial_k=rerank_initial_k,
+            use_keyword_extraction=use_keyword_extraction,
             metadata_filter=metadata_filter,
             source_filter=source_filter,
         )

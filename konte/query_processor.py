@@ -1,14 +1,23 @@
 """Query preprocessing for better BM25 retrieval (Korean and English)."""
 
+from functools import lru_cache
+
 import structlog
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
+from konte.config import settings
 from konte.llm import get_llm
 
 logger = structlog.get_logger()
 
 _EXTRACTION_MAX_TOKENS = 800
+
+# A retry only multiplies the delay a stalled endpoint imposes on the waiting
+# query, and the tokenizer fallback already covers the failure.
+_EXTRACTION_MAX_RETRIES = 0
+
+_CACHE_SIZE = 512
 
 # English stopwords to filter in fallback tokenizer
 STOPWORDS = frozenset({
@@ -50,8 +59,50 @@ def _fallback_tokenize(query: str) -> list[str]:
     return [t for t in tokens if t.lower() not in STOPWORDS and len(t) > 1]
 
 
+class _CacheSlot:
+    """Mutable holder for one query's extracted keywords.
+
+    The cache stores the slot rather than the keywords, so the sync and async
+    paths share one set of entries and one eviction order whichever of them
+    fills it. A slot left empty is how a failed extraction avoids being
+    remembered.
+    """
+
+    __slots__ = ("keywords",)
+
+    def __init__(self) -> None:
+        self.keywords: tuple[str, ...] | None = None
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cache_slot(query: str) -> _CacheSlot:
+    """Return the slot for query, allocating it on first sight."""
+    return _CacheSlot()
+
+
+def clear_keyword_cache() -> None:
+    """Forget every extraction cached so far.
+
+    Entries are keyed by query text alone, so a change of endpoint, model or
+    prompt keeps producing the previous keywords until the cache is emptied.
+    """
+    _cache_slot.cache_clear()
+
+
+def _remember(query: str, result: ExtractedKeywords, event: str) -> list[str]:
+    """Cache a successful extraction and hand back a copy the caller may mutate."""
+    keywords = tuple(result.keywords)
+    _cache_slot(query).keywords = keywords
+    logger.debug(event, query=query, keywords=keywords)
+    return list(keywords)
+
+
 def _extraction_request(query: str) -> tuple[Runnable, str]:
     """Build the structured-output client and prompt for a keyword extraction.
+
+    Unlike context generation, which runs once per chunk at build time, this
+    call sits between a caller and their search results, so it gets its own
+    short timeout instead of the batch-sized default.
 
     Args:
         query: Natural language query (Korean or English).
@@ -59,7 +110,11 @@ def _extraction_request(query: str) -> tuple[Runnable, str]:
     Returns:
         Tuple of (client bound to the ExtractedKeywords schema, formatted prompt).
     """
-    llm = get_llm(max_tokens=_EXTRACTION_MAX_TOKENS)
+    llm = get_llm(
+        timeout=settings.KEYWORD_EXTRACTION_TIMEOUT,
+        max_tokens=_EXTRACTION_MAX_TOKENS,
+        max_retries=_EXTRACTION_MAX_RETRIES,
+    )
     return llm.with_structured_output(ExtractedKeywords), KEYWORD_EXTRACTION_PROMPT.format(
         query=query
     )
@@ -69,7 +124,9 @@ def extract_search_keywords(query: str) -> list[str]:
     """Extract keywords from query for BM25 search (supports Korean and English).
 
     Uses LLM with structured output to extract meaningful keywords,
-    removing stopwords and particles.
+    removing stopwords and particles. A repeated query is answered from cache
+    without another round trip. Blocks on the network; async callers want
+    extract_search_keywords_async.
 
     Args:
         query: Natural language query (Korean or English).
@@ -85,6 +142,10 @@ def extract_search_keywords(query: str) -> list[str]:
         English: "Does Paypal have positive working capital based on FY2022 data?"
         Output: ["Paypal", "positive", "working capital", "FY2022", "data"]
     """
+    cached = _cache_slot(query).keywords
+    if cached is not None:
+        return list(cached)
+
     try:
         structured_llm, prompt = _extraction_request(query)
         result = structured_llm.invoke(prompt)
@@ -92,15 +153,14 @@ def extract_search_keywords(query: str) -> list[str]:
         logger.warning("keyword_extraction_failed", query=query, error=str(e))
         return _fallback_tokenize(query)
 
-    logger.debug("keywords_extracted", query=query, keywords=result.keywords)
-    return result.keywords
+    return _remember(query, result, "keywords_extracted")
 
 
 async def extract_search_keywords_async(query: str) -> list[str]:
     """Async version of extract_search_keywords.
 
     Uses LLM with structured output to extract meaningful keywords,
-    removing stopwords and particles.
+    removing stopwords and particles. Shares its cache with the sync variant.
 
     Args:
         query: Natural language query (Korean or English).
@@ -109,6 +169,10 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         List of clean keywords for BM25 search. Falls back to whitespace
         tokenization with stopword filtering if the LLM call fails.
     """
+    cached = _cache_slot(query).keywords
+    if cached is not None:
+        return list(cached)
+
     try:
         structured_llm, prompt = _extraction_request(query)
         result = await structured_llm.ainvoke(prompt)
@@ -116,5 +180,4 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         logger.warning("keyword_extraction_failed_async", query=query, error=str(e))
         return _fallback_tokenize(query)
 
-    logger.debug("keywords_extracted_async", query=query, keywords=result.keywords)
-    return result.keywords
+    return _remember(query, result, "keywords_extracted_async")

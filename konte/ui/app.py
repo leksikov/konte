@@ -10,10 +10,12 @@ from konte import (
     get_project,
     list_projects,
     project_exists,
+    settings,
 )
 from konte.models import RetrievalMode
 
 _RETRIEVAL_MODES: list[str] = list(get_args(RetrievalMode))
+_KEYWORD_EXTRACTION_INFO = "Improves Korean BM25; costs one LLM call per new query"
 
 
 def get_project_choices() -> list[str]:
@@ -75,6 +77,7 @@ def query_handler(
     query: str,
     mode: str,
     top_k: int,
+    keyword_extraction: bool,
 ) -> str:
     """Handle query request."""
     if not project_name:
@@ -87,7 +90,12 @@ def query_handler(
         return f"Project not found: {project_name}"
 
     project = get_project(project_name)
-    response = project.query(query, mode=mode, top_k=top_k)
+    response = project.query(
+        query,
+        mode=mode,
+        top_k=top_k,
+        use_keyword_extraction=keyword_extraction,
+    )
     return format_results(response)
 
 
@@ -97,6 +105,7 @@ async def ask_handler(
     mode: str,
     top_k: int,
     max_chunks: int,
+    keyword_extraction: bool,
 ) -> tuple[str, str]:
     """Handle ask request (returns answer and sources)."""
     if not project_name:
@@ -114,6 +123,7 @@ async def ask_handler(
         mode=mode,
         top_k=top_k,
         max_chunks=max_chunks,
+        use_keyword_extraction=keyword_extraction,
     )
 
     answer_text = (
@@ -180,6 +190,11 @@ def create_interface() -> gr.Blocks:
                                 step=1,
                                 label="Top K Results",
                             )
+                        query_keywords = gr.Checkbox(
+                            value=settings.BM25_KEYWORD_EXTRACTION,
+                            label="LLM keyword extraction",
+                            info=_KEYWORD_EXTRACTION_INFO,
+                        )
                         query_btn = gr.Button("Search", variant="primary")
 
                     with gr.Column(scale=3):
@@ -215,6 +230,11 @@ def create_interface() -> gr.Blocks:
                                 step=1,
                                 label="Max Chunks for Answer",
                             )
+                        ask_keywords = gr.Checkbox(
+                            value=settings.BM25_KEYWORD_EXTRACTION,
+                            label="LLM keyword extraction",
+                            info=_KEYWORD_EXTRACTION_INFO,
+                        )
                         ask_btn = gr.Button("Ask", variant="primary")
 
                     with gr.Column(scale=3):
@@ -235,13 +255,20 @@ def create_interface() -> gr.Blocks:
 
         query_btn.click(
             fn=query_handler,
-            inputs=[project_dropdown, query_input, mode_select, top_k_slider],
+            inputs=[project_dropdown, query_input, mode_select, top_k_slider, query_keywords],
             outputs=[query_output],
         )
 
         ask_btn.click(
             fn=ask_handler,
-            inputs=[project_dropdown, ask_input, ask_mode_select, ask_top_k, max_chunks_slider],
+            inputs=[
+                project_dropdown,
+                ask_input,
+                ask_mode_select,
+                ask_top_k,
+                max_chunks_slider,
+                ask_keywords,
+            ],
             outputs=[answer_output, sources_output],
         )
 

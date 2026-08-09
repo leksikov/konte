@@ -5,6 +5,12 @@ from pydantic import BaseModel, Field
 from konte.generator import GeneratedAnswer
 from konte.models import RetrievalMode, RetrievalResponse
 
+_KEYWORD_EXTRACTION_DESCRIPTION = (
+    "Reduce the query to keywords before BM25 search, improving Korean lexical "
+    "matching at the cost of one LLM call per distinct query. Omit to follow "
+    "the server's BM25_KEYWORD_EXTRACTION setting; send false to skip it."
+)
+
 
 class QueryRequest(BaseModel):
     """Request model for query endpoint."""
@@ -19,6 +25,10 @@ class QueryRequest(BaseModel):
         ge=1,
         le=100,
         description="Number of results to return",
+    )
+    use_keyword_extraction: bool | None = Field(
+        default=None,
+        description=_KEYWORD_EXTRACTION_DESCRIPTION,
     )
 
 
@@ -41,6 +51,10 @@ class AskRequest(BaseModel):
         ge=1,
         le=50,
         description="Maximum chunks for answer generation",
+    )
+    use_keyword_extraction: bool | None = Field(
+        default=None,
+        description=_KEYWORD_EXTRACTION_DESCRIPTION,
     )
 
 

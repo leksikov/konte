@@ -112,12 +112,10 @@ def query_all_projects(
 ) -> dict[str, RetrievalResponse]:
     """Query multiple projects.
 
-    Note: project.query() is sync and fast (in-memory index lookup).
-    No async overhead needed - just loop through projects.
-
-    For true parallelism with slow queries, consider:
-    - Making project.query() async
-    - Or using multiprocessing for CPU-bound work
+    Ranking is an in-memory index lookup, so a plain loop is enough. The one
+    network step is BM25 keyword extraction, and every project here sees the
+    same query, so only the first pays for it - the rest hit the cache. Pass
+    use_keyword_extraction=False to skip it, or query_async() inside a loop.
 
     Args:
         projects: List of Konte projects to query.

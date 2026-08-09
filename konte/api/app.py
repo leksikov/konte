@@ -78,6 +78,7 @@ def query_project(name: str, request: QueryRequest) -> RetrievalResponse:
         query=request.query,
         mode=request.mode,
         top_k=request.top_k,
+        use_keyword_extraction=request.use_keyword_extraction,
     )
 
 
@@ -90,6 +91,7 @@ async def ask_project(name: str, request: AskRequest) -> AskResponse:
         mode=request.mode,
         top_k=request.top_k,
         max_chunks=request.max_chunks,
+        use_keyword_extraction=request.use_keyword_extraction,
     )
     return AskResponse(retrieval=response, answer=answer)
 

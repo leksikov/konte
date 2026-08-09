@@ -40,6 +40,15 @@ _STORAGE_OPTION = typer.Option(
     help="Storage path (default: ~/.konte)",
 )
 
+_KEYWORD_EXTRACTION_OPTION = typer.Option(
+    None,
+    "--keyword-extraction/--no-keyword-extraction",
+    help=(
+        "Reduce the query to keywords before BM25 search, at the cost of one "
+        "LLM call (default: BM25_KEYWORD_EXTRACTION)"
+    ),
+)
+
 
 def _fail(message: str) -> NoReturn:
     """Report a problem on stdout and exit with status 1."""
@@ -304,6 +313,7 @@ def query(
         "-f",
         help='Metadata filter as JSON, e.g. \'{"source": "doc.pdf", "year": 2024}\'',
     ),
+    keyword_extraction: bool | None = _KEYWORD_EXTRACTION_OPTION,
 ) -> None:
     """Query a project."""
     path = _resolve_storage(storage_path)
@@ -315,7 +325,11 @@ def query(
     with _reporting_errors():
         project = get_project(name, storage_path=path)
         response = project.query(
-            query_text, mode=retrieval_mode, top_k=top_k, metadata_filter=metadata_filter
+            query_text,
+            mode=retrieval_mode,
+            top_k=top_k,
+            use_keyword_extraction=keyword_extraction,
+            metadata_filter=metadata_filter,
         )
 
         console.print(f"\n[bold]Query:[/bold] {query_text}")
@@ -364,6 +378,7 @@ def ask(
         "-f",
         help='Metadata filter as JSON, e.g. \'{"company": "ACME", "year": 2024}\'',
     ),
+    keyword_extraction: bool | None = _KEYWORD_EXTRACTION_OPTION,
     show_sources: bool = typer.Option(
         False,
         "--show-sources",
@@ -387,6 +402,7 @@ def ask(
                     mode=retrieval_mode,
                     top_k=top_k,
                     max_chunks=max_chunks,
+                    use_keyword_extraction=keyword_extraction,
                     metadata_filter=metadata_filter,
                 )
             )

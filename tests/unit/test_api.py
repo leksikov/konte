@@ -26,15 +26,17 @@ class TestQueryRequest:
         assert req.query == "test query"
         assert req.mode == "hybrid"
         assert req.top_k is None
+        assert req.use_keyword_extraction is None  # defers to the server setting
 
     def test_query_request_all_fields(self):
         """Test QueryRequest with all fields."""
         from konte.api.schemas import QueryRequest
 
-        req = QueryRequest(query="test", mode="semantic", top_k=20)
+        req = QueryRequest(query="test", mode="semantic", top_k=20, use_keyword_extraction=False)
         assert req.query == "test"
         assert req.mode == "semantic"
         assert req.top_k == 20
+        assert req.use_keyword_extraction is False
 
     def test_query_request_empty_query_fails(self):
         """Test QueryRequest validation rejects empty query."""
@@ -74,6 +76,7 @@ class TestAskRequest:
         assert req.mode == "hybrid"
         assert req.top_k is None
         assert req.max_chunks == 10
+        assert req.use_keyword_extraction is None
 
     def test_ask_request_max_chunks_bounds(self):
         """Test AskRequest max_chunks bounds."""
@@ -245,4 +248,36 @@ class TestAPIEndpoints:
                     query="test query",
                     mode="hybrid",
                     top_k=10,
+                    use_keyword_extraction=None,
                 )
+
+    def test_query_project_forwards_keyword_extraction(self):
+        """Test a client can opt out of the LLM call the query would otherwise make."""
+        mock_project = MagicMock()
+        mock_project.query.return_value = MagicMock(
+            results=[],
+            query="test query",
+            total_found=0,
+            top_score=0.0,
+            score_spread=0.0,
+            has_high_confidence=False,
+            suggested_action="refine_query",
+        )
+
+        with patch.object(api_app, "project_exists") as mock_exists:
+            with patch.object(api_app, "get_project") as mock_get:
+                mock_exists.return_value = True
+                mock_get.return_value = mock_project
+
+                from fastapi.testclient import TestClient
+
+                from konte.api.app import app
+
+                client = TestClient(app)
+                response = client.post(
+                    "/projects/myproject/query",
+                    json={"query": "test query", "use_keyword_extraction": False},
+                )
+
+                assert response.status_code == 200
+                assert mock_project.query.call_args.kwargs["use_keyword_extraction"] is False

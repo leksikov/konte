@@ -27,6 +27,19 @@ class TestSettings:
             assert s.DEFAULT_TOP_K == 20
             assert s.MAX_CONCURRENT_CALLS == 1  # Sequential to avoid rate limits
             assert s.CONFIDENCE_THRESHOLD == 0.7
+            assert s.BM25_KEYWORD_EXTRACTION is True
+
+    def test_keyword_extraction_timeout_is_short(self):
+        """Test extraction cannot inherit a batch-sized timeout.
+
+        The call blocks a caller waiting on search results and has a working
+        fallback, so a long default trades graceful degradation for a stall.
+        """
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
+            from konte.config import Settings
+
+            s = Settings()
+            assert 0 < s.KEYWORD_EXTRACTION_TIMEOUT <= 5.0
 
     def test_storage_path_expansion(self):
         """Test that ~ is expanded in STORAGE_PATH."""

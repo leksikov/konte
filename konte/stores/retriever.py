@@ -1,6 +1,8 @@
 """Hybrid retriever with reciprocal rank fusion."""
 
 import random
+from collections.abc import Sequence
+from typing import NamedTuple
 
 import structlog
 
@@ -13,7 +15,7 @@ from konte.models import (
     RetrievalResult,
     SuggestedAction,
 )
-from konte.query_processor import extract_search_keywords
+from konte.query_processor import extract_search_keywords, extract_search_keywords_async
 from konte.stores.bm25_store import BM25Store
 from konte.stores.faiss_store import FAISSStore
 from konte.stores.reranker import rerank_chunks_with_score
@@ -25,6 +27,45 @@ ScoredChunks = list[tuple[ContextualizedChunk, float]]
 RRF_K = 60
 _FUSION_CANDIDATE_MULTIPLIER = 2
 _INJECTED_EVIDENCE_SCORE = 0.95
+
+
+class _Queries(NamedTuple):
+    """The text each index is asked to rank against.
+
+    `semantic` is the query exactly as the caller wrote it — an embedding model
+    reads a natural-language question better than a bag of keywords. `lexical`
+    is the same string unless keyword extraction reduced it for BM25.
+
+    Resolving both up front lifts the one network-bound step out of the ranking
+    helpers, leaving those pure and the async entry points an await apart.
+    """
+
+    semantic: str
+    lexical: str
+
+
+def _resolve_keyword_extraction(override: bool | None) -> bool:
+    """Settle whether BM25 searches extracted keywords or the raw query."""
+    if override is None:
+        return settings.BM25_KEYWORD_EXTRACTION
+    return override
+
+
+def _lexical_query(query: str, keywords: Sequence[str]) -> str:
+    """Assemble the string BM25 will tokenize from an extraction result.
+
+    An extraction that keeps nothing — an empty list from the model, or a
+    question made entirely of stopwords reaching the fallback — would search
+    for the empty string, scoring every chunk zero. The original query stands in.
+    """
+    search_query = " ".join(keywords)
+    logger.debug(
+        "bm25_keyword_extraction",
+        original_query=query,
+        keywords=keywords,
+        search_query=search_query,
+    )
+    return search_query or query
 
 
 def reciprocal_rank_fusion(
@@ -210,18 +251,19 @@ class Retriever:
         Returns:
             RetrievalResponse with results.
         """
-        k = top_k or settings.DEFAULT_TOP_K
-        if not self._has_semantic:
-            logger.warning("semantic_retrieval_no_index")
-
-        results = self._semantic_results(query, k, metadata_filter, source_filter)
-        return _build_retrieval_response(query, results, k)
+        return self._respond(
+            _Queries(query, query),
+            "semantic",
+            top_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+        )
 
     def retrieve_lexical(
         self,
         query: str,
         top_k: int | None = None,
-        use_keyword_extraction: bool = True,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
@@ -230,27 +272,27 @@ class Retriever:
         Args:
             query: Query string.
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
-            use_keyword_extraction: If True, extract keywords for better Korean BM25.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION.
             metadata_filter: Filter results by metadata (equality match, AND logic).
             source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
         """
-        k = top_k or settings.DEFAULT_TOP_K
-        if not self._has_lexical:
-            logger.warning("lexical_retrieval_no_index")
-
-        results = self._lexical_results(
-            query, k, use_keyword_extraction, metadata_filter, source_filter
+        return self._respond(
+            self._queries(query, "lexical", use_keyword_extraction),
+            "lexical",
+            top_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
         )
-        return _build_retrieval_response(query, results, k)
 
     def retrieve_hybrid(
         self,
         query: str,
         top_k: int | None = None,
-        use_keyword_extraction: bool = True,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
@@ -261,32 +303,28 @@ class Retriever:
         Args:
             query: Query string.
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
-            use_keyword_extraction: If True, extract keywords for better Korean BM25.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION.
             metadata_filter: Filter results by metadata (equality match, AND logic).
             source_filter: Substring match on chunk source field.
 
         Returns:
             RetrievalResponse with results.
         """
-        k = top_k or settings.DEFAULT_TOP_K
-
-        if not self._has_semantic and not self._has_lexical:
-            logger.warning("hybrid_retrieval_no_indexes")
-        elif not self._has_semantic:
-            logger.warning("hybrid_fallback_to_lexical")
-        elif not self._has_lexical:
-            logger.warning("hybrid_fallback_to_semantic")
-
-        results = self._hybrid_results(
-            query, k, use_keyword_extraction, metadata_filter, source_filter
+        return self._respond(
+            self._queries(query, "hybrid", use_keyword_extraction),
+            "hybrid",
+            top_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
         )
-        return _build_retrieval_response(query, results, k)
 
     def retrieve(
         self,
         query: str,
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
         inject_evidence: str | None = None,
@@ -294,10 +332,15 @@ class Retriever:
     ) -> RetrievalResponse:
         """Retrieve documents using specified mode.
 
+        Blocks on keyword extraction when that is enabled; retrieve_async is
+        the variant that does not.
+
         Args:
             query: Query string.
             mode: Retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION.
             metadata_filter: Filter results by metadata (equality match, AND logic).
             source_filter: Substring match on chunk source field.
             inject_evidence: For ablation study - inject this text.
@@ -306,23 +349,55 @@ class Retriever:
         Returns:
             RetrievalResponse with results and agent hints.
         """
-        if mode == "semantic":
-            response = self.retrieve_semantic(
-                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
-            )
-        elif mode == "lexical":
-            response = self.retrieve_lexical(
-                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
-            )
-        else:
-            response = self.retrieve_hybrid(
-                query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
-            )
+        return self._respond(
+            self._queries(query, mode, use_keyword_extraction),
+            mode,
+            top_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+            inject_evidence=inject_evidence,
+            inject_position=inject_position,
+        )
 
-        if inject_evidence:
-            response = _inject_evidence_result(response, inject_evidence, inject_position)
+    async def retrieve_async(
+        self,
+        query: str,
+        mode: RetrievalMode = "hybrid",
+        top_k: int | None = None,
+        use_keyword_extraction: bool | None = None,
+        metadata_filter: MetadataFilter | None = None,
+        source_filter: str | None = None,
+        inject_evidence: str | None = None,
+        inject_position: int | None = None,
+    ) -> RetrievalResponse:
+        """Retrieve documents using specified mode, without blocking the loop.
 
-        return response
+        Identical to retrieve() except that keyword extraction is awaited;
+        ranking is an in-memory index lookup with nothing to await.
+
+        Args:
+            query: Query string.
+            mode: Retrieval mode - "hybrid", "semantic", or "lexical".
+            top_k: Number of results. Defaults to settings.DEFAULT_TOP_K.
+            use_keyword_extraction: Extract keywords before BM25 search, at the
+                cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
+            inject_evidence: For ablation study - inject this text.
+            inject_position: Position to inject (0=top, None=random).
+
+        Returns:
+            RetrievalResponse with results and agent hints.
+        """
+        return self._respond(
+            await self._queries_async(query, mode, use_keyword_extraction),
+            mode,
+            top_k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+            inject_evidence=inject_evidence,
+            inject_position=inject_position,
+        )
 
     async def retrieve_with_rerank(
         self,
@@ -330,6 +405,7 @@ class Retriever:
         mode: RetrievalMode = "hybrid",
         top_k: int | None = None,
         initial_k: int = 50,
+        use_keyword_extraction: bool | None = None,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> RetrievalResponse:
@@ -343,6 +419,9 @@ class Retriever:
             mode: Initial retrieval mode - "hybrid", "semantic", or "lexical".
             top_k: Final number of results after reranking.
             initial_k: Number of candidates to retrieve before reranking.
+            use_keyword_extraction: Extract keywords for better Korean BM25, at
+                the cost of one LLM call. Unset means off for hybrid (see
+                below) and settings.BM25_KEYWORD_EXTRACTION otherwise.
             metadata_filter: Filter results by metadata (equality match, AND logic).
             source_filter: Substring match on chunk source field.
 
@@ -351,13 +430,17 @@ class Retriever:
         """
         k = top_k or settings.DEFAULT_TOP_K
 
-        initial_results = self._results_for_mode(
-            query,
+        # Deliberate: reranked hybrid has always fed BM25 the raw query, so an
+        # unset flag stays off here instead of following the configured
+        # default. Enabling it would shift every reranked hybrid result.
+        if use_keyword_extraction is None and mode == "hybrid":
+            use_keyword_extraction = False
+
+        queries = await self._queries_async(query, mode, use_keyword_extraction)
+        initial_results = self._ranked(
+            queries,
             mode,
             initial_k,
-            # Deliberate: reranked hybrid has always fed BM25 the raw query.
-            # Enabling extraction here would shift every reranked hybrid result.
-            use_keyword_extraction=mode != "hybrid",
             metadata_filter=metadata_filter,
             source_filter=source_filter,
         )
@@ -367,25 +450,101 @@ class Retriever:
         reranked = await rerank_chunks_with_score(query, initial_results, top_k=k)
         return _build_retrieval_response(query, reranked, k)
 
-    def _results_for_mode(
+    def _queries(
         self,
         query: str,
         mode: RetrievalMode,
+        use_keyword_extraction: bool | None,
+    ) -> _Queries:
+        """Resolve the per-index query text, extracting keywords when asked to."""
+        if not self._extraction_applies(mode, use_keyword_extraction):
+            return _Queries(query, query)
+        return _Queries(query, _lexical_query(query, extract_search_keywords(query)))
+
+    async def _queries_async(
+        self,
+        query: str,
+        mode: RetrievalMode,
+        use_keyword_extraction: bool | None,
+    ) -> _Queries:
+        """Async twin of _queries; the extraction call is the only difference."""
+        if not self._extraction_applies(mode, use_keyword_extraction):
+            return _Queries(query, query)
+        return _Queries(query, _lexical_query(query, await extract_search_keywords_async(query)))
+
+    def _extraction_applies(self, mode: RetrievalMode, override: bool | None) -> bool:
+        """True when extraction would change what this retrieval actually reads.
+
+        Semantic mode never reads the lexical query, and a project without a
+        lexical index degrades to semantic whatever the mode asked for; neither
+        should pay for a keyword call whose result is discarded.
+        """
+        return (
+            mode != "semantic"
+            and self._has_lexical
+            and _resolve_keyword_extraction(override)
+        )
+
+    def _respond(
+        self,
+        queries: _Queries,
+        mode: RetrievalMode,
+        top_k: int | None,
+        *,
+        metadata_filter: MetadataFilter | None = None,
+        source_filter: str | None = None,
+        inject_evidence: str | None = None,
+        inject_position: int | None = None,
+    ) -> RetrievalResponse:
+        """Rank against already-resolved queries and wrap the outcome."""
+        k = top_k or settings.DEFAULT_TOP_K
+        results = self._ranked(
+            queries,
+            mode,
+            k,
+            metadata_filter=metadata_filter,
+            source_filter=source_filter,
+        )
+        response = _build_retrieval_response(queries.semantic, results, k)
+
+        if inject_evidence:
+            return _inject_evidence_result(response, inject_evidence, inject_position)
+        return response
+
+    def _ranked(
+        self,
+        queries: _Queries,
+        mode: RetrievalMode,
         top_k: int,
-        use_keyword_extraction: bool,
+        *,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> ScoredChunks:
         """Rank with one mode without wrapping the outcome in a response."""
+        self._warn_missing_indexes(mode)
+
         if mode == "semantic":
-            return self._semantic_results(query, top_k, metadata_filter, source_filter)
-        if mode == "lexical":
-            return self._lexical_results(
-                query, top_k, use_keyword_extraction, metadata_filter, source_filter
+            return self._semantic_results(
+                queries.semantic, top_k, metadata_filter, source_filter
             )
-        return self._hybrid_results(
-            query, top_k, use_keyword_extraction, metadata_filter, source_filter
-        )
+        if mode == "lexical":
+            return self._lexical_results(queries.lexical, top_k, metadata_filter, source_filter)
+        return self._hybrid_results(queries, top_k, metadata_filter, source_filter)
+
+    def _warn_missing_indexes(self, mode: RetrievalMode) -> None:
+        """Report the indexes this mode asked for and did not get."""
+        if mode == "semantic":
+            if not self._has_semantic:
+                logger.warning("semantic_retrieval_no_index")
+        elif mode == "lexical":
+            if not self._has_lexical:
+                logger.warning("lexical_retrieval_no_index")
+        elif not self._has_semantic and not self._has_lexical:
+            logger.warning("hybrid_retrieval_no_indexes")
+        elif not self._has_semantic:
+            logger.warning("hybrid_fallback_to_lexical")
+        elif not self._has_lexical:
+            logger.warning("hybrid_fallback_to_semantic")
 
     def _semantic_results(
         self,
@@ -403,58 +562,46 @@ class Retriever:
 
     def _lexical_results(
         self,
-        query: str,
+        search_query: str,
         top_k: int,
-        use_keyword_extraction: bool = True,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> ScoredChunks:
         """Rank with the lexical index alone; empty when it is unavailable.
 
         BM25 has no notion of stopwords or Korean particles, so a raw
-        natural-language question dilutes every term that matters. Keyword
-        extraction reduces the query to content words first.
+        natural-language question dilutes every term that matters. The caller
+        passes the already-reduced query; see _Queries.
         """
         if self._bm25 is None or self._bm25.is_empty:
             return []
-
-        search_query = query
-        if use_keyword_extraction:
-            keywords = extract_search_keywords(query)
-            search_query = " ".join(keywords)
-            logger.debug(
-                "bm25_keyword_extraction",
-                original_query=query,
-                keywords=keywords,
-                search_query=search_query,
-            )
-
         return self._bm25.query(
             search_query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
         )
 
     def _hybrid_results(
         self,
-        query: str,
+        queries: _Queries,
         top_k: int,
-        use_keyword_extraction: bool = True,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> ScoredChunks:
         """Fuse both indexes, degrading to whichever one is available."""
         if not self._has_semantic:
             return self._lexical_results(
-                query, top_k, use_keyword_extraction, metadata_filter, source_filter
+                queries.lexical, top_k, metadata_filter, source_filter
             )
         if not self._has_lexical:
-            return self._semantic_results(query, top_k, metadata_filter, source_filter)
+            return self._semantic_results(
+                queries.semantic, top_k, metadata_filter, source_filter
+            )
 
         fetch_k = top_k * _FUSION_CANDIDATE_MULTIPLIER
         return reciprocal_rank_fusion(
             [
-                self._semantic_results(query, fetch_k, metadata_filter, source_filter),
-                self._lexical_results(
-                    query, fetch_k, use_keyword_extraction, metadata_filter, source_filter
+                self._semantic_results(
+                    queries.semantic, fetch_k, metadata_filter, source_filter
                 ),
+                self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter),
             ]
         )

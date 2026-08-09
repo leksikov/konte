@@ -25,6 +25,7 @@ def _build_client(
     model: str,
     timeout: float,
     max_tokens: int | None = None,
+    max_retries: int = CLIENT_MAX_RETRIES,
     base_url: str | None = None,
     api_key: str | None = None,
     extra_body: dict[str, Any] | None = None,
@@ -41,6 +42,7 @@ def _build_client(
         model: Model name to request.
         timeout: Request timeout in seconds.
         max_tokens: Ceiling on response tokens, or None for the model default.
+        max_retries: Client-side retry budget; each retry costs another full timeout.
         base_url: OpenAI-compatible endpoint, or None for the OpenAI default.
         api_key: Credential for that endpoint, or None to resolve from the env.
         extra_body: Extra JSON merged into the request body by the server.
@@ -52,7 +54,7 @@ def _build_client(
         "model": model,
         "temperature": 0,
         "timeout": timeout,
-        "max_retries": CLIENT_MAX_RETRIES,
+        "max_retries": max_retries,
     }
     for name, value in (
         ("max_tokens", max_tokens),
@@ -69,6 +71,7 @@ def _build_custom_client(
     *,
     timeout: float,
     max_tokens: int | None,
+    max_retries: int = CLIENT_MAX_RETRIES,
     extra_body: dict[str, Any] | None,
     log_event: str,
 ) -> ChatOpenAI:
@@ -77,6 +80,7 @@ def _build_custom_client(
     Args:
         timeout: Request timeout in seconds.
         max_tokens: Ceiling on response tokens, or None for the model default.
+        max_retries: Client-side retry budget; see _build_client.
         extra_body: Extra JSON merged into the request body by the server.
         log_event: Event name recorded when the connection is first opened.
 
@@ -92,6 +96,7 @@ def _build_custom_client(
         model=settings.LLM_MODEL or "",
         timeout=timeout,
         max_tokens=max_tokens,
+        max_retries=max_retries,
         base_url=settings.LLM_BASE_URL,
         # Self-hosted endpoints often need no credential, but the client demands one.
         api_key=settings.LLM_API_KEY or "not-needed",
@@ -107,7 +112,12 @@ def _get_or_build(cache_key: str, build: Callable[[], ChatOpenAI]) -> ChatOpenAI
     return client
 
 
-def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 400) -> ChatOpenAI:
+def get_llm(
+    model: str | None = None,
+    timeout: float = 120.0,
+    max_tokens: int = 400,
+    max_retries: int = CLIENT_MAX_RETRIES,
+) -> ChatOpenAI:
     """Get or create a cached client for context generation and query processing.
 
     Routes to the custom endpoint when LLM_BASE_URL and LLM_MODEL are both set
@@ -117,16 +127,21 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
         model: Model name. Defaults to settings.CONTEXT_MODEL or settings.LLM_MODEL.
         timeout: Request timeout in seconds.
         max_tokens: Maximum tokens for the LLM response.
+        max_retries: Client-side retry budget. Worst-case latency is
+            timeout * (max_retries + 1).
 
     Returns:
         Cached ChatOpenAI instance.
     """
+    # Every argument reaching the constructor has to key the cache, or the
+    # first caller's timeout and retry budget would be served to the next one.
     if settings.use_custom_llm and model in (None, settings.LLM_MODEL):
         return _get_or_build(
-            f"custom_{settings.LLM_MODEL}_{timeout}_{max_tokens}",
+            f"custom_{settings.LLM_MODEL}_{timeout}_{max_tokens}_{max_retries}",
             lambda: _build_custom_client(
                 timeout=timeout,
                 max_tokens=max_tokens,
+                max_retries=max_retries,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 log_event="using_custom_llm",
             ),
@@ -134,8 +149,13 @@ def get_llm(model: str | None = None, timeout: float = 120.0, max_tokens: int = 
 
     model_name = model or settings.CONTEXT_MODEL
     return _get_or_build(
-        f"openai_{model_name}_{timeout}_{max_tokens}",
-        lambda: _build_client(model=model_name, timeout=timeout, max_tokens=max_tokens),
+        f"openai_{model_name}_{timeout}_{max_tokens}_{max_retries}",
+        lambda: _build_client(
+            model=model_name,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+        ),
     )
 
 

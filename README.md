@@ -221,6 +221,28 @@ response = project.query("query", mode="semantic")
 response = project.query("query", mode="lexical")
 ```
 
+### BM25 Keyword Extraction
+
+BM25 has no notion of stopwords or Korean particles, so a natural-language
+question dilutes the terms that matter. Before a lexical or hybrid search,
+Konte reduces the query to content words with one LLM call — a large recall
+gain for Korean, and a round trip your caller waits for.
+
+It is on by default, capped at `KEYWORD_EXTRACTION_TIMEOUT` with no retries,
+and cached per query, so a repeated search costs nothing. Turn it off per call:
+
+```python
+# Pure index lookup: no LLM, no network
+response = project.query("HS 8471 classification", use_keyword_extraction=False)
+```
+
+or for a whole deployment with `BM25_KEYWORD_EXTRACTION=false`. The same
+control exists on `query_async()`, `query_with_answer()`, the
+`use_keyword_extraction` field of the `/query` and `/ask` endpoints, the
+`--no-keyword-extraction` CLI flag, and the UI checkbox. When extraction fails
+or times out, retrieval falls back to whitespace tokenization with stopword
+filtering rather than failing the query.
+
 ## Skip Context Generation
 
 For standard RAG without LLM-generated context (faster, cheaper):
@@ -522,6 +544,9 @@ EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
 DEFAULT_TOP_K=20
 PROMPT_PATH=                   # Optional global context-prompt override
+
+BM25_KEYWORD_EXTRACTION=true   # LLM keyword extraction before lexical search
+KEYWORD_EXTRACTION_TIMEOUT=5.0 # Seconds before falling back to tokenization
 
 # Optional: any OpenAI-compatible server (vLLM, Ollama, LM Studio, ...)
 # (replaces OpenAI for context/answer generation only - not embeddings)

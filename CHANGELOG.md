@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `use_keyword_extraction` on `Project.query()`, `query_async()`,
+  `query_with_answer()`, every `Retriever` entry point, the `/query` and `/ask`
+  request bodies, the `konte query`/`konte ask` CLI, and the Gradio UI. Unset
+  follows the new `BM25_KEYWORD_EXTRACTION` setting, so BM25 keyword extraction
+  can be turned off per call or per deployment instead of being unconditional
+- `Retriever.retrieve_async()`, the non-blocking counterpart to `retrieve()`
+- `clear_keyword_cache()` and `extract_search_keywords_async()` are now exported
+- `max_retries` on `get_llm()`, for callers that cannot afford a retry storm
+
+### Changed
+
+- Keyword extraction runs on `KEYWORD_EXTRACTION_TIMEOUT` (5s) without retries
+  instead of the 120s context-generation budget with two retries, cutting the
+  worst case a stalled endpoint can impose on one query from ~360s to 5s
+- Extraction results are cached per query and shared by the sync and async
+  paths, so a repeated or refined search no longer repeats the round trip
+- `query_async()` and `query_with_answer()` await keyword extraction instead of
+  blocking the event loop, which had stalled every other request in an ASGI
+  worker for the duration of the call
+
+### Fixed
+
+- An extraction that returned no keywords searched BM25 for the empty string,
+  scoring every chunk zero and returning whichever ones came first; the
+  original query is now used instead
+
 ## [0.1.0] - 2026-07-29
 
 ### Added

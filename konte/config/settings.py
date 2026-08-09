@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.7  # "deliver" threshold
     MEDIUM_CONFIDENCE_THRESHOLD: float = 0.4  # "query_more" threshold
 
+    # BM25 query preprocessing. Extraction costs one LLM round trip per
+    # distinct query; turning it off here keeps retrieval purely in-memory.
+    BM25_KEYWORD_EXTRACTION: bool = True
+    KEYWORD_EXTRACTION_TIMEOUT: float = 5.0  # seconds before the tokenizer fallback
+
     # Concurrency
     MAX_CONCURRENT_CALLS: int = 1  # Sequential processing to avoid rate limits
 
