@@ -1,15 +1,21 @@
 """FastAPI application for Konte contextual RAG."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Annotated
+
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from konte import (
     ProjectConfig,
     RetrievalResponse,
     __version__,
-    get_project,
+    get_shared_project,
     list_projects,
+    preload_projects,
     project_exists,
+    settings,
 )
 from konte.api.schemas import (
     AskRequest,
@@ -22,28 +28,57 @@ from konte.project import Project
 
 logger = structlog.get_logger()
 
+
+def _preload_targets() -> list[str]:
+    """Resolve settings.PRELOAD_PROJECTS into the project names to open."""
+    requested = [part.strip() for part in settings.PRELOAD_PROJECTS.split(",") if part.strip()]
+    return list_projects() if "*" in requested else requested
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Open the configured projects before the first request arrives."""
+    targets = _preload_targets()
+    if targets:
+        loaded = preload_projects(targets)
+        logger.info("projects_preloaded", requested=len(targets), loaded=len(loaded))
+
+    yield
+
+
 app = FastAPI(
     title="Konte API",
     description="Contextual RAG API with hybrid retrieval",
     version=__version__,
+    lifespan=lifespan,
 )
 
 
-def _load_project(name: str) -> Project:
-    """Load a project by name.
+def resolve_project(name: str) -> Project:
+    """Hand an endpoint the shared instance of the project it addresses.
+
+    Sync on purpose: FastAPI runs a sync dependency in a worker thread, so a
+    cold open does not stall the event loop.
 
     Args:
-        name: Project name.
+        name: Project name, taken from the path.
 
     Returns:
-        The loaded project.
+        The shared project, to query but not to modify.
 
     Raises:
         HTTPException: 404 when no project with that name exists.
     """
     if not project_exists(name):
         raise HTTPException(status_code=404, detail=f"Project not found: {name}")
-    return get_project(name)
+
+    try:
+        return get_shared_project(name)
+    except FileNotFoundError as error:  # deleted between the check and the load
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}") from error
+
+
+LoadedProject = Annotated[Project, Depends(resolve_project)]
 
 
 @app.get("/health")
@@ -60,9 +95,9 @@ def list_all_projects() -> ProjectListResponse:
 
 
 @app.get("/projects/{name}", response_model=ProjectConfig)
-def get_project_info(name: str) -> ProjectConfig:
+def get_project_info(project: LoadedProject) -> ProjectConfig:
     """Get project configuration and info."""
-    return _load_project(name).config
+    return project.config
 
 
 @app.get("/projects/{name}/exists", response_model=ProjectExistsResponse)
@@ -72,9 +107,9 @@ def check_project_exists(name: str) -> ProjectExistsResponse:
 
 
 @app.post("/projects/{name}/query", response_model=RetrievalResponse)
-def query_project(name: str, request: QueryRequest) -> RetrievalResponse:
+def query_project(project: LoadedProject, request: QueryRequest) -> RetrievalResponse:
     """Query a project for relevant chunks."""
-    return _load_project(name).query(
+    return project.query(
         query=request.query,
         mode=request.mode,
         top_k=request.top_k,
@@ -83,9 +118,8 @@ def query_project(name: str, request: QueryRequest) -> RetrievalResponse:
 
 
 @app.post("/projects/{name}/ask", response_model=AskResponse)
-async def ask_project(name: str, request: AskRequest) -> AskResponse:
+async def ask_project(project: LoadedProject, request: AskRequest) -> AskResponse:
     """Query a project and generate an LLM answer."""
-    project = _load_project(name)
     response, answer = await project.query_with_answer(
         query=request.query,
         mode=request.mode,

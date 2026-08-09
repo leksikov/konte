@@ -17,8 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Retriever.retrieve_async()`, the non-blocking counterpart to `retrieve()`
 - `clear_keyword_cache()` and `extract_search_keywords_async()` are now exported
 - `max_retries` on `get_llm()`, for callers that cannot afford a retry storm
+- `get_shared_project()`, a process-wide cache of projects opened for querying,
+  with `preload_projects()`, `invalidate_project()` and `clear_project_cache()`
+  alongside it. `get_project()` keeps returning a private, mutable instance
+- `PROJECT_CACHE_SIZE` (default 4) and `PRELOAD_PROJECTS` settings, bounding how
+  many projects a server holds and which ones it opens at startup
 
 ### Changed
+
+- The API and the UI serve every request from a cached project instead of
+  reading the whole project back from disk each time. On a 20k-chunk project a
+  request spent ~330ms reopening before answering; it now costs a dictionary
+  lookup, and the FastAPI routes take the project through a dependency so a cold
+  open runs in a worker thread rather than on the event loop
+- Build checkpoints are an append-only log (`context_checkpoint.jsonl`), one
+  line per finished segment, replacing a whole-file rewrite after every segment
+  that wrote each chunk once per remaining segment. A 500-segment build wrote
+  ~1.7GB of checkpoints; it now writes ~7MB. A checkpoint in the old format is
+  converted on first read, so an interrupted build still resumes
+- Opening a project reads its indexes only. The stored chunks and segments are
+  parsed on first use, which a process that only answers queries never triggers
+- `bm25.pkl` no longer stores the tokenized corpus: BM25Okapi scores from the
+  term frequencies it already holds, so that was a second copy of the corpus to
+  write and unpickle (~25MB → ~2MB on a 20k-chunk project). Existing index files
+  still load; one written by this version cannot be read by an earlier release
 
 - Keyword extraction runs on `KEYWORD_EXTRACTION_TIMEOUT` (5s) without retries
   instead of the 120s context-generation budget with two retries, cutting the
@@ -34,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An extraction that returned no keywords searched BM25 for the empty string,
   scoring every chunk zero and returning whichever ones came first; the
   original query is now used instead
+- Project files were written in place, so a build interrupted mid-write left a
+  truncated file that the next resume could not parse — the exact accident
+  checkpointing exists to prevent. Every file is now written beside its target
+  and moved into place in one step, and a checkpoint log with a half-written
+  last line drops that line instead of failing
 
 ## [0.1.0] - 2026-07-29
 

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     BM25_KEYWORD_EXTRACTION: bool = True
     KEYWORD_EXTRACTION_TIMEOUT: float = 5.0  # seconds before the tokenizer fallback
 
+    # Serving
+    PROJECT_CACHE_SIZE: int = 4  # opened projects held in memory, indexes included
+    PRELOAD_PROJECTS: str = ""  # comma-separated names opened at API startup, "*" for all
+
     # Concurrency
     MAX_CONCURRENT_CALLS: int = 1  # Sequential processing to avoid rate limits
 

@@ -2,6 +2,12 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from konte.cache import (
+    clear_project_cache,
+    get_shared_project,
+    invalidate_project,
+    preload_projects,
+)
 from konte.config import settings
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.manager import (
@@ -54,6 +60,11 @@ __all__ = [
     "get_project",
     "delete_project",
     "project_exists",
+    # Serving cache
+    "get_shared_project",
+    "preload_projects",
+    "invalidate_project",
+    "clear_project_cache",
     # Generator
     "generate_answer",
     # Query processor

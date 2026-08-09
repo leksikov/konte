@@ -1,154 +1,229 @@
 """Unit tests for build checkpoint functionality."""
 
+import json
+from itertools import pairwise
 from unittest.mock import patch
 
 import pytest
 
+from konte.checkpoint import CHECKPOINT_FILENAME, LEGACY_CHECKPOINT_FILENAME, CheckpointLog
+
+
+def _record(segment: str, chunk_id: str) -> dict:
+    """Build the storage payload one finished segment would append."""
+    return {
+        "segments": [segment],
+        "chunks": [{"chunk": {"chunk_id": chunk_id}, "context": f"ctx-{chunk_id}"}],
+    }
+
 
 @pytest.mark.unit
 class TestCheckpointPath:
-    """Test _checkpoint_path method."""
+    """Test where the log lives."""
 
-    def test_checkpoint_path_returns_correct_path(self, tmp_path):
-        """Test that _checkpoint_path returns correct path."""
+    def test_log_path_is_inside_project_dir(self, tmp_path):
+        """Test that the log sits next to the project's other artifacts."""
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
-        checkpoint_path = project._checkpoint_path()
 
-        expected = tmp_path / "test_project" / "context_checkpoint.json"
-        assert checkpoint_path == expected
+        assert project._checkpoint.path == tmp_path / "test_project" / CHECKPOINT_FILENAME
 
 
 @pytest.mark.unit
-class TestLoadCheckpoint:
-    """Test _load_checkpoint method."""
+class TestReadCheckpoint:
+    """Test CheckpointLog.read."""
 
-    def test_load_checkpoint_returns_none_if_not_exists(self, tmp_path):
-        """Test that _load_checkpoint returns None if file doesn't exist."""
-        from konte.project import Project
+    def test_read_returns_none_if_not_exists(self, tmp_path):
+        """Test that read returns None when nothing was ever written."""
+        assert CheckpointLog(tmp_path).read() is None
 
-        project = Project.create(name="test_project", storage_path=tmp_path)
-        result = project._load_checkpoint()
+    def test_read_returns_none_for_empty_log(self, tmp_path):
+        """Test that a log with no records reads as no checkpoint."""
+        (tmp_path / CHECKPOINT_FILENAME).write_text("", encoding="utf-8")
 
-        assert result is None
+        assert CheckpointLog(tmp_path).read() is None
 
-    def test_load_checkpoint_returns_checkpoint_if_exists(self, tmp_path):
-        """Test that _load_checkpoint returns BuildCheckpoint if file exists."""
-        import json
+    def test_read_concatenates_records(self, tmp_path):
+        """Test that every appended segment comes back in one checkpoint."""
+        log = CheckpointLog(tmp_path)
+        with log.appending() as appender:
+            appender.append("doc.pdf|0", [{"chunk": {"chunk_id": "id1"}, "context": "ctx1"}])
+            appender.append("doc.pdf|1", [{"chunk": {"chunk_id": "id2"}, "context": "ctx2"}])
 
-        from konte.project import Project
+        checkpoint = log.read()
 
-        project = Project.create(name="test_project", storage_path=tmp_path)
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|0", "doc.pdf|1"]
+        assert len(checkpoint.contextualized_chunks) == 2
 
-        # Create checkpoint file
-        checkpoint_dir = tmp_path / "test_project"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_file = checkpoint_dir / "context_checkpoint.json"
-        checkpoint_data = {
-            "completed_segments": ["doc.pdf|0", "doc.pdf|1"],
-            "contextualized_chunks": [
-                {"chunk": {"chunk_id": "id1"}, "context": "ctx1"}
-            ],
-        }
-        checkpoint_file.write_text(json.dumps(checkpoint_data), encoding="utf-8")
+    def test_read_skips_record_without_segments(self, tmp_path):
+        """Test that a hand-edited record missing its key is skipped, not fatal."""
+        path = tmp_path / CHECKPOINT_FILENAME
+        path.write_text(
+            json.dumps({"chunks": []}) + "\n" + json.dumps(_record("doc.pdf|1", "id2")) + "\n",
+            encoding="utf-8",
+        )
 
-        result = project._load_checkpoint()
+        checkpoint = CheckpointLog(tmp_path).read()
 
-        assert result is not None
-        assert len(result.completed_segments) == 2
-        assert result.completed_segments[0] == "doc.pdf|0"
-        assert len(result.contextualized_chunks) == 1
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|1"]
 
 
 @pytest.mark.unit
-class TestSaveCheckpoint:
-    """Test _save_checkpoint method."""
+class TestTornTailRecovery:
+    """Test that a build killed mid-write leaves a usable checkpoint."""
 
-    def test_save_checkpoint_creates_file(self, tmp_path):
-        """Test that _save_checkpoint creates checkpoint file."""
-        from konte.models import BuildCheckpoint
-        from konte.project import Project
+    def test_partial_last_line_is_dropped(self, tmp_path):
+        """Test that a record cut off mid-write does not break the resume."""
+        path = tmp_path / CHECKPOINT_FILENAME
+        intact = json.dumps(_record("doc.pdf|0", "id1")) + "\n"
+        path.write_text(intact + '{"segments": ["doc.pdf|1"], "chu', encoding="utf-8")
 
-        project = Project.create(name="test_project", storage_path=tmp_path)
-        checkpoint = BuildCheckpoint(
-            completed_segments=["doc.pdf|0"],
-            contextualized_chunks=[{"chunk": {"chunk_id": "id1"}, "context": "ctx"}],
+        checkpoint = CheckpointLog(tmp_path).read()
+
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|0"]
+
+    def test_partial_last_line_is_truncated_away(self, tmp_path):
+        """Test that the torn tail is removed, so the next append starts clean."""
+        path = tmp_path / CHECKPOINT_FILENAME
+        intact = json.dumps(_record("doc.pdf|0", "id1")) + "\n"
+        path.write_text(intact + '{"segments": ["doc.pdf|1"], "chu', encoding="utf-8")
+
+        log = CheckpointLog(tmp_path)
+        log.read()
+        with log.appending() as appender:
+            appender.append("doc.pdf|1", [{"chunk": {"chunk_id": "id2"}, "context": "ctx2"}])
+
+        checkpoint = log.read()
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|0", "doc.pdf|1"]
+
+    def test_terminated_but_invalid_line_is_dropped(self, tmp_path):
+        """Test that a newline surviving a half-written record is not trusted."""
+        path = tmp_path / CHECKPOINT_FILENAME
+        intact = json.dumps(_record("doc.pdf|0", "id1")) + "\n"
+        path.write_text(intact + '{"segments": ["doc\n', encoding="utf-8")
+
+        checkpoint = CheckpointLog(tmp_path).read()
+
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|0"]
+        assert path.stat().st_size == len(intact.encode("utf-8"))
+
+
+@pytest.mark.unit
+class TestAppendOnly:
+    """Test that the log never rewrites what it already holds."""
+
+    def test_appending_never_rewrites_earlier_bytes(self, tmp_path):
+        """Test that each segment adds its own line and touches nothing before it."""
+        log = CheckpointLog(tmp_path)
+        prefixes = []
+
+        with log.appending() as appender:
+            for index in range(5):
+                appender.append(f"doc.pdf|{index}", [{"chunk": {"chunk_id": f"id{index}"}}])
+                prefixes.append(log.path.read_bytes())
+
+        # Every snapshot is a prefix of the next: growth only, no rewriting.
+        for earlier, later in pairwise(prefixes):
+            assert later.startswith(earlier)
+
+    def test_total_bytes_grow_linearly_with_segments(self, tmp_path):
+        """Test that ten times the segments costs ten times the bytes, not a hundred."""
+        chunks = [{"chunk": {"chunk_id": "x", "content": "y" * 500}, "context": "z" * 500}]
+
+        sizes = {}
+        for count in (10, 100):
+            path = tmp_path / str(count)
+            path.mkdir()
+            log = CheckpointLog(path)
+            with log.appending() as appender:
+                for index in range(count):
+                    appender.append(f"doc.pdf|{index}", chunks)
+            sizes[count] = log.path.stat().st_size
+
+        ratio = sizes[100] / sizes[10]
+        assert 9 < ratio < 11  # quadratic rewriting would land near 100
+
+
+@pytest.mark.unit
+class TestLegacyCheckpoint:
+    """Test that a checkpoint from the whole-file format still resumes."""
+
+    def test_legacy_file_is_read(self, tmp_path):
+        """Test that an interrupted build from an older version is picked up."""
+        (tmp_path / LEGACY_CHECKPOINT_FILENAME).write_text(
+            json.dumps(
+                {
+                    "completed_segments": ["doc.pdf|0", "doc.pdf|1"],
+                    "contextualized_chunks": [{"chunk": {"chunk_id": "id1"}, "context": "ctx1"}],
+                }
+            ),
+            encoding="utf-8",
         )
 
-        project._save_checkpoint(checkpoint)
+        checkpoint = CheckpointLog(tmp_path).read()
 
-        checkpoint_path = tmp_path / "test_project" / "context_checkpoint.json"
-        assert checkpoint_path.exists()
+        assert checkpoint is not None
+        assert checkpoint.completed_segments == ["doc.pdf|0", "doc.pdf|1"]
+        assert len(checkpoint.contextualized_chunks) == 1
 
-    def test_save_checkpoint_creates_directory(self, tmp_path):
-        """Test that _save_checkpoint creates directory if needed."""
-        from konte.models import BuildCheckpoint
-        from konte.project import Project
-
-        project = Project.create(name="new_project", storage_path=tmp_path)
-        checkpoint = BuildCheckpoint()
-
-        project._save_checkpoint(checkpoint)
-
-        project_dir = tmp_path / "new_project"
-        assert project_dir.exists()
-
-    def test_save_checkpoint_content_is_valid_json(self, tmp_path):
-        """Test that saved checkpoint is valid JSON."""
-        import json
-
-        from konte.models import BuildCheckpoint
-        from konte.project import Project
-
-        project = Project.create(name="test_project", storage_path=tmp_path)
-        checkpoint = BuildCheckpoint(
-            completed_segments=["doc.pdf|0", "doc.pdf|1"],
-            contextualized_chunks=[
-                {"chunk": {"chunk_id": "id1"}, "context": "ctx1"},
-                {"chunk": {"chunk_id": "id2"}, "context": "ctx2"},
-            ],
+    def test_legacy_file_is_converted_and_removed(self, tmp_path):
+        """Test that reading a legacy file migrates it, so a second resume works."""
+        (tmp_path / LEGACY_CHECKPOINT_FILENAME).write_text(
+            json.dumps(
+                {
+                    "completed_segments": ["doc.pdf|0"],
+                    "contextualized_chunks": [{"chunk": {"chunk_id": "id1"}, "context": "ctx1"}],
+                }
+            ),
+            encoding="utf-8",
         )
 
-        project._save_checkpoint(checkpoint)
+        log = CheckpointLog(tmp_path)
+        log.read()
 
-        checkpoint_path = tmp_path / "test_project" / "context_checkpoint.json"
-        data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-        assert data["completed_segments"] == ["doc.pdf|0", "doc.pdf|1"]
-        assert len(data["contextualized_chunks"]) == 2
+        assert not (tmp_path / LEGACY_CHECKPOINT_FILENAME).exists()
+        assert log.path.exists()
+
+        second = log.read()
+        assert second is not None
+        assert second.completed_segments == ["doc.pdf|0"]
+
+    def test_truncated_legacy_file_is_discarded(self, tmp_path):
+        """Test that the accident the checkpoint existed to prevent is survivable."""
+        (tmp_path / LEGACY_CHECKPOINT_FILENAME).write_text(
+            '{"completed_segments": ["doc.pdf|0"], "contextualized_ch',
+            encoding="utf-8",
+        )
+
+        log = CheckpointLog(tmp_path)
+
+        assert log.read() is None
+        assert not (tmp_path / LEGACY_CHECKPOINT_FILENAME).exists()
 
 
 @pytest.mark.unit
 class TestClearCheckpoint:
-    """Test _clear_checkpoint method."""
+    """Test CheckpointLog.clear."""
 
-    def test_clear_checkpoint_removes_file(self, tmp_path):
-        """Test that _clear_checkpoint removes checkpoint file."""
-        import json
+    def test_clear_removes_both_formats(self, tmp_path):
+        """Test that clearing leaves no checkpoint of either format behind."""
+        (tmp_path / CHECKPOINT_FILENAME).write_text("", encoding="utf-8")
+        (tmp_path / LEGACY_CHECKPOINT_FILENAME).write_text("{}", encoding="utf-8")
 
-        from konte.project import Project
+        CheckpointLog(tmp_path).clear()
 
-        project = Project.create(name="test_project", storage_path=tmp_path)
+        assert not (tmp_path / CHECKPOINT_FILENAME).exists()
+        assert not (tmp_path / LEGACY_CHECKPOINT_FILENAME).exists()
 
-        # Create checkpoint file
-        checkpoint_dir = tmp_path / "test_project"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_file = checkpoint_dir / "context_checkpoint.json"
-        checkpoint_file.write_text(json.dumps({}), encoding="utf-8")
-        assert checkpoint_file.exists()
-
-        project._clear_checkpoint()
-
-        assert not checkpoint_file.exists()
-
-    def test_clear_checkpoint_no_error_if_not_exists(self, tmp_path):
-        """Test that _clear_checkpoint doesn't error if file doesn't exist."""
-        from konte.project import Project
-
-        project = Project.create(name="test_project", storage_path=tmp_path)
-
-        # Should not raise
-        project._clear_checkpoint()
+    def test_clear_no_error_if_not_exists(self, tmp_path):
+        """Test that clearing an absent checkpoint does not error."""
+        CheckpointLog(tmp_path).clear()
 
 
 @pytest.mark.unit
@@ -157,14 +232,11 @@ class TestBuildResume:
 
     async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
         """Test that resume=False ignores existing checkpoint."""
-        import json
-
         from konte.models import Chunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
-        # Add a chunk manually
         chunk = Chunk(
             chunk_id="id1",
             content="Test content",
@@ -175,22 +247,9 @@ class TestBuildResume:
         project._chunks = [chunk]
         project._segments = {("doc.pdf", 0): "Full segment text"}
 
-        # Create a checkpoint file
-        checkpoint_dir = tmp_path / "test_project"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_file = checkpoint_dir / "context_checkpoint.json"
-        checkpoint_data = {
-            "completed_segments": ["doc.pdf|0"],
-            "contextualized_chunks": [
-                {
-                    "chunk": chunk.model_dump(),
-                    "context": "old context",
-                }
-            ],
-        }
-        checkpoint_file.write_text(json.dumps(checkpoint_data), encoding="utf-8")
+        with project._checkpoint.appending() as appender:
+            appender.append("doc.pdf|0", [{"chunk": chunk.model_dump(), "context": "old context"}])
 
-        # Mock context generation
         with patch("konte.project.generate_contexts_batch") as mock_gen:
             from konte.models import ContextualizedChunk
 
@@ -201,19 +260,16 @@ class TestBuildResume:
             # BM25-only: FAISS would construct a real OpenAIEmbeddings client
             await project.build(skip_context=True, enable_faiss=False, resume=False)
 
-            # Should have called generate_contexts_batch (not skipped)
             assert mock_gen.called
+            assert len(project._contextualized_chunks) == 1
 
     async def test_build_resume_true_uses_checkpoint(self, tmp_path):
         """Test that resume=True uses existing checkpoint."""
-        import json
-
         from konte.models import Chunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
-        # Add chunks manually
         chunk1 = Chunk(
             chunk_id="id1", content="Content 1", source="doc.pdf",
             segment_idx=0, chunk_idx=0,
@@ -228,23 +284,12 @@ class TestBuildResume:
             ("doc.pdf", 1): "Segment 1 text",
         }
 
-        # Create a checkpoint with segment 0 completed
-        checkpoint_dir = tmp_path / "test_project"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_file = checkpoint_dir / "context_checkpoint.json"
-        checkpoint_data = {
-            "completed_segments": ["doc.pdf|0"],
-            "contextualized_chunks": [
-                {"chunk": chunk1.model_dump(), "context": "ctx1"},
-            ],
-        }
-        checkpoint_file.write_text(json.dumps(checkpoint_data), encoding="utf-8")
+        with project._checkpoint.appending() as appender:
+            appender.append("doc.pdf|0", [{"chunk": chunk1.model_dump(), "context": "ctx1"}])
 
-        # Mock context generation
         with patch("konte.project.generate_contexts_batch") as mock_gen:
             from konte.models import ContextualizedChunk
 
-            # Only return for segment 1 (segment 0 is checkpointed)
             mock_gen.return_value = [
                 ContextualizedChunk(chunk=chunk2, context="ctx2")
             ]
@@ -252,7 +297,23 @@ class TestBuildResume:
             # BM25-only: FAISS would construct a real OpenAIEmbeddings client
             await project.build(skip_context=True, enable_faiss=False, resume=True)
 
-            # Should have called once (only for segment 1)
             assert mock_gen.call_count == 1
-            # Should have 2 contextualized chunks total
             assert len(project._contextualized_chunks) == 2
+
+    async def test_build_clears_checkpoint_on_success(self, tmp_path):
+        """Test that a finished build leaves no checkpoint to resume from."""
+        from konte.models import Chunk, ContextualizedChunk
+        from konte.project import Project
+
+        project = Project.create(name="test_project", storage_path=tmp_path)
+        chunk = Chunk(
+            chunk_id="id1", content="Content", source="doc.pdf", segment_idx=0, chunk_idx=0
+        )
+        project._chunks = [chunk]
+        project._segments = {("doc.pdf", 0): "Segment text"}
+
+        with patch("konte.project.generate_contexts_batch") as mock_gen:
+            mock_gen.return_value = [ContextualizedChunk(chunk=chunk, context="")]
+            await project.build(skip_context=True, enable_faiss=False)
+
+        assert not project._checkpoint.path.exists()

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import structlog
 
+from konte.cache import invalidate_project
 from konte.config import settings
 from konte.project import Project
 
@@ -68,6 +69,9 @@ def get_project(
 ) -> Project:
     """Get an existing project.
 
+    Each call opens its own instance, free to mutate. Code that only queries
+    wants konte.get_shared_project() instead.
+
     Args:
         name: Project name.
         storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
@@ -101,6 +105,7 @@ def delete_project(
         raise FileNotFoundError(f"Project not found: {name}")
 
     shutil.rmtree(project_dir)
+    invalidate_project(name, storage_path=path)
     logger.info("project_deleted", name=name)
 
 

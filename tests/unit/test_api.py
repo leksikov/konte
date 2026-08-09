@@ -1,6 +1,7 @@
 """Unit tests for API module."""
 
 import importlib
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +13,16 @@ from pydantic import ValidationError
 # FastAPI instance on Python < 3.12, whose mock._get_target walks attributes
 # instead of using pkgutil.resolve_name. Resolve the module explicitly instead.
 api_app = importlib.import_module("konte.api.app")
+
+
+@contextmanager
+def serving(project):
+    """Answer every project-scoped endpoint with `project`."""
+    api_app.app.dependency_overrides[api_app.resolve_project] = lambda: project
+    try:
+        yield
+    finally:
+        api_app.app.dependency_overrides.clear()
 
 
 @pytest.mark.unit
@@ -228,28 +239,24 @@ class TestAPIEndpoints:
         mock_project = MagicMock()
         mock_project.query.return_value = mock_response
 
-        with patch.object(api_app, "project_exists") as mock_exists:
-            with patch.object(api_app, "get_project") as mock_get:
-                mock_exists.return_value = True
-                mock_get.return_value = mock_project
+        with serving(mock_project):
+            from fastapi.testclient import TestClient
 
-                from fastapi.testclient import TestClient
+            from konte.api.app import app
 
-                from konte.api.app import app
+            client = TestClient(app)
+            response = client.post(
+                "/projects/myproject/query",
+                json={"query": "test query", "mode": "hybrid", "top_k": 10},
+            )
 
-                client = TestClient(app)
-                response = client.post(
-                    "/projects/myproject/query",
-                    json={"query": "test query", "mode": "hybrid", "top_k": 10},
-                )
-
-                assert response.status_code == 200
-                mock_project.query.assert_called_once_with(
-                    query="test query",
-                    mode="hybrid",
-                    top_k=10,
-                    use_keyword_extraction=None,
-                )
+            assert response.status_code == 200
+            mock_project.query.assert_called_once_with(
+                query="test query",
+                mode="hybrid",
+                top_k=10,
+                use_keyword_extraction=None,
+            )
 
     def test_query_project_forwards_keyword_extraction(self):
         """Test a client can opt out of the LLM call the query would otherwise make."""
@@ -264,20 +271,84 @@ class TestAPIEndpoints:
             suggested_action="refine_query",
         )
 
-        with patch.object(api_app, "project_exists") as mock_exists:
-            with patch.object(api_app, "get_project") as mock_get:
-                mock_exists.return_value = True
-                mock_get.return_value = mock_project
+        with serving(mock_project):
+            from fastapi.testclient import TestClient
+
+            from konte.api.app import app
+
+            client = TestClient(app)
+            response = client.post(
+                "/projects/myproject/query",
+                json={"query": "test query", "use_keyword_extraction": False},
+            )
+
+            assert response.status_code == 200
+            assert mock_project.query.call_args.kwargs["use_keyword_extraction"] is False
+
+
+@pytest.mark.unit
+class TestProjectLoading:
+    """Test how endpoints get hold of the project they serve."""
+
+    def test_repeated_requests_do_not_reopen_the_project(self):
+        """Test that serving a project reads it from disk once, not per request."""
+        mock_project = MagicMock()
+        mock_project.query.return_value = MagicMock(
+            results=[],
+            query="q",
+            total_found=0,
+            top_score=0.0,
+            score_spread=0.0,
+            has_high_confidence=False,
+            suggested_action="refine_query",
+        )
+
+        with patch.object(api_app, "project_exists", return_value=True):
+            with patch.object(api_app, "get_shared_project") as mock_shared:
+                mock_shared.return_value = mock_project
 
                 from fastapi.testclient import TestClient
 
                 from konte.api.app import app
 
                 client = TestClient(app)
-                response = client.post(
-                    "/projects/myproject/query",
-                    json={"query": "test query", "use_keyword_extraction": False},
-                )
+                for _ in range(3):
+                    client.post("/projects/myproject/query", json={"query": "q"})
 
-                assert response.status_code == 200
-                assert mock_project.query.call_args.kwargs["use_keyword_extraction"] is False
+        assert mock_shared.call_count == 3
+        assert all(call.args == ("myproject",) for call in mock_shared.call_args_list)
+
+    def test_project_deleted_between_check_and_load_is_404(self):
+        """Test that losing the race with a delete is reported, not raised."""
+        with patch.object(api_app, "project_exists", return_value=True):
+            with patch.object(api_app, "get_shared_project", side_effect=FileNotFoundError):
+                from fastapi.testclient import TestClient
+
+                from konte.api.app import app
+
+                client = TestClient(app)
+                response = client.post("/projects/vanished/query", json={"query": "q"})
+
+        assert response.status_code == 404
+
+    def test_preload_targets_expands_wildcard(self):
+        """Test that PRELOAD_PROJECTS="*" means every project on disk."""
+        from konte.config import settings
+
+        with patch.object(settings, "PRELOAD_PROJECTS", "*"):
+            with patch.object(api_app, "list_projects", return_value=["a", "b"]):
+                assert api_app._preload_targets() == ["a", "b"]
+
+    def test_preload_targets_parses_a_list(self):
+        """Test that names are taken as written, minus the spacing."""
+        from konte.config import settings
+
+        with patch.object(settings, "PRELOAD_PROJECTS", " a , b "):
+            assert api_app._preload_targets() == ["a", "b"]
+
+    def test_preload_targets_empty_by_default(self):
+        """Test that an unset setting preloads nothing."""
+        from konte.config import settings
+
+        with patch.object(settings, "PRELOAD_PROJECTS", ""):
+            assert api_app._preload_targets() == []

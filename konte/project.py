@@ -4,17 +4,17 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import structlog
 
+from konte.checkpoint import CheckpointLog
 from konte.chunker import create_chunks
 from konte.config import settings
 from konte.context import generate_contexts_batch, load_prompt_template
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
 from konte.models import (
-    BuildCheckpoint,
     Chunk,
     ContextualizedChunk,
     MetadataFilter,
@@ -23,11 +23,16 @@ from konte.models import (
     RetrievalResponse,
     SegmentKey,
 )
+from konte.storage import read_json, write_json
 from konte.stores import BM25Store, FAISSStore, Retriever
 
 logger = structlog.get_logger()
 
 _SEGMENT_KEY_SEPARATOR = "|"
+
+_CONFIG_INDENT = 2  # config.json is the one artifact people open by hand
+
+_T = TypeVar("_T")
 
 
 def _encode_segment_key(key: SegmentKey) -> str:
@@ -56,20 +61,56 @@ def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
     return dict(grouped)
 
 
-def _write_json(path: Path, data: Any) -> None:
-    """Write data to path as indented UTF-8 JSON."""
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _parse_chunks(path: Path) -> list[Chunk]:
+    """Rebuild the raw chunk list, empty when the artifact is absent."""
+    data = read_json(path)
+    return [] if data is None else [Chunk(**item) for item in data]
 
 
-def _read_json(path: Path) -> Any:
-    """Read UTF-8 JSON from path, or return None when the file is absent."""
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+def _parse_segments(path: Path) -> dict[SegmentKey, str]:
+    """Rebuild the segment texts, empty when the artifact is absent."""
+    data = read_json(path)
+    return {} if data is None else {_decode_segment_key(key): text for key, text in data.items()}
+
+
+def _parse_contextualized(path: Path) -> list[ContextualizedChunk]:
+    """Rebuild the contextualized chunks, empty when the artifact is absent."""
+    data = read_json(path)
+    return [] if data is None else [ContextualizedChunk.from_storage_dict(item) for item in data]
+
+
+class _DeferredArtifact(Generic[_T]):
+    """Instance attribute parsed from disk the first time it is read.
+
+    Only building and saving read the corpus-sized artifacts, so a query-only
+    caller never pays to rebuild them. A damaged artifact therefore surfaces
+    at first use rather than at load().
+    """
+
+    __slots__ = ("_name",)
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+
+    def __get__(self, obj: "Project | None", objtype: type | None = None) -> _T:
+        if obj is None:
+            return self  # type: ignore[return-value]
+        try:
+            return obj.__dict__[self._name]
+        except KeyError:
+            return obj._materialize(self._name)
+
+    def __set__(self, obj: "Project", value: _T) -> None:
+        obj.__dict__[self._name] = value
+        obj._deferred.pop(self._name, None)
 
 
 class Project:
     """Main interface for contextual RAG operations."""
+
+    _chunks = _DeferredArtifact[list[Chunk]]()
+    _segments = _DeferredArtifact[dict[SegmentKey, str]]()
+    _contextualized_chunks = _DeferredArtifact[list[ContextualizedChunk]]()
 
     def __init__(self, config: ProjectConfig):
         """Initialize project with configuration.
@@ -78,9 +119,11 @@ class Project:
             config: Project configuration.
         """
         self._config = config
-        self._chunks: list[Chunk] = []
-        self._contextualized_chunks: list[ContextualizedChunk] = []
-        self._segments: dict[SegmentKey, str] = {}
+        self._deferred: dict[str, Callable[[], Any]] = {}
+        self._chunks = []
+        self._contextualized_chunks = []
+        self._segments = {}
+        self._checkpoint = CheckpointLog(self.project_dir)
         self._faiss: FAISSStore | None = None
         self._bm25: BM25Store | None = None
         self._retriever: Retriever | None = None
@@ -189,7 +232,7 @@ class Project:
             raise ValueError("At least one index (FAISS or BM25) must be enabled")
 
         chunks_by_segment = _group_by_segment(self._chunks)
-        checkpoint, completed = self._restore_checkpoint(resume, len(chunks_by_segment))
+        completed = self._restore_checkpoint(resume, len(chunks_by_segment))
         prompt_template = (
             None
             if skip_context
@@ -197,11 +240,11 @@ class Project:
         )
 
         await self._generate_contexts(
-            chunks_by_segment, checkpoint, completed, prompt_template, skip_context
+            chunks_by_segment, completed, prompt_template, skip_context
         )
         self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
 
-        self._clear_checkpoint()
+        self._checkpoint.clear()
         logger.info("checkpoint_cleared")
         logger.info("project_build_complete")
 
@@ -387,17 +430,21 @@ class Project:
 
         Stores storage_path and context_prompt_path as relative paths in config.json
         so the project is portable across machines.
+
+        Each file is replaced in one step, but the set of them is not
+        transactional: a crash partway through leaves newer artifacts beside
+        older ones, which a rebuild resolves.
         """
         project_dir = self.project_dir
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        _write_json(project_dir / "config.json", self._portable_config())
-        _write_json(project_dir / "raw_chunks.json", [c.model_dump() for c in self._chunks])
-        _write_json(
+        write_json(project_dir / "config.json", self._portable_config(), indent=_CONFIG_INDENT)
+        write_json(project_dir / "raw_chunks.json", [c.model_dump() for c in self._chunks])
+        write_json(
             project_dir / "segments.json",
             {_encode_segment_key(key): text for key, text in self._segments.items()},
         )
-        _write_json(
+        write_json(
             project_dir / "chunks.json",
             [c.to_storage_dict() for c in self._contextualized_chunks],
         )
@@ -413,6 +460,9 @@ class Project:
     def load(self) -> None:
         """Load project state from disk.
 
+        Only the indexes are read here; the stored corpus is parsed on first
+        use. See _DeferredArtifact.
+
         Raises:
             FileNotFoundError: If the project directory does not exist.
         """
@@ -421,19 +471,12 @@ class Project:
         if not project_dir.exists():
             raise FileNotFoundError(f"Project not found: {project_dir}")
 
-        raw_chunks = _read_json(project_dir / "raw_chunks.json")
-        if raw_chunks is not None:
-            self._chunks = [Chunk(**item) for item in raw_chunks]
-
-        segments = _read_json(project_dir / "segments.json")
-        if segments is not None:
-            self._segments = {_decode_segment_key(key): text for key, text in segments.items()}
-
-        contextualized = _read_json(project_dir / "chunks.json")
-        if contextualized:
-            self._contextualized_chunks = [
-                ContextualizedChunk.from_storage_dict(item) for item in contextualized
-            ]
+        self._defer("_chunks", lambda: _parse_chunks(project_dir / "raw_chunks.json"))
+        self._defer("_segments", lambda: _parse_segments(project_dir / "segments.json"))
+        self._defer(
+            "_contextualized_chunks",
+            lambda: _parse_contextualized(project_dir / "chunks.json"),
+        )
 
         self._load_indexes(project_dir)
         self._retriever = Retriever(faiss_store=self._faiss, bm25_store=self._bm25)
@@ -441,7 +484,8 @@ class Project:
         logger.info(
             "project_loaded",
             path=str(project_dir),
-            num_chunks=len(self._chunks),
+            faiss=self._faiss is not None,
+            bm25=self._bm25 is not None,
         )
 
     @classmethod
@@ -512,32 +556,18 @@ class Project:
         project.load()
         return project
 
-    def _checkpoint_path(self) -> Path:
-        """Get path to checkpoint file."""
-        return self.project_dir / "context_checkpoint.json"
+    def _defer(self, name: str, loader: Callable[[], Any]) -> None:
+        """Arrange for an artifact to be parsed the first time it is read."""
+        self.__dict__.pop(name, None)
+        self._deferred[name] = loader
 
-    def _load_checkpoint(self) -> BuildCheckpoint | None:
-        """Load checkpoint if exists."""
-        data = _read_json(self._checkpoint_path())
-        return None if data is None else BuildCheckpoint(**data)
+    def _materialize(self, name: str) -> Any:
+        """Run one artifact's deferred parse and keep the result."""
+        value = self._deferred.pop(name)()
+        self.__dict__[name] = value
+        return value
 
-    def _save_checkpoint(self, checkpoint: BuildCheckpoint) -> None:
-        """Save checkpoint to disk."""
-        self.project_dir.mkdir(parents=True, exist_ok=True)
-        self._checkpoint_path().write_text(
-            checkpoint.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-
-    def _clear_checkpoint(self) -> None:
-        """Remove checkpoint file after successful build."""
-        self._checkpoint_path().unlink(missing_ok=True)
-
-    def _restore_checkpoint(
-        self,
-        resume: bool,
-        total_segments: int,
-    ) -> tuple[BuildCheckpoint, set[str]]:
+    def _restore_checkpoint(self, resume: bool, total_segments: int) -> set[str]:
         """Pick up an interrupted build, or start a fresh one.
 
         Args:
@@ -545,13 +575,15 @@ class Project:
             total_segments: Segment count, reported in the resume log line.
 
         Returns:
-            Tuple of (checkpoint to append to, segment keys already contextualized).
+            The segment keys already contextualized.
         """
         self._contextualized_chunks = []
 
-        checkpoint = self._load_checkpoint() if resume else None
+        checkpoint = self._checkpoint.read() if resume else None
         if checkpoint is None:
-            return BuildCheckpoint(), set()
+            # Appending to what an earlier build left would fold two runs into one.
+            self._checkpoint.clear()
+            return set()
 
         self._contextualized_chunks = [
             ContextualizedChunk.from_storage_dict(item)
@@ -563,21 +595,19 @@ class Project:
             completed_segments=len(completed),
             total_segments=total_segments,
         )
-        return checkpoint, completed
+        return completed
 
     async def _generate_contexts(
         self,
         chunks_by_segment: dict[SegmentKey, list[Chunk]],
-        checkpoint: BuildCheckpoint,
         completed: set[str],
         prompt_template: str | None,
         skip_context: bool,
     ) -> None:
         """Contextualize every not-yet-processed segment.
 
-        The checkpoint is rewritten after each segment because context generation
-        is the expensive half of a build; an interrupted run then resumes at a
-        segment boundary instead of from the beginning.
+        Each segment appends itself to the checkpoint log as it finishes, so an
+        interrupted run resumes at a segment boundary.
         """
         total_segments = len(chunks_by_segment)
         logger.info(
@@ -586,37 +616,37 @@ class Project:
             skip_context=skip_context,
         )
 
-        for seg_key, segment_chunks in chunks_by_segment.items():
-            seg_key_str = _encode_segment_key(seg_key)
+        with self._checkpoint.appending() as log:
+            for seg_key, segment_chunks in chunks_by_segment.items():
+                seg_key_str = _encode_segment_key(seg_key)
 
-            if seg_key_str in completed:
-                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
-                continue
+                if seg_key_str in completed:
+                    logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
+                    continue
 
-            logger.info(
-                "generating_context_for_segment",
-                segment_key=seg_key_str,
-                total_segments=total_segments,
-                num_chunks=len(segment_chunks),
-            )
-            ctx_chunks = await generate_contexts_batch(
-                segment=self._segments.get(seg_key, ""),
-                chunks=segment_chunks,
-                model=self._config.context_model,
-                prompt_template=prompt_template,
-                skip_context=skip_context,
-            )
-            self._contextualized_chunks.extend(ctx_chunks)
+                logger.info(
+                    "generating_context_for_segment",
+                    segment_key=seg_key_str,
+                    total_segments=total_segments,
+                    num_chunks=len(segment_chunks),
+                )
+                ctx_chunks = await generate_contexts_batch(
+                    segment=self._segments.get(seg_key, ""),
+                    chunks=segment_chunks,
+                    model=self._config.context_model,
+                    prompt_template=prompt_template,
+                    skip_context=skip_context,
+                )
+                self._contextualized_chunks.extend(ctx_chunks)
 
-            checkpoint.completed_segments.append(seg_key_str)
-            checkpoint.contextualized_chunks.extend(c.to_storage_dict() for c in ctx_chunks)
-            self._save_checkpoint(checkpoint)
-            logger.info(
-                "checkpoint_saved",
-                segment_key=seg_key_str,
-                completed=len(checkpoint.completed_segments),
-                total=total_segments,
-            )
+                log.append(seg_key_str, [c.to_storage_dict() for c in ctx_chunks])
+                completed.add(seg_key_str)
+                logger.info(
+                    "checkpoint_saved",
+                    segment_key=seg_key_str,
+                    completed=len(completed),
+                    total=total_segments,
+                )
 
         logger.info(
             "context_generation_complete",

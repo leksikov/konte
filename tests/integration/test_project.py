@@ -265,8 +265,7 @@ class TestProjectCheckpoint:
         await project.build(skip_context=True)
 
         # Checkpoint should be cleared after successful build
-        checkpoint_path = tmp_path / "checkpoint_test" / "context_checkpoint.json"
-        assert not checkpoint_path.exists()
+        assert not project._checkpoint.path.exists()
 
     async def test_checkpoint_cleared_after_successful_build(self, tmp_path):
         """Test that checkpoint is cleared after successful build."""
@@ -278,13 +277,10 @@ class TestProjectCheckpoint:
         await project.build(skip_context=True)
 
         # Checkpoint should be cleared
-        checkpoint_path = project._checkpoint_path()
-        assert not checkpoint_path.exists()
+        assert not project._checkpoint.path.exists()
 
     async def test_build_resume_continues_from_checkpoint(self, tmp_path):
         """Test that build resumes from checkpoint."""
-
-        from konte.models import BuildCheckpoint
         from konte.project import Project
 
         project = Project.create(name="resume_test", storage_path=tmp_path)
@@ -294,18 +290,15 @@ class TestProjectCheckpoint:
         segments_count = len(project._segments)
         assert segments_count >= 1
 
-        # Manually create a checkpoint for the first segment
         first_seg_key = list(project._segments.keys())[0]
         seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
         first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
 
-        checkpoint = BuildCheckpoint(
-            completed_segments=[seg_key_str],
-            contextualized_chunks=[
-                {"chunk": first_chunk.model_dump(), "context": "Pre-existing context"}
-            ],
-        )
-        project._save_checkpoint(checkpoint)
+        with project._checkpoint.appending() as log:
+            log.append(
+                seg_key_str,
+                [{"chunk": first_chunk.model_dump(), "context": "Pre-existing context"}],
+            )
 
         # Build with resume=True
         await project.build(skip_context=True, resume=True)
@@ -322,24 +315,20 @@ class TestProjectCheckpoint:
 
     async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
         """Test that resume=False ignores existing checkpoint."""
-        from konte.models import BuildCheckpoint
         from konte.project import Project
 
         project = Project.create(name="no_resume_test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
-        # Create a checkpoint with fake context
         first_seg_key = list(project._segments.keys())[0]
         seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
         first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
 
-        checkpoint = BuildCheckpoint(
-            completed_segments=[seg_key_str],
-            contextualized_chunks=[
-                {"chunk": first_chunk.model_dump(), "context": "Should be ignored"}
-            ],
-        )
-        project._save_checkpoint(checkpoint)
+        with project._checkpoint.appending() as log:
+            log.append(
+                seg_key_str,
+                [{"chunk": first_chunk.model_dump(), "context": "Should be ignored"}],
+            )
 
         # Build with resume=False
         await project.build(skip_context=True, resume=False)
@@ -352,59 +341,59 @@ class TestProjectCheckpoint:
         # skip_context=True means context should be empty, not "Should be ignored"
         assert first_ctx_chunk.context != "Should be ignored"
 
-    def test_checkpoint_path_method(self, tmp_path):
-        """Test that _checkpoint_path returns correct path."""
+    async def test_build_resume_false_discards_the_old_log(self, tmp_path):
+        """Test that a fresh build does not append onto the previous run's log."""
+        from konte.project import Project
+
+        project = Project.create(name="fresh_log_test", storage_path=tmp_path)
+        project.add_documents([FIXTURES_DIR / "sample.txt"])
+
+        with project._checkpoint.appending() as log:
+            log.append("stale.txt|99", [{"chunk": {"chunk_id": "stale"}, "context": "stale"}])
+
+        await project.build(skip_context=True, resume=False)
+
+        assert all(c.chunk.chunk_id != "stale" for c in project._contextualized_chunks)
+
+    def test_checkpoint_path_is_the_log(self, tmp_path):
+        """Test that the checkpoint lives beside the project's other artifacts."""
+        from konte.checkpoint import CHECKPOINT_FILENAME
         from konte.project import Project
 
         project = Project.create(name="path_test", storage_path=tmp_path)
-        checkpoint_path = project._checkpoint_path()
 
-        expected = tmp_path / "path_test" / "context_checkpoint.json"
-        assert checkpoint_path == expected
+        assert project._checkpoint.path == tmp_path / "path_test" / CHECKPOINT_FILENAME
 
-    def test_save_and_load_checkpoint(self, tmp_path):
-        """Test checkpoint save and load round-trip."""
-        from konte.models import BuildCheckpoint
+    def test_append_and_read_checkpoint(self, tmp_path):
+        """Test checkpoint append and read round-trip."""
         from konte.project import Project
 
         project = Project.create(name="roundtrip_test", storage_path=tmp_path)
 
-        # Create and save checkpoint
-        original = BuildCheckpoint(
-            completed_segments=["doc.pdf|0", "doc.pdf|1"],
-            contextualized_chunks=[
-                {"chunk": {"chunk_id": "c1", "content": "text1"}, "context": "ctx1"},
-                {"chunk": {"chunk_id": "c2", "content": "text2"}, "context": "ctx2"},
-            ],
-        )
-        project._save_checkpoint(original)
+        with project._checkpoint.appending() as log:
+            log.append("doc.pdf|0", [{"chunk": {"chunk_id": "c1", "content": "t1"}, "context": "1"}])
+            log.append("doc.pdf|1", [{"chunk": {"chunk_id": "c2", "content": "t2"}, "context": "2"}])
 
-        # Load checkpoint
-        loaded = project._load_checkpoint()
+        loaded = project._checkpoint.read()
 
         assert loaded is not None
-        assert loaded.completed_segments == original.completed_segments
+        assert loaded.completed_segments == ["doc.pdf|0", "doc.pdf|1"]
         assert len(loaded.contextualized_chunks) == 2
 
     def test_clear_checkpoint(self, tmp_path):
         """Test checkpoint clearing."""
-        from konte.models import BuildCheckpoint
         from konte.project import Project
 
         project = Project.create(name="clear_test", storage_path=tmp_path)
 
-        # Save checkpoint
-        checkpoint = BuildCheckpoint(completed_segments=["doc.pdf|0"])
-        project._save_checkpoint(checkpoint)
+        with project._checkpoint.appending() as log:
+            log.append("doc.pdf|0", [])
 
-        # Verify it exists
-        assert project._checkpoint_path().exists()
+        assert project._checkpoint.path.exists()
 
-        # Clear it
-        project._clear_checkpoint()
+        project._checkpoint.clear()
 
-        # Verify it's gone
-        assert not project._checkpoint_path().exists()
+        assert not project._checkpoint.path.exists()
 
 
 @pytest.mark.integration

@@ -7,7 +7,7 @@ import gradio as gr
 from konte import (
     ProjectConfig,
     RetrievalResponse,
-    get_project,
+    get_shared_project,
     list_projects,
     project_exists,
     settings,
@@ -89,7 +89,7 @@ def query_handler(
     if not project_exists(project_name):
         return f"Project not found: {project_name}"
 
-    project = get_project(project_name)
+    project = get_shared_project(project_name)
     response = project.query(
         query,
         mode=mode,
@@ -117,7 +117,7 @@ async def ask_handler(
     if not project_exists(project_name):
         return f"Project not found: {project_name}", ""
 
-    project = get_project(project_name)
+    project = get_shared_project(project_name)
     response, answer = await project.query_with_answer(
         query=query,
         mode=mode,
@@ -143,7 +143,7 @@ def config_handler(project_name: str) -> str:
     if not project_exists(project_name):
         return f"Project not found: {project_name}"
 
-    project = get_project(project_name)
+    project = get_shared_project(project_name)
     return format_config(project.config)
 
 

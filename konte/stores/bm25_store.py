@@ -10,6 +10,7 @@ from rank_bm25 import BM25Okapi
 
 from konte.config import settings
 from konte.models import ContextualizedChunk, MetadataFilter
+from konte.storage import atomic_writer, write_json
 from konte.stores.base import matches_filter_value
 
 logger = structlog.get_logger()
@@ -70,7 +71,6 @@ class BM25Store:
         """Initialize BM25 store."""
         self._index: BM25Okapi | None = None
         self._chunks: list[ContextualizedChunk] = []
-        self._tokenized_corpus: list[list[str]] = []
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build BM25 index from contextualized chunks.
@@ -83,8 +83,7 @@ class BM25Store:
             return
 
         self._chunks = chunks
-        self._tokenized_corpus = [_tokenize(c.contextualized_content) for c in chunks]
-        self._index = BM25Okapi(self._tokenized_corpus)
+        self._index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
@@ -93,6 +92,8 @@ class BM25Store:
 
         The ranking model is pickled because rank_bm25 exposes no serialization
         format of its own; the chunk payload is written as JSON alongside it.
+        The tokenized corpus is not stored — BM25Okapi scores from the
+        per-document term frequencies it already holds.
 
         Args:
             directory: Directory to save index files.
@@ -104,17 +105,10 @@ class BM25Store:
             logger.warning("bm25_save_no_index")
             return
 
-        with (directory / "bm25.pkl").open("wb") as f:
-            pickle.dump(
-                {
-                    "index": self._index,
-                    "tokenized_corpus": self._tokenized_corpus,
-                },
-                f,
-            )
+        with atomic_writer(directory / "bm25.pkl") as handle:
+            pickle.dump({"index": self._index}, handle)
 
-        chunks_data = [c.to_storage_dict() for c in self._chunks]
-        (directory / "bm25_chunks.json").write_text(json.dumps(chunks_data), encoding="utf-8")
+        write_json(directory / "bm25_chunks.json", [c.to_storage_dict() for c in self._chunks])
 
         logger.info("bm25_index_saved", directory=str(directory))
 
@@ -140,7 +134,6 @@ class BM25Store:
         with index_path.open("rb") as f:
             data = pickle.load(f)
         self._index = data["index"]
-        self._tokenized_corpus = data["tokenized_corpus"]
 
         self._chunks = [
             ContextualizedChunk.from_storage_dict(item)

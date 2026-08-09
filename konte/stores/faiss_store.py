@@ -130,7 +130,6 @@ class FAISSStore:
             kwargs["api_key"] = settings.OPENAI_API_KEY
         self._embeddings = OpenAIEmbeddings(**kwargs)
         self._vectorstore: FAISS | None = None
-        self._chunks: list[ContextualizedChunk] = []
 
     def build_index(
         self,
@@ -148,7 +147,6 @@ class FAISSStore:
             logger.warning("faiss_build_empty_chunks")
             return
 
-        self._chunks = chunks
         documents = [_to_document(chunk) for chunk in chunks]
         batches = [
             documents[start : start + batch_size]
@@ -191,6 +189,9 @@ class FAISSStore:
     def load(self, directory: Path) -> None:
         """Load FAISS index from disk.
 
+        Only the index and its docstore are read; queries rebuild the chunks
+        they return from the documents they matched.
+
         Args:
             directory: Directory containing index files.
 
@@ -211,16 +212,10 @@ class FAISSStore:
             allow_dangerous_deserialization=True,
         )
 
-        self._chunks = [
-            _from_document(doc)
-            for docstore_id in self._vectorstore.index_to_docstore_id.values()
-            if (doc := _lookup_document(self._vectorstore, docstore_id)) is not None
-        ]
-
         logger.info(
             "faiss_index_loaded",
             directory=str(directory),
-            num_chunks=len(self._chunks),
+            num_chunks=self._vectorstore.index.ntotal,
         )
 
     def query(

@@ -183,6 +183,29 @@ konte serve --host 0.0.0.0 --port 8000   # REST API   ([api] extra)
 konte ui --port 7860                     # web UI     ([ui] extra)
 ```
 
+Both open each project once and keep it in memory, so a request costs a search
+rather than a reload. Set `PRELOAD_PROJECTS` to pay for that opening at startup
+instead of on the first request, and `PROJECT_CACHE_SIZE` to bound how many
+projects a server holds at once:
+
+```bash
+PRELOAD_PROJECTS=annual_reports,tariffs   # or "*" for every project
+PROJECT_CACHE_SIZE=4
+```
+
+Embedding Konte in your own server? `get_shared_project()` is the same
+process-wide cache the API uses. It hands out one instance per project, safe to
+query from several threads and reopened by itself whenever the project is
+rebuilt on disk. `get_project()` still returns a private instance, which is what
+anything that adds documents, builds, or saves needs:
+
+```python
+from konte import get_shared_project
+
+project = get_shared_project("annual_reports")   # shared, query-only
+response = project.query("Samsung Q3 2024 memory revenue")
+```
+
 ## Project Management
 
 ```python
@@ -504,7 +527,14 @@ Request order within a segment doesn't matter - whichever arrives first triggers
 
 - **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
 - **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls within segment
-- **Build Checkpointing**: Per-segment checkpoints allow interrupted builds to resume
+- **Build Checkpointing**: Each finished segment appends one line to a checkpoint
+  log, so an interrupted build resumes at a segment boundary and the log costs
+  one write per segment rather than one rewrite of everything so far
+- **Shared Project Cache**: The API and UI open a project once per process
+  instead of per request, and reopen it only after it is rebuilt
+- **Deferred Corpus Parsing**: Opening a project reads its indexes; the stored
+  chunks and segments are parsed only if something asks for them, which a
+  query-serving process never does
 
 ## Logging
 
