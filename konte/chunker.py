@@ -1,8 +1,9 @@
 """Chunker module for segmenting and chunking documents."""
 
 import re
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import structlog
 import tiktoken
@@ -78,41 +79,62 @@ def count_tokens(text: str) -> int:
     return len(_get_encoding().encode(text))
 
 
-def _make_splitter(max_tokens: int, overlap_tokens: int) -> RecursiveCharacterTextSplitter:
-    """Create a sentence-boundary-aware splitter with token counting."""
+class _Split(NamedTuple):
+    """The parts a text was split into, plus the token count measured to split it."""
+
+    parts: list[str]
+    total_tokens: int
+
+
+class _SplitSpec(NamedTuple):
+    """Token budget for one level of splitting."""
+
+    max_tokens: int
+    overlap_tokens: int
+
+    @classmethod
+    def for_segments(cls, size: int | None, overlap: int | None) -> "_SplitSpec":
+        return cls(
+            settings.SEGMENT_SIZE if size is None else size,
+            settings.SEGMENT_OVERLAP if overlap is None else overlap,
+        )
+
+    @classmethod
+    def for_chunks(cls, size: int | None, overlap: int | None) -> "_SplitSpec":
+        return cls(
+            settings.CHUNK_SIZE if size is None else size,
+            settings.CHUNK_OVERLAP if overlap is None else overlap,
+        )
+
+    def split(self, text: str) -> _Split:
+        """Split text by token count at sentence boundaries.
+
+        Args:
+            text: Text to split.
+
+        Returns:
+            The resulting parts and the token count of `text`.
+        """
+        if not text.strip():
+            return _Split([], 0)
+
+        total_tokens = count_tokens(text)
+        if total_tokens <= self.max_tokens:
+            return _Split([text], total_tokens)
+
+        return _Split(_make_splitter(self).split_text(text), total_tokens)
+
+
+@lru_cache(maxsize=16)
+def _make_splitter(spec: _SplitSpec) -> RecursiveCharacterTextSplitter:
+    """Return the shared sentence-boundary-aware splitter for a token budget."""
     return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name=TOKEN_ENCODING_NAME,
-        chunk_size=max_tokens,
-        chunk_overlap=overlap_tokens,
+        chunk_size=spec.max_tokens,
+        chunk_overlap=spec.overlap_tokens,
         separators=_SENTENCE_SEPARATORS,
         keep_separator="end",
     )
-
-
-def _split_by_tokens(
-    text: str,
-    max_tokens: int,
-    overlap_tokens: int,
-) -> list[str]:
-    """Split text into chunks by token count at sentence boundaries.
-
-    Args:
-        text: Text to split.
-        max_tokens: Maximum tokens per chunk.
-        overlap_tokens: Number of tokens to overlap.
-
-    Returns:
-        List of text chunks.
-    """
-    if not text.strip():
-        return []
-
-    total_tokens = count_tokens(text)
-    if total_tokens <= max_tokens:
-        return [text]
-
-    splitter = _make_splitter(max_tokens, overlap_tokens)
-    return splitter.split_text(text)
 
 
 def segment_document(
@@ -130,9 +152,7 @@ def segment_document(
     Returns:
         List of text segments.
     """
-    size = segment_size if segment_size is not None else settings.SEGMENT_SIZE
-    ovlp = overlap if overlap is not None else settings.SEGMENT_OVERLAP
-    return _split_by_tokens(text, size, ovlp)
+    return _SplitSpec.for_segments(segment_size, overlap).split(text).parts
 
 
 def chunk_segment(
@@ -150,9 +170,7 @@ def chunk_segment(
     Returns:
         List of text chunks.
     """
-    size = chunk_size if chunk_size is not None else settings.CHUNK_SIZE
-    ovlp = overlap if overlap is not None else settings.CHUNK_OVERLAP
-    return _split_by_tokens(text, size, ovlp)
+    return _SplitSpec.for_chunks(chunk_size, overlap).split(text).parts
 
 
 def create_chunks(
@@ -178,28 +196,30 @@ def create_chunks(
     Returns:
         Tuple of (List of Chunk objects, Dict mapping (source, segment_idx) to segment text).
     """
-    logger.debug("segmentation_started", source=source, total_tokens=count_tokens(text))
+    logger.debug("segmentation_started", source=source)
 
+    chunk_spec = _SplitSpec.for_chunks(chunk_size, chunk_overlap)
+    segmented = _SplitSpec.for_segments(segment_size, segment_overlap).split(text)
     metadata = extract_metadata_from_source(source)
 
     chunks: list[Chunk] = []
     segments_map: dict[SegmentKey, str] = {}
 
-    for seg_idx, segment in enumerate(segment_document(text, segment_size, segment_overlap)):
+    for seg_idx, segment in enumerate(segmented.parts):
+        chunked = chunk_spec.split(segment)
         logger.debug(
             "segment_created",
             source=source,
             segment_index=seg_idx,
-            token_count=count_tokens(segment),
+            token_count=chunked.total_tokens,
         )
         segments_map[(source, seg_idx)] = segment
 
-        segment_chunks = chunk_segment(segment, chunk_size, chunk_overlap)
         logger.debug(
             "chunking_segment",
             source=source,
             segment_index=seg_idx,
-            num_chunks=len(segment_chunks),
+            num_chunks=len(chunked.parts),
         )
 
         chunks.extend(
@@ -211,12 +231,13 @@ def create_chunks(
                 chunk_idx=chunk_idx,
                 metadata=metadata,
             )
-            for chunk_idx, chunk_text in enumerate(segment_chunks)
+            for chunk_idx, chunk_text in enumerate(chunked.parts)
         )
 
     logger.debug(
         "chunks_created",
         source=source,
+        total_tokens=segmented.total_tokens,
         total_segments=len(segments_map),
         total_chunks=len(chunks),
     )
