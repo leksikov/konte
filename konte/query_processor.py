@@ -34,14 +34,15 @@ STOPWORDS = frozenset({
     "our", "you", "i", "we", "she", "him", "them", "am", "been", "being",
 })
 
-# Bilingual prompt for keyword extraction
+# Bilingual prompt for keyword extraction. BM25 matches a multi-word keyword
+# term by term, so rule 4 asks for the modifier, not for the phrase.
 KEYWORD_EXTRACTION_PROMPT = """Extract search keywords from the query.
 
 Rules:
 1. Extract only meaningful nouns, verbs, proper nouns, and technical terms
 2. Remove English stopwords (a, an, the, is, are, was, were, be, have, has, had, do, does, did, will, would, could, should, can, may, might, must, if, then, else, and, or, but, not, no, this, that, these, those, what, when, where, who, which, why, how, for, from, to, of, in, on, at, by, with, about, into, through, during, before, after, above, below, between, under, again, further, once, here, there, any, all, each, every, both, few, more, most, other, some, such, only, own, same, so, than, too, very, just, also, now, please, based, us, me, my, your, his, her, their, our, you, i, we, she, him, them)
 3. Remove Korean particles (은/는/이/가/을/를/에/의/로 등) and stopwords (어느, 어떤, 무엇, 어디)
-4. Keep compound terms together (e.g., "working capital" as one keyword, "의류 탈수기" as one keyword)
+4. Keep every word of a compound term, modifiers included (e.g., "working capital", not "capital"; "의류 탈수기", not "탈수기")
 5. Keep codes, numbers, identifiers as-is (e.g., "FY2022", "HS 8471", "HS 코드")
 6. Extract 3-10 keywords
 

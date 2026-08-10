@@ -19,9 +19,9 @@ def _chunk(index: int, content: str) -> Chunk:
     )
 
 
-async def _built_project(tmp_path, name="persist_test"):
+async def _built_project(tmp_path, name="persist_test", **config):
     """Create, build and save a lexical-only project."""
-    project = Project.create(name=name, storage_path=tmp_path, enable_faiss=False)
+    project = Project.create(name=name, storage_path=tmp_path, enable_faiss=False, **config)
     project._chunks = [
         _chunk(0, "Import duty rates for electronic integrated circuits"),
         _chunk(1, "Tariff classification of clothing dryers"),
@@ -56,6 +56,19 @@ class TestRoundTrip:
         assert [c.chunk_id for c in reopened._chunks] == ["id0", "id1"]
         assert reopened._segments == {("doc.txt", 0): "Full segment text about tariffs"}
         assert len(reopened._contextualized_chunks) == 2
+
+    async def test_configured_fusion_weights_reach_the_retriever(self, tmp_path):
+        """Test the stored fusion weights reach the retriever."""
+        await _built_project(
+            tmp_path,
+            name="weighted",
+            fusion_weight_semantic=0.8,
+            fusion_weight_lexical=0.2,
+        )
+
+        reopened = Project.open("weighted", storage_path=tmp_path)
+
+        assert reopened._retriever._fusion_weights == (0.8, 0.2)
 
 
 @pytest.mark.unit

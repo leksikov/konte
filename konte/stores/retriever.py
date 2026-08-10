@@ -84,14 +84,17 @@ def _lexical_query(query: str, keywords: Sequence[str]) -> str:
 def reciprocal_rank_fusion(
     results_list: list[ScoredChunks],
     k: int = RRF_K,
+    weights: Sequence[float] | None = None,
 ) -> ScoredChunks:
     """Combine multiple ranked result lists using Reciprocal Rank Fusion.
 
-    RRF score = sum(1 / (k + rank_i)) for each result list
+    RRF score = sum(w_i / (k + rank_i)) for each result list
 
     Args:
         results_list: List of result lists, each containing (chunk, score) tuples.
         k: Constant to prevent high ranks from dominating (default 60).
+        weights: How much a rank in each list counts, aligned with
+            results_list. Only their ratio matters. Defaults to equal.
 
     Returns:
         Combined list of (chunk, score) tuples sorted by RRF score, rescaled so
@@ -99,11 +102,13 @@ def reciprocal_rank_fusion(
         anything matched. See _Ranked.
     """
     fused: dict[str, tuple[ContextualizedChunk, float]] = {}
+    if weights is None:
+        weights = (1.0,) * len(results_list)
 
-    for results in results_list:
+    for results, weight in zip(results_list, weights, strict=True):
         for rank, (chunk, _) in enumerate(results):
             chunk_id = chunk.chunk.chunk_id
-            contribution = 1.0 / (k + rank + 1)  # rank is 0-indexed
+            contribution = weight / (k + rank + 1)  # rank is 0-indexed
             existing = fused.get(chunk_id)
             if existing is None:
                 fused[chunk_id] = (chunk, contribution)
@@ -246,15 +251,20 @@ class Retriever:
         self,
         faiss_store: FAISSStore | None = None,
         bm25_store: BM25Store | None = None,
+        semantic_weight: float = 1.0,
+        lexical_weight: float = 1.0,
     ):
         """Initialize retriever with stores.
 
         Args:
             faiss_store: FAISS store for semantic search.
             bm25_store: BM25 store for lexical search.
+            semantic_weight: How much a vector rank counts in hybrid fusion.
+            lexical_weight: How much a lexical rank counts in hybrid fusion.
         """
         self._faiss = faiss_store
         self._bm25 = bm25_store
+        self._fusion_weights = (semantic_weight, lexical_weight)
 
     @property
     def _has_semantic(self) -> bool:
@@ -655,6 +665,8 @@ class Retriever:
         )
         lexical = self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter)
         return _Ranked(
-            reciprocal_rank_fusion([semantic.results, lexical.results]),
+            reciprocal_rank_fusion(
+                [semantic.results, lexical.results], weights=self._fusion_weights
+            ),
             _merge_absolute(semantic.absolute, lexical.absolute),
         )

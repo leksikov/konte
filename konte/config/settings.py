@@ -43,10 +43,6 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800  # tokens
     CHUNK_OVERLAP: int = 80  # tokens (10%)
 
-    # Context generation
-    CONTEXT_MIN_TOKENS: int = 100
-    CONTEXT_MAX_TOKENS: int = 200
-
     # Retrieval
     DEFAULT_TOP_K: int = 20
     CONFIDENCE_THRESHOLD: float = 0.7  # "deliver" threshold

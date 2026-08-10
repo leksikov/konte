@@ -149,8 +149,6 @@ class ProjectConfig(BaseModel):
 
     # Context
     context_prompt_path: Path | None = None  # Per-project prompt override
-    context_min_tokens: int = 100
-    context_max_tokens: int = 200
 
     # Models
     embedding_model: str = "text-embedding-3-small"
@@ -160,8 +158,8 @@ class ProjectConfig(BaseModel):
     enable_faiss: bool = True
     enable_bm25: bool = True
 
-    # Fusion weights
-    fusion_weight_semantic: float = 0.5
-    fusion_weight_lexical: float = 0.5
+    # Fusion weights. Only their ratio matters, not their scale.
+    fusion_weight_semantic: float = Field(default=0.5, ge=0.0)
+    fusion_weight_lexical: float = Field(default=0.5, ge=0.0)
 
     model_config = ConfigDict(ser_json_path="str")

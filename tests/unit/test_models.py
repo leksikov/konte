@@ -307,8 +307,6 @@ class TestProjectConfig:
         assert config.segment_overlap == 800
         assert config.chunk_size == 800
         assert config.chunk_overlap == 80
-        assert config.context_min_tokens == 100
-        assert config.context_max_tokens == 200
         assert config.embedding_model == "text-embedding-3-small"
         assert config.context_model is None  # Default: resolved from settings
         assert config.enable_faiss is True

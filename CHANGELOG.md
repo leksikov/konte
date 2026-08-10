@@ -95,8 +95,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocking the event loop, which had stalled every other request in an ASGI
   worker for the duration of the call
 
+### Removed
+
+- `ProjectConfig.context_min_tokens` and `context_max_tokens`, and the
+  `CONTEXT_MIN_TOKENS` / `CONTEXT_MAX_TOKENS` settings behind them. Nothing read
+  any of the four — context length comes from the prompt template — so setting
+  them only wrote a number into `config.json` and the `/config` response. A
+  `config.json` carrying them still opens
+
 ### Fixed
 
+- `fusion_weight_semantic` and `fusion_weight_lexical` were persisted in
+  `config.json`, shown in the UI's config tab and drawn into the architecture
+  diagram, but no retrieval path read them. Fusion is now weighted,
+  `sum(weight / (k + rank))`, so their ratio decides which index wins a
+  disagreement. Existing projects rank identically — a factor shared by both
+  lists cancels in the rescaling, so the 0.5/0.5 default is the old behavior
+- The keyword-extraction prompt asked for a compound term to be kept "as one
+  keyword", but the keywords are joined into one string that BM25 re-tokenizes
+  on word and CJK-bigram boundaries, so no phrase was ever matched as a unit.
+  It now asks for the modifier to survive ("working capital", not "capital")
 - `top_score`, `score_spread`, `has_high_confidence` and `suggested_action` were
   read off the ranking scores, which measure nothing. Rank fusion rescales its
   winner to 1.0 and BM25 normalizes against its own candidates, so in `hybrid`

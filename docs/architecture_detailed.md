@@ -117,10 +117,9 @@ flowchart TB
         BQ --> BM
         BL --> BR[Reciprocal Rank Fusion]
         BP --> BR
-        BR --> BS[For each result:<br/>RRF_score = Σ 1/k+rank]
+        BR --> BS[For each result:<br/>RRF_score = Σ weight/k+rank<br/>semantic: 0.5, lexical: 0.5]
         BS --> BT[Merge by chunk_id]
-        BT --> BU[Sort by RRF_score<br/>descending]
-        BU --> BV[Apply fusion weights<br/>semantic: 0.6, lexical: 0.4]
+        BT --> BV[Sort by RRF_score<br/>descending]
     end
 
     subgraph Fallback["⚠️ Fallback Logic"]

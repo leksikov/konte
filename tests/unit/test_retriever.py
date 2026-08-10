@@ -95,6 +95,43 @@ class TestReciprocalRankFusion:
         fused = reciprocal_rank_fusion([[], []])
         assert fused == []
 
+    def test_equal_weights_match_unweighted(self, sample_chunks):
+        """Test a shared weight cancels in the rescaling, whatever its value."""
+        from konte.stores.retriever import reciprocal_rank_fusion
+
+        list1 = [(sample_chunks[0], 0.9), (sample_chunks[1], 0.8)]
+        list2 = [(sample_chunks[1], 0.95), (sample_chunks[2], 0.85)]
+
+        unweighted = reciprocal_rank_fusion([list1, list2])
+        weighted = reciprocal_rank_fusion([list1, list2], weights=(0.5, 0.5))
+
+        assert [(c.chunk.chunk_id, s) for c, s in weighted] == [
+            (c.chunk.chunk_id, s) for c, s in unweighted
+        ]
+
+    def test_weights_shift_the_winner(self, sample_chunks):
+        """Test the heavier list's top result wins a head-to-head disagreement."""
+        from konte.stores.retriever import reciprocal_rank_fusion
+
+        list1 = [(sample_chunks[0], 0.9), (sample_chunks[1], 0.8)]
+        list2 = [(sample_chunks[1], 0.95), (sample_chunks[0], 0.85)]
+
+        first_heavy = reciprocal_rank_fusion([list1, list2], weights=(0.8, 0.2))
+        second_heavy = reciprocal_rank_fusion([list1, list2], weights=(0.2, 0.8))
+
+        assert first_heavy[0][0].chunk.chunk_id == "test_s0_c0"
+        assert second_heavy[0][0].chunk.chunk_id == "test_s0_c1"
+
+    def test_weights_must_cover_every_list(self, sample_chunks):
+        """Test a short weight vector is rejected, not silently truncated."""
+        from konte.stores.retriever import reciprocal_rank_fusion
+
+        list1 = [(sample_chunks[0], 0.9)]
+        list2 = [(sample_chunks[1], 0.9)]
+
+        with pytest.raises(ValueError):
+            reciprocal_rank_fusion([list1, list2], weights=(1.0,))
+
 
 @pytest.mark.unit
 class TestDetermineSuggestedAction:
@@ -404,6 +441,57 @@ class TestConfidenceIsNotTheRanking:
 
         assert response.top_score == pytest.approx(0.93)
         assert response.suggested_action == "deliver"
+
+
+@pytest.mark.unit
+class TestFusionWeights:
+    """Test that the configured weights decide which index wins a disagreement."""
+
+    def _hybrid(self, semantic_weight, lexical_weight):
+        from konte.stores.bm25_store import BM25Store
+        from konte.stores.retriever import Retriever
+
+        contents = [
+            "Operating cash reserves increased modestly.",
+            "Employee headcount remained flat across all regions.",
+            "Cash flow from operations totalled two billion dollars.",
+            "The quarterly revenue grew by twelve percent year over year.",
+        ]
+        corpus = [
+            ContextualizedChunk(
+                chunk=Chunk(
+                    chunk_id=f"c{i}",
+                    content=content,
+                    source="report.md",
+                    segment_idx=0,
+                    chunk_idx=i,
+                ),
+                context="",
+            )
+            for i, content in enumerate(contents)
+        ]
+        bm25 = BM25Store()
+        bm25.build_index(corpus)
+        # Nothing BM25 ranks highly, so the two indexes disagree.
+        faiss = _StubFAISS([(corpus[3], 0.9), (corpus[1], 0.85)])
+        return Retriever(
+            faiss_store=faiss,
+            bm25_store=bm25,
+            semantic_weight=semantic_weight,
+            lexical_weight=lexical_weight,
+        )
+
+    def _top_chunk_id(self, retriever):
+        response = retriever.retrieve_hybrid("cash flow", top_k=1, use_keyword_extraction=False)
+        return response.results[0].chunk_id
+
+    def test_semantic_weight_wins(self):
+        """Test the vector index's top result leads when it is weighted heavier."""
+        assert self._top_chunk_id(self._hybrid(0.9, 0.1)) == "c3"
+
+    def test_lexical_weight_wins(self):
+        """Test the lexical index's top result leads when it is weighted heavier."""
+        assert self._top_chunk_id(self._hybrid(0.1, 0.9)) == "c2"
 
 
 @pytest.fixture

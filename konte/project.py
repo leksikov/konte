@@ -480,7 +480,7 @@ class Project:
         )
 
         self._load_indexes(project_dir)
-        self._retriever = Retriever(faiss_store=self._faiss, bm25_store=self._bm25)
+        self._attach_retriever()
 
         logger.info(
             "project_loaded",
@@ -512,8 +512,6 @@ class Project:
             "segment_overlap": settings.SEGMENT_OVERLAP,
             "chunk_size": settings.CHUNK_SIZE,
             "chunk_overlap": settings.CHUNK_OVERLAP,
-            "context_min_tokens": settings.CONTEXT_MIN_TOKENS,
-            "context_max_tokens": settings.CONTEXT_MAX_TOKENS,
             "embedding_model": settings.EMBEDDING_MODEL,
             "context_model": settings.CONTEXT_MODEL,
         }
@@ -693,7 +691,16 @@ class Project:
             self._bm25.build_index(self._contextualized_chunks)
             logger.info("bm25_index_built")
 
-        self._retriever = Retriever(faiss_store=self._faiss, bm25_store=self._bm25)
+        self._attach_retriever()
+
+    def _attach_retriever(self) -> None:
+        """Wire a retriever over the current indexes."""
+        self._retriever = Retriever(
+            faiss_store=self._faiss,
+            bm25_store=self._bm25,
+            semantic_weight=self._config.fusion_weight_semantic,
+            lexical_weight=self._config.fusion_weight_lexical,
+        )
 
     def _load_indexes(self, project_dir: Path) -> None:
         """Attach whichever indexes exist on disk and are enabled in config."""

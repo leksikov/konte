@@ -22,8 +22,6 @@ class TestSettings:
             assert s.SEGMENT_OVERLAP == 800
             assert s.CHUNK_SIZE == 800
             assert s.CHUNK_OVERLAP == 80
-            assert s.CONTEXT_MIN_TOKENS == 100
-            assert s.CONTEXT_MAX_TOKENS == 200
             assert s.DEFAULT_TOP_K == 20
             assert s.MAX_CONCURRENT_CALLS == 16
             assert s.concurrency_limit == 16
