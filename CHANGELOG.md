@@ -97,6 +97,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `top_score`, `score_spread`, `has_high_confidence` and `suggested_action` were
+  read off the ranking scores, which measure nothing. Rank fusion rescales its
+  winner to 1.0 and BM25 normalizes against its own candidates, so in `hybrid`
+  and `lexical` mode every response holding at least one result reported
+  `top_score` 1.0 and `suggested_action` "deliver" — a query matching a single
+  stopword scored exactly as high as one answered outright, and the agent hints
+  the README documents were constants. They are now computed from a measure of
+  the query against the chunk: vector similarity, the share of the query's
+  terms the lexical index matched, or the reranker's score when reranking
+  actually ran. Result ordering and `RetrievalResult.score` are unchanged, and
+  `semantic` mode — where the ranking score was already absolute — is
+  unaffected
+- A reranker that could not be reached returned the initial retrieval's ranking
+  scores, so an outage was reported as a perfect match. `rerank_chunks_with_score()`
+  now says whether it scored anything, and the retrieval's own measurements
+  stand in when it did not
 - An extraction that returned no keywords searched BM25 for the empty string,
   scoring every chunk zero and returning whichever ones came first; the
   original query is now used instead

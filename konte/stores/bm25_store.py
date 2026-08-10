@@ -4,7 +4,7 @@ import pickle
 from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import structlog
@@ -21,6 +21,18 @@ logger = structlog.get_logger()
 Corpus = Callable[[], Sequence[ContextualizedChunk]]
 
 LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
+
+
+class LexicalResults(NamedTuple):
+    """Ranked chunks, and how much of the query each one carries.
+
+    `results` scores are normalized against the candidates they were drawn
+    from, so the top chunk always reads 1.0 whatever it matched. `coverage`
+    is absolute: the share of the query's terms, weighted by how rare each is.
+    """
+
+    results: list[tuple[ContextualizedChunk, float]]
+    coverage: dict[str, float]
 
 
 def _tokenize(text: str) -> list[str]:
@@ -107,6 +119,34 @@ def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
     return top[np.argsort(-scores[top], kind="stable")]
 
 
+def _term_weights(index: BM25Okapi, tokens: Sequence[str], unseen: float) -> dict[str, float]:
+    """Weight each distinct query term by how much it narrows the corpus.
+
+    An unindexed term weighs as much as the rarest indexed one, so naming
+    something absent cannot read as a full match. Negative IDF — a term in
+    most documents, or any term of a corpus too small to separate — clamps away.
+    """
+    idf = index.idf
+    return {token: max(idf.get(token, unseen), 0.0) for token in dict.fromkeys(tokens)}
+
+
+def _coverage(index: BM25Okapi, weights: dict[str, float], positions: Sequence[int]) -> list[float]:
+    """Score how much of the weighted query each of the given documents carries."""
+    if not weights:
+        return [0.0] * len(positions)
+
+    total = sum(weights.values())
+    if total <= 0:  # no weight survived the clamp; fall back to counting terms
+        weights = dict.fromkeys(weights, 1.0)
+        total = float(len(weights))
+
+    frequencies = index.doc_freqs
+    return [
+        sum(weight for term, weight in weights.items() if term in frequencies[position]) / total
+        for position in positions
+    ]
+
+
 class BM25Store:
     """BM25 store for lexical search on contextualized chunks."""
 
@@ -114,6 +154,17 @@ class BM25Store:
         """Initialize BM25 store."""
         self._index: BM25Okapi | None = None
         self._corpus: Corpus = list  # nothing indexed yet
+        self._unseen_idf = 0.0
+
+    def _attach(self, index: BM25Okapi, corpus: Corpus) -> None:
+        """Bind a ranking model to the chunks it was built over.
+
+        The rarest term's IDF is read here rather than per query: scanning the
+        vocabulary is not free on a corpus worth ranking.
+        """
+        self._index = index
+        self._corpus = corpus
+        self._unseen_idf = max(index.idf.values(), default=0.0)
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build BM25 index from contextualized chunks.
@@ -125,8 +176,8 @@ class BM25Store:
             logger.warning("bm25_build_empty_chunks")
             return
 
-        self._corpus = lambda: chunks
-        self._index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
+        index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
+        self._attach(index, lambda: chunks)
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
@@ -175,8 +226,7 @@ class BM25Store:
         # Unpickling executes arbitrary code: only load index dirs this library wrote.
         with index_path.open("rb") as f:
             data = pickle.load(f)
-        self._index = data["index"]
-        self._corpus = cache(corpus)
+        self._attach(data["index"], cache(corpus))
 
         logger.info("bm25_index_loaded", directory=str(directory))
 
@@ -200,35 +250,70 @@ class BM25Store:
         Returns:
             List of (chunk, score) tuples, sorted by score descending. Scores are
             normalized to 0-1 across the surviving candidates, so they are only
-            comparable within one response.
+            comparable within one response. query_with_coverage() is the variant
+            that also reports how much of the query each chunk matched.
+        """
+        return self.query_with_coverage(query, top_k, metadata_filter, source_filter).results
+
+    def query_with_coverage(
+        self,
+        query: str,
+        top_k: int | None = None,
+        metadata_filter: MetadataFilter | None = None,
+        source_filter: str | None = None,
+    ) -> LexicalResults:
+        """Query the BM25 index, reporting matched query coverage alongside the ranking.
+
+        Coverage reads the term frequencies the ranking model already holds, so
+        it costs a few dictionary lookups per returned chunk.
+
+        Args:
+            query: Query string.
+            top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
+            metadata_filter: Filter results by metadata (equality match, AND logic).
+            source_filter: Substring match on chunk source field.
+
+        Returns:
+            LexicalResults pairing the ranked chunks with their coverage.
         """
         chunks = self._corpus()
         if self._index is None or not chunks:
             logger.warning("bm25_query_empty_index")
-            return []
+            return LexicalResults([], {})
 
         candidates = _filter_indices(chunks, metadata_filter, source_filter)
         if candidates is not None and not candidates.size:
-            return []
+            return LexicalResults([], {})
 
         # IDF is computed over the whole corpus, so scoring cannot be restricted
         # to the candidates; only the ranking that follows is.
-        scores = self._index.get_scores(_tokenize(query))
+        tokens = _tokenize(query)
+        scores = self._index.get_scores(tokens)
         if candidates is not None:
             scores = scores[candidates]
 
         k = min(top_k or settings.DEFAULT_TOP_K, scores.size)
         if k <= 0:
-            return []
+            return LexicalResults([], {})
 
         ranked = _rank_top_k(scores, k)
         normalized = _normalize(scores[ranked], scores.min(), scores.max())
-        positions = ranked if candidates is None else candidates[ranked]
+        positions = (ranked if candidates is None else candidates[ranked]).tolist()
 
-        return [
+        results = [
             (chunks[position], score)
-            for position, score in zip(positions.tolist(), normalized.tolist(), strict=True)
+            for position, score in zip(positions, normalized.tolist(), strict=True)
         ]
+        weights = _term_weights(self._index, tokens, self._unseen_idf)
+        return LexicalResults(
+            results,
+            {
+                chunk.chunk.chunk_id: matched
+                for (chunk, _), matched in zip(
+                    results, _coverage(self._index, weights, positions), strict=True
+                )
+            },
+        )
 
     @property
     def is_empty(self) -> bool:

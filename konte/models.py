@@ -66,7 +66,15 @@ class RetrievalResult(BaseModel):
 
     content: str
     context: str
-    score: float = Field(ge=0.0, le=1.0)
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Ranking score within this response. Fusion and lexical "
+            "normalization scale the winner to 1.0, so it does not compare "
+            "across queries; read top_score for that."
+        ),
+    )
     source: str
     chunk_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -78,8 +86,19 @@ class RetrievalResponse(BaseModel):
     results: list[RetrievalResult]
     query: str
     total_found: int
-    top_score: float = Field(ge=0.0, le=1.0)
-    score_spread: float = Field(ge=0.0)
+    top_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "How well the best result matches the query: vector similarity, "
+            "lexical query coverage, or the reranker's score. Comparable "
+            "across queries, unlike RetrievalResult.score."
+        ),
+    )
+    score_spread: float = Field(
+        ge=0.0,
+        description="Best minus worst result on that same measure.",
+    )
     has_high_confidence: bool
     suggested_action: SuggestedAction
 

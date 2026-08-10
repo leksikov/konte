@@ -55,7 +55,7 @@ class TestRerankerConfiguration:
         """Empty input returns empty output without touching the endpoint."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", None)
 
-        assert await rerank_chunks_with_score("query", []) == []
+        assert await rerank_chunks_with_score("query", []) == ([], False)
 
 
 @pytest.mark.unit
@@ -70,10 +70,11 @@ class TestRerankerFailureModes:
             return (idx, None)
 
         with patch("konte.stores.reranker._score_single_chunk", side_effect=fail_all):
-            result = await rerank_chunks_with_score("query", sample_chunks)
+            outcome = await rerank_chunks_with_score("query", sample_chunks)
 
-        assert result == sample_chunks  # original order, original retrieval scores
-        assert all(score > 0.0 for _, score in result)
+        assert outcome.results == sample_chunks  # original order, original retrieval scores
+        assert all(score > 0.0 for _, score in outcome.results)
+        assert outcome.scored is False  # those scores are not relevance
 
     async def test_partial_failure_scores_failed_chunk_zero(self, sample_chunks, monkeypatch):
         """A single failed request scores 0.0; the rest rerank normally."""
@@ -85,10 +86,11 @@ class TestRerankerFailureModes:
             return (idx, 0.5 + idx * 0.1)
 
         with patch("konte.stores.reranker._score_single_chunk", side_effect=fail_first):
-            result = await rerank_chunks_with_score("query", sample_chunks)
+            outcome = await rerank_chunks_with_score("query", sample_chunks)
 
-        assert len(result) == 3
+        assert outcome.scored is True
+        assert len(outcome.results) == 3
         # Failed chunk sorts last with score 0.0; others keep their scores
-        assert result[-1][0].chunk.chunk_id == "test_s0_c0"
-        assert result[-1][1] == 0.0
-        assert result[0][1] == pytest.approx(0.7)
+        assert outcome.results[-1][0].chunk.chunk_id == "test_s0_c0"
+        assert outcome.results[-1][1] == 0.0
+        assert outcome.results[0][1] == pytest.approx(0.7)

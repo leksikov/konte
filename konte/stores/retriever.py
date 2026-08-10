@@ -29,6 +29,19 @@ _FUSION_CANDIDATE_MULTIPLIER = 2
 _INJECTED_EVIDENCE_SCORE = 0.95
 
 
+class _Ranked(NamedTuple):
+    """A ranked list, and how well each of its chunks matched, by chunk id.
+
+    Fusion and lexical normalization both scale their winner to 1.0, so a
+    ranking score cannot say whether a chunk answered the query or was merely
+    the least bad. `absolute` can: vector similarity, lexical coverage, or the
+    reranker's score. Only it may reach the confidence hints.
+    """
+
+    results: ScoredChunks
+    absolute: dict[str, float]
+
+
 class _Queries(NamedTuple):
     """The text each index is asked to rank against.
 
@@ -82,7 +95,8 @@ def reciprocal_rank_fusion(
 
     Returns:
         Combined list of (chunk, score) tuples sorted by RRF score, rescaled so
-        the best result scores 1.0.
+        the best result scores 1.0. Ranking only: the rescaling erases how well
+        anything matched. See _Ranked.
     """
     fused: dict[str, tuple[ContextualizedChunk, float]] = {}
 
@@ -106,6 +120,21 @@ def reciprocal_rank_fusion(
     return [(chunk, score / top_score) for chunk, score in ranked]
 
 
+def _by_chunk_id(results: ScoredChunks) -> dict[str, float]:
+    """Read ranking scores as absolute ones, for the indexes where they are."""
+    return {chunk.chunk.chunk_id: score for chunk, score in results}
+
+
+def _merge_absolute(*readings: dict[str, float]) -> dict[str, float]:
+    """Keep the strongest reading per chunk, so fusion cannot penalize agreement."""
+    merged: dict[str, float] = {}
+    for reading in readings:
+        for chunk_id, score in reading.items():
+            if score > merged.get(chunk_id, 0.0):
+                merged[chunk_id] = score
+    return merged
+
+
 def _determine_suggested_action(top_score: float) -> SuggestedAction:
     """Determine suggested action based on top score.
 
@@ -124,23 +153,27 @@ def _determine_suggested_action(top_score: float) -> SuggestedAction:
 
 def _build_retrieval_response(
     query: str,
-    results: ScoredChunks,
+    ranked: _Ranked,
     top_k: int,
 ) -> RetrievalResponse:
     """Build RetrievalResponse from retrieval results.
 
+    The hints read `ranked.absolute`, never the ranking scores: those are
+    rescaled per response, so a threshold on them fires on everything.
+
     Args:
         query: The original query.
-        results: List of (chunk, score) tuples.
+        ranked: Ranked results and their absolute match readings.
         top_k: Number of results to include.
 
     Returns:
         RetrievalResponse with agent decision hints.
     """
-    results = results[:top_k]
+    results = ranked.results[:top_k]
+    measured = [ranked.absolute.get(chunk.chunk.chunk_id, 0.0) for chunk, _ in results]
 
-    top_score = results[0][1] if results else 0.0
-    bottom_score = results[-1][1] if results else 0.0
+    top_score = max(measured, default=0.0)
+    bottom_score = min(measured, default=0.0)
 
     return RetrievalResponse(
         results=[
@@ -199,7 +232,7 @@ def _inject_evidence_result(
         results=new_results,
         query=response.query,
         total_found=len(new_results),
-        top_score=new_results[0].score if new_results else 0.0,
+        top_score=_INJECTED_EVIDENCE_SCORE,
         score_spread=response.score_spread,
         has_high_confidence=True,
         suggested_action="deliver",
@@ -437,18 +470,21 @@ class Retriever:
             use_keyword_extraction = False
 
         queries = await self._queries_async(query, mode, use_keyword_extraction)
-        initial_results = self._ranked(
+        initial = self._ranked(
             queries,
             mode,
             initial_k,
             metadata_filter=metadata_filter,
             source_filter=source_filter,
         )
-        if not initial_results:
-            return _build_retrieval_response(query, [], k)
+        if not initial.results:
+            return _build_retrieval_response(query, initial, k)
 
-        reranked = await rerank_chunks_with_score(query, initial_results, top_k=k)
-        return _build_retrieval_response(query, reranked, k)
+        # An unreachable reranker hands back the retrieval's own ranking scores,
+        # which would read as a perfect match; keep the initial readings.
+        outcome = await rerank_chunks_with_score(query, initial.results, top_k=k)
+        absolute = _by_chunk_id(outcome.results) if outcome.scored else initial.absolute
+        return _build_retrieval_response(query, _Ranked(outcome.results, absolute), k)
 
     def _queries(
         self,
@@ -498,14 +534,14 @@ class Retriever:
     ) -> RetrievalResponse:
         """Rank against already-resolved queries and wrap the outcome."""
         k = top_k or settings.DEFAULT_TOP_K
-        results = self._ranked(
+        ranked = self._ranked(
             queries,
             mode,
             k,
             metadata_filter=metadata_filter,
             source_filter=source_filter,
         )
-        response = _build_retrieval_response(queries.semantic, results, k)
+        response = _build_retrieval_response(queries.semantic, ranked, k)
 
         if inject_evidence:
             return _inject_evidence_result(response, inject_evidence, inject_position)
@@ -519,7 +555,7 @@ class Retriever:
         *,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> ScoredChunks:
+    ) -> _Ranked:
         """Rank with one mode without wrapping the outcome in a response."""
         self._warn_missing_indexes(mode)
 
@@ -552,13 +588,18 @@ class Retriever:
         top_k: int,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> ScoredChunks:
-        """Rank with the vector index alone; empty when it is unavailable."""
+    ) -> _Ranked:
+        """Rank with the vector index alone; empty when it is unavailable.
+
+        Similarity compares the query to the chunk, not the chunk to its
+        rivals, so it is already the absolute reading.
+        """
         if self._faiss is None or self._faiss.is_empty:
-            return []
-        return self._faiss.query(
+            return _Ranked([], {})
+        results = self._faiss.query(
             query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
         )
+        return _Ranked(results, _by_chunk_id(results))
 
     def _lexical_results(
         self,
@@ -566,17 +607,25 @@ class Retriever:
         top_k: int,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> ScoredChunks:
+    ) -> _Ranked:
         """Rank with the lexical index alone; empty when it is unavailable.
 
         BM25 has no notion of stopwords or Korean particles, so a raw
         natural-language question dilutes every term that matters. The caller
         passes the already-reduced query; see _Queries.
+
+        Normalization hands the winner 1.0 whether it matched the whole query
+        or a single stopword, so coverage is the absolute reading instead.
         """
         if self._bm25 is None or self._bm25.is_empty:
-            return []
-        return self._bm25.query(
-            search_query, top_k=top_k, metadata_filter=metadata_filter, source_filter=source_filter
+            return _Ranked([], {})
+        return _Ranked(
+            *self._bm25.query_with_coverage(
+                search_query,
+                top_k=top_k,
+                metadata_filter=metadata_filter,
+                source_filter=source_filter,
+            )
         )
 
     def _hybrid_results(
@@ -585,8 +634,12 @@ class Retriever:
         top_k: int,
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
-    ) -> ScoredChunks:
-        """Fuse both indexes, degrading to whichever one is available."""
+    ) -> _Ranked:
+        """Fuse both indexes, degrading to whichever one is available.
+
+        Fusion consumes rank positions only, so each index's reading is carried
+        around it rather than through it.
+        """
         if not self._has_semantic:
             return self._lexical_results(
                 queries.lexical, top_k, metadata_filter, source_filter
@@ -597,11 +650,11 @@ class Retriever:
             )
 
         fetch_k = top_k * _FUSION_CANDIDATE_MULTIPLIER
-        return reciprocal_rank_fusion(
-            [
-                self._semantic_results(
-                    queries.semantic, fetch_k, metadata_filter, source_filter
-                ),
-                self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter),
-            ]
+        semantic = self._semantic_results(
+            queries.semantic, fetch_k, metadata_filter, source_filter
+        )
+        lexical = self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter)
+        return _Ranked(
+            reciprocal_rank_fusion([semantic.results, lexical.results]),
+            _merge_absolute(semantic.absolute, lexical.absolute),
         )

@@ -316,7 +316,7 @@ async def main():
     print(answer.sources_used) # Number of chunks used
 
     # Retrieval metadata is also available
-    print(response.top_score)        # Highest retrieval score (0-1)
+    print(response.top_score)        # How well the best result matched (0-1)
     print(response.suggested_action) # "deliver", "query_more", or "refine_query"
 
 asyncio.run(main())
@@ -428,8 +428,22 @@ print(response.suggested_action)
 # "deliver" (score >= 0.7), "query_more" (0.4-0.7), or "refine_query" (< 0.4)
 
 print(response.has_high_confidence)  # True if top_score >= 0.7
-print(response.top_score)            # Highest result score (0-1)
-print(response.score_spread)         # Difference between top and bottom scores
+print(response.top_score)            # How well the best result matched (0-1)
+print(response.score_spread)         # Same measure, best minus worst
+```
+
+`top_score` measures the query against the chunk — vector similarity, the
+share of the query's terms the lexical index matched, or the reranker's own
+score. It is comparable across queries, which is what makes a threshold on it
+mean anything.
+
+`RetrievalResult.score` is a different number: it is what ordered the results
+inside one response. Rank fusion and lexical normalization both scale the best
+result to 1.0, so `results[0].score` is 1.0 in hybrid and lexical mode whether
+the corpus answered the question or merely returned its least bad chunk. Rank
+with it; never threshold on it.
+
+```python
 
 # Use as a plain callable tool
 retriever = project.as_retriever()
@@ -452,15 +466,15 @@ class RetrievalResponse:
     results: list[RetrievalResult]  # Ranked results
     query: str                      # Original query
     total_found: int                # Number of results
-    top_score: float                # Highest score (0-1)
-    score_spread: float             # Score range
+    top_score: float                # Best result's match against the query (0-1)
+    score_spread: float             # Same measure, best minus worst
     has_high_confidence: bool       # top_score >= 0.7
     suggested_action: str           # "deliver", "query_more", "refine_query"
 
 class RetrievalResult:
     content: str      # Original chunk text
     context: str      # LLM-generated context
-    score: float      # Relevance score (0-1)
+    score: float      # Ranking score within this response (0-1), not a threshold
     source: str       # Source filename
     chunk_id: str     # Unique chunk identifier
     metadata: dict    # Additional metadata

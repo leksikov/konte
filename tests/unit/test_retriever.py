@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from konte.models import Chunk, ContextualizedChunk
+from konte.stores.reranker import RerankOutcome
 
 
 @pytest.fixture
@@ -121,6 +122,13 @@ class TestDetermineSuggestedAction:
         assert _determine_suggested_action(0.0) == "refine_query"
 
 
+def _ranked(results):
+    """Wrap results whose ranking scores happen to be absolute, as FAISS's are."""
+    from konte.stores.retriever import _by_chunk_id, _Ranked
+
+    return _Ranked(results, _by_chunk_id(results))
+
+
 @pytest.mark.unit
 class TestBuildRetrievalResponse:
     """Test building RetrievalResponse."""
@@ -134,7 +142,7 @@ class TestBuildRetrievalResponse:
             (sample_chunks[1], 0.7),
             (sample_chunks[2], 0.5),
         ]
-        response = _build_retrieval_response("test query", results, top_k=3)
+        response = _build_retrieval_response("test query", _ranked(results), top_k=3)
 
         assert response.query == "test query"
         assert response.total_found == 3
@@ -146,9 +154,9 @@ class TestBuildRetrievalResponse:
 
     def test_builds_response_empty_results(self):
         """Test building response with no results."""
-        from konte.stores.retriever import _build_retrieval_response
+        from konte.stores.retriever import _build_retrieval_response, _Ranked
 
-        response = _build_retrieval_response("test query", [], top_k=10)
+        response = _build_retrieval_response("test query", _Ranked([], {}), top_k=10)
 
         assert response.total_found == 0
         assert response.top_score == 0.0
@@ -159,9 +167,35 @@ class TestBuildRetrievalResponse:
         from konte.stores.retriever import _build_retrieval_response
 
         results = [(c, 0.9 - i * 0.1) for i, c in enumerate(sample_chunks)]
-        response = _build_retrieval_response("test", results, top_k=2)
+        response = _build_retrieval_response("test", _ranked(results), top_k=2)
 
         assert len(response.results) == 2
+
+    def test_confidence_ignores_the_ranking_scores(self, sample_chunks):
+        """Test the hints read the absolute measurements, not the ordering."""
+        from konte.stores.retriever import _build_retrieval_response, _Ranked
+
+        # A fused ranking: the winner reads 1.0 however little it matched.
+        results = [(sample_chunks[0], 1.0), (sample_chunks[1], 0.6)]
+        measured = {"test_s0_c0": 0.31, "test_s0_c1": 0.22}
+
+        response = _build_retrieval_response("test", _Ranked(results, measured), top_k=2)
+
+        assert response.results[0].score == 1.0  # ordering is untouched
+        assert response.top_score == pytest.approx(0.31)
+        assert response.score_spread == pytest.approx(0.09)
+        assert response.has_high_confidence is False
+        assert response.suggested_action == "refine_query"
+
+    def test_unmeasured_chunk_scores_zero(self, sample_chunks):
+        """Test a chunk with no absolute reading cannot inflate confidence."""
+        from konte.stores.retriever import _build_retrieval_response, _Ranked
+
+        results = [(sample_chunks[0], 1.0)]
+        response = _build_retrieval_response("test", _Ranked(results, {}), top_k=1)
+
+        assert response.top_score == 0.0
+        assert response.suggested_action == "refine_query"
 
 
 @pytest.mark.unit
@@ -204,6 +238,172 @@ class TestRetrieverModes:
 
         # Should complete without error, even with empty stores
         assert response.query == "test query"
+
+
+class _StubFAISS:
+    """A vector index returning fixed similarities."""
+
+    is_empty = False
+
+    def __init__(self, results):
+        self._results = results
+
+    def query(self, query, top_k=None, metadata_filter=None, source_filter=None):
+        return self._results[:top_k]
+
+
+@pytest.mark.unit
+class TestConfidenceIsNotTheRanking:
+    """Test that rescaled and normalized rankings cannot fabricate confidence.
+
+    Fusion and BM25 normalization both scale their winner to 1.0, which had
+    every hybrid and lexical response claiming high confidence.
+    """
+
+    def _corpus(self):
+        contents = [
+            "The quarterly revenue grew by twelve percent year over year.",
+            "Employee headcount remained flat across all regions.",
+            "Cash flow from operations totalled two billion dollars.",
+        ]
+        return [
+            ContextualizedChunk(
+                chunk=Chunk(
+                    chunk_id=f"c{i}",
+                    content=content,
+                    source="report.md",
+                    segment_idx=0,
+                    chunk_idx=i,
+                ),
+                context="",
+            )
+            for i, content in enumerate(contents)
+        ]
+
+    def _hybrid(self, similarity):
+        from konte.stores.bm25_store import BM25Store
+        from konte.stores.retriever import Retriever
+
+        corpus = self._corpus()
+        bm25 = BM25Store()
+        bm25.build_index(corpus)
+        faiss = _StubFAISS([(corpus[0], similarity), (corpus[1], similarity - 0.05)])
+        return Retriever(faiss_store=faiss, bm25_store=bm25), corpus
+
+    def test_weak_hybrid_evidence_does_not_deliver(self):
+        """Test a poor semantic match no longer reads as a perfect one."""
+        retriever, _ = self._hybrid(0.31)
+
+        response = retriever.retrieve_hybrid(
+            "gibberish xyzzy", top_k=3, use_keyword_extraction=False
+        )
+
+        assert response.results[0].score == 1.0  # the ranking is untouched
+        assert response.top_score == pytest.approx(0.31)
+        assert response.has_high_confidence is False
+        assert response.suggested_action == "refine_query"
+
+    def test_strong_hybrid_evidence_still_delivers(self):
+        """Test confidence was not simply suppressed everywhere.
+
+        The query shares no term with the corpus, leaving the semantic
+        reading on its own.
+        """
+        retriever, _ = self._hybrid(0.88)
+
+        response = retriever.retrieve_hybrid(
+            "gibberish xyzzy", top_k=3, use_keyword_extraction=False
+        )
+
+        assert response.top_score == pytest.approx(0.88)
+        assert response.suggested_action == "deliver"
+
+    def test_hybrid_agrees_with_semantic_on_the_same_evidence(self):
+        """Test fusing a second index cannot upgrade the same evidence to deliver."""
+        retriever, _ = self._hybrid(0.55)
+
+        hybrid = retriever.retrieve_hybrid("gibberish xyzzy", top_k=3, use_keyword_extraction=False)
+        semantic = retriever.retrieve_semantic("gibberish xyzzy", top_k=3)
+
+        assert hybrid.top_score == pytest.approx(semantic.top_score)
+        assert hybrid.suggested_action == semantic.suggested_action
+
+    def test_lexical_only_evidence_is_measured_by_coverage(self):
+        """Test a chunk only BM25 found is still measured, not assumed perfect."""
+        from konte.stores.bm25_store import BM25Store
+        from konte.stores.retriever import Retriever
+
+        corpus = self._corpus()
+        bm25 = BM25Store()
+        bm25.build_index(corpus)
+        # The vector index knows nothing about the chunk BM25 ranks first.
+        faiss = _StubFAISS([(corpus[2], 0.2)])
+        retriever = Retriever(faiss_store=faiss, bm25_store=bm25)
+
+        response = retriever.retrieve_hybrid(
+            "quarterly revenue", top_k=3, use_keyword_extraction=False
+        )
+
+        assert response.top_score == pytest.approx(1.0)
+        assert response.suggested_action == "deliver"
+
+    def test_lexical_mode_separates_a_match_from_a_miss(self):
+        """Test the lexical-only path stops answering 1.0 to everything."""
+        from konte.stores.bm25_store import BM25Store
+        from konte.stores.retriever import Retriever
+
+        bm25 = BM25Store()
+        bm25.build_index(self._corpus())
+        retriever = Retriever(faiss_store=None, bm25_store=bm25)
+
+        matched = retriever.retrieve_lexical(
+            "quarterly revenue", top_k=3, use_keyword_extraction=False
+        )
+        absent = retriever.retrieve_lexical(
+            "quarterly zirconium tungsten", top_k=3, use_keyword_extraction=False
+        )
+
+        assert matched.results[0].score == absent.results[0].score == 1.0
+        assert matched.suggested_action == "deliver"
+        assert absent.top_score < matched.top_score
+        assert absent.suggested_action == "refine_query"
+
+    async def test_unreachable_reranker_does_not_read_as_relevance(self):
+        """Test a reranker outage falls back to the retrieval's own measurements."""
+        from konte.stores.reranker import RerankOutcome
+        from konte.stores.retriever import Retriever
+
+        corpus = self._corpus()
+        faiss = _StubFAISS([(corpus[0], 0.31), (corpus[1], 0.28)])
+        retriever = Retriever(faiss_store=faiss, bm25_store=None)
+
+        with patch(
+            "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
+        ) as rerank:
+            # Every request failed, so these are the retrieval's own scores.
+            rerank.return_value = RerankOutcome([(corpus[0], 1.0), (corpus[1], 0.9)], False)
+            response = await retriever.retrieve_with_rerank("query", mode="semantic", top_k=2)
+
+        assert response.top_score == pytest.approx(0.31)
+        assert response.suggested_action == "refine_query"
+
+    async def test_reranker_score_is_the_confidence_when_it_ran(self):
+        """Test the cross-encoder's score replaces the retrieval's reading."""
+        from konte.stores.reranker import RerankOutcome
+        from konte.stores.retriever import Retriever
+
+        corpus = self._corpus()
+        faiss = _StubFAISS([(corpus[0], 0.31), (corpus[1], 0.28)])
+        retriever = Retriever(faiss_store=faiss, bm25_store=None)
+
+        with patch(
+            "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
+        ) as rerank:
+            rerank.return_value = RerankOutcome([(corpus[1], 0.93), (corpus[0], 0.12)], True)
+            response = await retriever.retrieve_with_rerank("query", mode="semantic", top_k=2)
+
+        assert response.top_score == pytest.approx(0.93)
+        assert response.suggested_action == "deliver"
 
 
 @pytest.fixture
@@ -287,7 +487,9 @@ class TestKeywordExtractionControl:
     def test_lexical_index_searches_the_keywords(self, lexical_retriever, extractor):
         """Test the extracted keywords are what BM25 actually receives."""
         with patch.object(
-            lexical_retriever._bm25, "query", wraps=lexical_retriever._bm25.query
+            lexical_retriever._bm25,
+            "query_with_coverage",
+            wraps=lexical_retriever._bm25.query_with_coverage,
         ) as bm25_query:
             lexical_retriever.retrieve(
                 "which chunk has the content?", mode="lexical", use_keyword_extraction=True
@@ -304,7 +506,9 @@ class TestKeywordExtractionControl:
         extractor.return_value = []
 
         with patch.object(
-            lexical_retriever._bm25, "query", wraps=lexical_retriever._bm25.query
+            lexical_retriever._bm25,
+            "query_with_coverage",
+            wraps=lexical_retriever._bm25.query_with_coverage,
         ) as bm25_query:
             lexical_retriever.retrieve("what is it", mode="lexical", use_keyword_extraction=True)
 
@@ -334,7 +538,7 @@ class TestAsyncRetrieval:
         with patch(
             "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
         ) as rerank:
-            rerank.return_value = []
+            rerank.return_value = RerankOutcome([], False)
             await lexical_retriever.retrieve_with_rerank("test query", mode="hybrid")
 
         extractor.async_variant.assert_not_awaited()
@@ -344,7 +548,7 @@ class TestAsyncRetrieval:
         with patch(
             "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
         ) as rerank:
-            rerank.return_value = []
+            rerank.return_value = RerankOutcome([], False)
             await lexical_retriever.retrieve_with_rerank(
                 "test query", mode="hybrid", use_keyword_extraction=True
             )

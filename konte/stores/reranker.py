@@ -1,6 +1,7 @@
 """Reranker module using a vLLM /score endpoint (e.g. Qwen3-Reranker-8B)."""
 
 import asyncio
+from typing import NamedTuple
 
 import httpx
 import structlog
@@ -15,6 +16,17 @@ SCORE_CONCURRENCY = 20
 
 # Max chars for reranking - balance between length bias and including answer
 MAX_RERANK_CHARS = 1200
+
+
+class RerankOutcome(NamedTuple):
+    """Reranked pairs, and whether the reranker is what scored them.
+
+    `scored` is False when every request failed and `results` still carries the
+    retrieval's own ranking scores, which no caller may read as relevance.
+    """
+
+    results: list[tuple[ContextualizedChunk, float]]
+    scored: bool
 
 
 def _resolve_score_endpoint() -> str:
@@ -80,7 +92,7 @@ async def rerank_chunks_with_score(
     top_k: int | None = None,
     model: str | None = None,
     concurrency: int = SCORE_CONCURRENCY,
-) -> list[tuple[ContextualizedChunk, float]]:
+) -> RerankOutcome:
     """Rerank chunks using /score endpoint for each (query, doc) pair.
 
     This approach gives consistent scores compared to batch /rerank endpoint.
@@ -93,16 +105,17 @@ async def rerank_chunks_with_score(
         concurrency: Max concurrent score requests.
 
     Returns:
-        Reranked list of (chunk, relevance_score) tuples. If every score
-        request fails (unreachable endpoint, TLS error, wrong model), the
-        original retrieval order and scores are returned and an error is
-        logged; partial failures score the failed chunks 0.0.
+        RerankOutcome carrying the reranked (chunk, relevance_score) tuples. If
+        every score request fails (unreachable endpoint, TLS error, wrong
+        model), the original retrieval order and scores come back with
+        `scored` False and an error is logged; partial failures score the
+        failed chunks 0.0 and still count as scored.
 
     Raises:
         ValueError: If RERANKER_BASE_URL is not configured.
     """
     if not chunks:
-        return []
+        return RerankOutcome([], False)
 
     score_endpoint = _resolve_score_endpoint()
     reranker_model = model or settings.RERANKER_MODEL
@@ -149,9 +162,9 @@ async def rerank_chunks_with_score(
                 top_score=reranked[0][1] if reranked else 0.0,
             )
 
-            return reranked
+            return RerankOutcome(reranked, True)
 
     except Exception as e:
         logger.error("rerank_with_score_failed", error=str(e))
         # Fallback to original order
-        return chunks[:k]
+        return RerankOutcome(chunks[:k], False)

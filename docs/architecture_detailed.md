@@ -131,11 +131,14 @@ flowchart TB
     end
 
     subgraph ScoreCalc["📊 Score Calculation"]
-        BL --> BY[Normalize scores<br/>to 0-1 range]
+        BL --> BY[Ranking score:<br/>normalize to 0-1]
         BP --> BY
         BV --> BY
-        BY --> BZ[top_score =<br/>max score]
-        BY --> CA[score_spread =<br/>top - bottom]
+        BL --> BR[Absolute measure:<br/>similarity / coverage /<br/>reranker score]
+        BP --> BR
+        BV --> BR
+        BR --> BZ[top_score =<br/>best measure]
+        BR --> CA[score_spread =<br/>best - worst measure]
     end
 
     subgraph ActionLogic["🎯 Suggested Action"]

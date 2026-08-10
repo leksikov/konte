@@ -73,19 +73,38 @@ response = project.query("query text")
 response.results          # List[RetrievalResult] - ranked chunks
 response.query            # Original query string
 response.total_found      # Number of results
-response.top_score        # Highest relevance score (0-1)
-response.score_spread     # Difference between top and bottom scores
+response.top_score        # How well the best result matched the query (0-1)
+response.score_spread     # Same measure, best minus worst
 response.has_high_confidence  # True if top_score >= 0.7
 response.suggested_action # "deliver", "query_more", or "refine_query"
 
 # Each result contains:
 result.content    # Chunk text
 result.context    # LLM-generated context (if built with context)
-result.score      # Relevance score
+result.score      # Ranking score within this response - see below
 result.source     # Source document path
 result.chunk_id   # Unique identifier
 result.metadata   # Additional metadata dict
 ```
+
+### Which score an agent may branch on
+
+`top_score` and `result.score` answer different questions, and only one of them
+is a confidence signal.
+
+`top_score` measures the query against the chunk: vector similarity, the share
+of the query's terms the lexical index matched, or the reranker's own score.
+Nothing about the other candidates enters into it, so the same number means the
+same thing in the next query, and a threshold on it is meaningful.
+
+`result.score` is what ordered the results inside one response. Rank fusion and
+lexical normalization both scale the best result to 1.0, so in `hybrid` and
+`lexical` mode `results[0].score` is 1.0 whenever anything came back at all —
+whether the corpus answered the question or returned its least bad chunk.
+
+Branch on `top_score`, `has_high_confidence`, or `suggested_action`. Use
+`result.score` to order, weight, or display results, never to decide whether
+the answer is good enough.
 
 ## GeneratedAnswer Structure
 
