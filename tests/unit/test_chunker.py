@@ -307,6 +307,50 @@ class TestCreateChunksDataFlow:
 
 
 @pytest.mark.unit
+class TestChunkerMeasurement:
+    """Test what the chunker measures, and how often it measures it."""
+
+    def test_a_text_that_fits_is_kept_whole(self):
+        """Test a text under the budget survives a splitter that would cut it."""
+        from konte.chunker import chunk_segment, count_tokens
+
+        text = " ".join(f"Sentence {i} about tariff valuation." for i in range(7))
+
+        # 49 tokens, but the splitter's fragment sum reads as more than 50.
+        assert count_tokens(text) == 49
+        assert chunk_segment(text, chunk_size=50, overlap=5) == [text]
+
+    def test_no_text_is_encoded_twice(self, monkeypatch):
+        """Test one pass counts a fragment once, however often it is measured."""
+        from collections import Counter
+
+        import tiktoken
+
+        from konte.chunker import create_chunks
+
+        encoded = Counter()
+        original = tiktoken.Encoding.encode
+
+        def counting_encode(self, text, **kwargs):
+            encoded[text] += 1
+            return original(self, text, **kwargs)
+
+        monkeypatch.setattr(tiktoken.Encoding, "encode", counting_encode)
+
+        create_chunks(
+            "Duty rates vary by heading. " * 400,
+            source="test.txt",
+            segment_size=200,
+            segment_overlap=20,
+            chunk_size=50,
+            chunk_overlap=5,
+        )
+
+        assert encoded
+        assert max(encoded.values()) == 1
+
+
+@pytest.mark.unit
 class TestExtractMetadataFromSource:
     """Test metadata extraction from source filenames."""
 

@@ -1,7 +1,7 @@
 """Chunker module for segmenting and chunking documents."""
 
 import re
-from functools import cache, lru_cache
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -79,6 +79,26 @@ def count_tokens(text: str) -> int:
     return len(_get_encoding().encode(text))
 
 
+class _Measured:
+    """Memoized count_tokens for one splitting pass.
+
+    The splitter measures a fragment to decide whether to split it and again
+    to merge it back. One instance per pass, so the counts are released with
+    the document that needed them.
+    """
+
+    __slots__ = ("_counts",)
+
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def __call__(self, text: str) -> int:
+        counted = self._counts.get(text)
+        if counted is None:
+            self._counts[text] = counted = count_tokens(text)
+        return counted
+
+
 class _Split(NamedTuple):
     """The parts a text was split into, plus the token count measured to split it."""
 
@@ -106,11 +126,15 @@ class _SplitSpec(NamedTuple):
             settings.CHUNK_OVERLAP if overlap is None else overlap,
         )
 
-    def split(self, text: str) -> _Split:
+    def split(self, text: str, measure: _Measured) -> _Split:
         """Split text by token count at sentence boundaries.
+
+        A text that fits stays whole: the splitter would sum its fragments
+        instead, and that sum overshoots what they encode to together.
 
         Args:
             text: Text to split.
+            measure: Token counts shared with the rest of this pass.
 
         Returns:
             The resulting parts and the token count of `text`.
@@ -118,22 +142,25 @@ class _SplitSpec(NamedTuple):
         if not text.strip():
             return _Split([], 0)
 
-        total_tokens = count_tokens(text)
+        total_tokens = measure(text)
         if total_tokens <= self.max_tokens:
             return _Split([text], total_tokens)
 
-        return _Split(_make_splitter(self).split_text(text), total_tokens)
+        return _Split(_make_splitter(self, measure).split_text(text), total_tokens)
 
 
-@lru_cache(maxsize=16)
-def _make_splitter(spec: _SplitSpec) -> RecursiveCharacterTextSplitter:
-    """Return the shared sentence-boundary-aware splitter for a token budget."""
-    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-        encoding_name=TOKEN_ENCODING_NAME,
+def _make_splitter(spec: _SplitSpec, measure: _Measured) -> RecursiveCharacterTextSplitter:
+    """Return a sentence-boundary-aware splitter for a token budget.
+
+    `measure` counts what from_tiktoken_encoder's length function would: the
+    same encoding, and tiktoken's default handling of special tokens.
+    """
+    return RecursiveCharacterTextSplitter(
         chunk_size=spec.max_tokens,
         chunk_overlap=spec.overlap_tokens,
         separators=_SENTENCE_SEPARATORS,
         keep_separator="end",
+        length_function=measure,
     )
 
 
@@ -152,7 +179,7 @@ def segment_document(
     Returns:
         List of text segments.
     """
-    return _SplitSpec.for_segments(segment_size, overlap).split(text).parts
+    return _SplitSpec.for_segments(segment_size, overlap).split(text, _Measured()).parts
 
 
 def chunk_segment(
@@ -170,7 +197,7 @@ def chunk_segment(
     Returns:
         List of text chunks.
     """
-    return _SplitSpec.for_chunks(chunk_size, overlap).split(text).parts
+    return _SplitSpec.for_chunks(chunk_size, overlap).split(text, _Measured()).parts
 
 
 def create_chunks(
@@ -198,15 +225,17 @@ def create_chunks(
     """
     logger.debug("segmentation_started", source=source)
 
+    # One counter for both passes: they measure the same paragraphs.
+    measure = _Measured()
     chunk_spec = _SplitSpec.for_chunks(chunk_size, chunk_overlap)
-    segmented = _SplitSpec.for_segments(segment_size, segment_overlap).split(text)
+    segmented = _SplitSpec.for_segments(segment_size, segment_overlap).split(text, measure)
     metadata = extract_metadata_from_source(source)
 
     chunks: list[Chunk] = []
     segments_map: dict[SegmentKey, str] = {}
 
     for seg_idx, segment in enumerate(segmented.parts):
-        chunked = chunk_spec.split(segment)
+        chunked = chunk_spec.split(segment, measure)
         logger.debug(
             "segment_created",
             source=source,

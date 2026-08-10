@@ -2,7 +2,7 @@
 
 import pickle
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path
@@ -84,6 +84,10 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
+# Read off the chunk, never from metadata of the same name.
+_CHUNK_COLUMNS = frozenset({"source", "segment_idx", "chunk_idx"})
+
+
 def _chunk_field(chunk: ContextualizedChunk, key: str) -> Any:
     """Read a filterable field, preferring the chunk's own columns over metadata."""
     if key == "source":
@@ -140,6 +144,120 @@ def _filter_indices(
     if source_filter:
         matched = ((i, c) for i, c in matched if source_filter in c.chunk.source)
     return np.fromiter((i for i, _ in matched), dtype=np.intp)
+
+
+class _FilterIndex:
+    """Inverted index over the corpus: field value -> the positions carrying it.
+
+    Filtering otherwise walks every chunk in Python on every query; the walk
+    happens once here instead, on the first filtered query.
+    """
+
+    __slots__ = ("_absent", "_postings", "_size", "_unposted")
+
+    def __init__(self, chunks: Sequence[ContextualizedChunk]) -> None:
+        postings: dict[str, dict[Any, list[int]]] = defaultdict(lambda: defaultdict(list))
+        unposted: set[str] = set()
+
+        for position, contextualized in enumerate(chunks):
+            chunk = contextualized.chunk
+            postings["source"][chunk.source].append(position)
+            postings["segment_idx"][chunk.segment_idx].append(position)
+            postings["chunk_idx"][chunk.chunk_idx].append(position)
+            for key, value in chunk.metadata.items():
+                if key in _CHUNK_COLUMNS or key in unposted:
+                    continue
+                try:
+                    postings[key][value].append(position)
+                except TypeError:
+                    unposted.add(key)
+
+        self._size = len(chunks)
+        # Appended in corpus order, so posting lists ascend like the scan's.
+        self._postings = {
+            key: {value: np.array(found, dtype=np.intp) for value, found in values.items()}
+            for key, values in postings.items()
+        }
+        self._unposted = unposted
+        self._absent: dict[str, np.ndarray] = {}
+
+    def select(
+        self,
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> np.ndarray | None:
+        """Return the positions satisfying both filters, or None to fall back.
+
+        None means a filtered field is unposted and the caller must scan; an
+        empty array means the filters matched nothing.
+        """
+        if set(metadata_filter or ()) & self._unposted:
+            return None
+
+        matched = [
+            self._positions_for(key, value) for key, value in (metadata_filter or {}).items()
+        ]
+        if source_filter:
+            matched.append(self._positions_matching_source(source_filter))
+        if len(matched) == 1:
+            return matched[0]
+
+        # A mask per field beats intersecting position lists, which re-sorts.
+        mask = np.ones(self._size, dtype=bool)
+        for positions in matched:
+            keep = np.zeros(self._size, dtype=bool)
+            keep[positions] = True
+            mask &= keep
+        return np.flatnonzero(mask)
+
+    def _positions_for(self, field: str, expected: Any) -> np.ndarray:
+        """Positions whose field satisfies one filter value; a list means match-any."""
+        postings = self._postings.get(field, {})
+        wanted = expected if isinstance(expected, list) else (expected,)
+
+        found: list[np.ndarray] = []
+        for value in wanted:
+            try:
+                posted = postings.get(value)
+            except TypeError:  # an unhashable filter value equals no posted one
+                continue
+            if posted is not None:
+                found.append(posted)
+            if value is None:
+                found.append(self._absent_from(field))
+        return self._union(found)
+
+    def _positions_matching_source(self, needle: str) -> np.ndarray:
+        """Positions whose source contains the needle."""
+        return self._union(
+            [
+                positions
+                for source, positions in self._postings.get("source", {}).items()
+                if needle in source
+            ]
+        )
+
+    def _union(self, found: list[np.ndarray]) -> np.ndarray:
+        """Merge posting lists of one field, which cannot overlap, back into order."""
+        if not found:
+            return np.empty(0, dtype=np.intp)
+        if len(found) == 1:
+            return found[0]
+
+        mask = np.zeros(self._size, dtype=bool)
+        for positions in found:
+            mask[positions] = True
+        return np.flatnonzero(mask)
+
+    def _absent_from(self, field: str) -> np.ndarray:
+        """Positions of chunks carrying no such field — _chunk_field reads them as None."""
+        absent = self._absent.get(field)
+        if absent is None:
+            mask = np.ones(self._size, dtype=bool)
+            for positions in self._postings.get(field, {}).values():
+                mask[positions] = False
+            self._absent[field] = absent = np.flatnonzero(mask)
+        return absent
 
 
 def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
@@ -260,6 +378,7 @@ class BM25Store:
         self._unseen_idf = 0.0
         self._length_norm = np.zeros(0)
         self._postings: _Postings | None = None
+        self._filters: _FilterIndex | None = None
 
     def _attach(self, index: BM25Okapi, corpus: Corpus) -> None:
         """Bind a ranking model to the chunks it was built over.
@@ -272,6 +391,7 @@ class BM25Store:
         self._corpus = corpus
         self._unseen_idf = max(index.idf.values(), default=0.0)
         self._postings = None
+        self._filters = None
         doc_len = np.array(index.doc_len, dtype=np.float64)
         self._length_norm = index.k1 * (1 - index.b + index.b * doc_len / index.avgdl)
 
@@ -400,7 +520,7 @@ class BM25Store:
             logger.warning("bm25_query_empty_index")
             return LexicalResults([], {})
 
-        candidates = _filter_indices(chunks, metadata_filter, source_filter)
+        candidates = self._candidates(chunks, metadata_filter, source_filter)
         if candidates is not None and not candidates.size:
             return LexicalResults([], {})
 
@@ -436,6 +556,23 @@ class BM25Store:
                 )
             },
         )
+
+    def _candidates(
+        self,
+        chunks: Sequence[ContextualizedChunk],
+        metadata_filter: MetadataFilter | None,
+        source_filter: str | None,
+    ) -> np.ndarray | None:
+        """Resolve the filters to corpus positions, indexing the corpus on first use."""
+        if not metadata_filter and not source_filter:
+            return None
+
+        if self._filters is None:
+            self._filters = _FilterIndex(chunks)
+        selected = self._filters.select(metadata_filter, source_filter)
+        if selected is None:
+            return _filter_indices(chunks, metadata_filter, source_filter)
+        return selected
 
     @property
     def is_empty(self) -> bool:

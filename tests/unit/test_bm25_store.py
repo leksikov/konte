@@ -577,6 +577,141 @@ class TestBM25StoreSourceFilter:
             assert chunk.chunk.source == "ADOBE_2022_10K.md"
 
 
+@pytest.fixture
+def filter_edge_chunks():
+    """Chunks covering every field shape a posted filter has to answer for."""
+    rows = [
+        ("ADOBE_2022_10K.md", 0, 0, {"company": "ADOBE", "year": "2022", "pages": 10}),
+        ("ADOBE_2022_10K.md", 0, 1, {"company": "ADOBE", "year": None}),
+        ("ADOBE_2023_10K.md", 1, 0, {"company": "ADOBE"}),  # carries no year at all
+        ("3M_2022_10K.md", 0, 0, {"company": "3M", "year": "2022"}),
+        ("3M_2023_10K.md", 1, 2, {"company": "3M", "year": 2023}),  # a number, not a string
+        ("3M_2023_10K.md", 1, 3, {"company": "3M", "tags": ["duty", "quota"]}),
+        ("3M_2023_10K.md", 1, 4, {"company": "3M", "tags": "duty"}),
+        ("NOTES.md", 0, 0, {"source": "SHADOW.md", "segment_idx": 99}),
+        ("NOTES.md", 0, 1, {}),
+    ]
+    return [
+        ContextualizedChunk(
+            chunk=Chunk(
+                chunk_id=f"{source}_s{segment_idx}_c{chunk_idx}",
+                content=f"Duty rate and tariff notes {i}.",
+                source=source,
+                segment_idx=segment_idx,
+                chunk_idx=chunk_idx,
+                metadata=metadata,
+            ),
+            context="",
+        )
+        for i, (source, segment_idx, chunk_idx, metadata) in enumerate(rows)
+    ]
+
+
+FILTER_CASES = [
+    ({"company": "ADOBE"}, None),
+    ({"company": ["ADOBE", "3M"]}, None),
+    ({"company": None}, None),
+    ({"year": None}, None),
+    ({"year": 2023}, None),
+    ({"year": "2023"}, None),
+    ({"year": ["2022", None]}, None),
+    ({"pages": 10}, None),
+    ({"unposted": "value"}, None),
+    ({"unposted": None}, None),
+    ({"company": "ADOBE", "year": "2022"}, None),
+    ({"segment_idx": 0}, None),
+    ({"segment_idx": 99}, None),
+    ({"chunk_idx": 4}, None),
+    ({"source": "NOTES.md"}, None),
+    ({"source": "SHADOW.md"}, None),
+    ({"tags": "duty"}, None),
+    ({"tags": ["duty", "quota"]}, None),
+    ({"company": "3M", "tags": "duty"}, None),
+    (None, "ADOBE"),
+    (None, "10K"),
+    (None, "SHADOW"),
+    (None, "MISSING"),
+    ({"company": "3M"}, "2023"),
+    ({}, "NOTES"),
+]
+
+
+@pytest.mark.unit
+class TestBM25StoreFilterIndex:
+    """Test that posted filters select exactly what walking the corpus selects."""
+
+    def test_posted_filters_select_what_a_scan_selects(self, filter_edge_chunks):
+        """Test every filter shape resolves to the same positions, in the same order."""
+        from konte.stores.bm25_store import _filter_indices, _FilterIndex
+
+        index = _FilterIndex(filter_edge_chunks)
+
+        for metadata_filter, source_filter in FILTER_CASES:
+            scanned = _filter_indices(filter_edge_chunks, metadata_filter, source_filter)
+            selected = index.select(metadata_filter, source_filter)
+            if selected is None:  # unpostable field; the store scans instead
+                continue
+            assert list(selected) == list(scanned), (metadata_filter, source_filter)
+
+    def test_a_query_returns_what_a_scan_would_have(self, filter_edge_chunks):
+        """Test the store reaches the same chunks through the index it reached before."""
+        from konte.stores import BM25Store
+        from konte.stores.bm25_store import _filter_indices
+
+        store = BM25Store()
+        store.build_index(filter_edge_chunks)
+
+        for metadata_filter, source_filter in FILTER_CASES:
+            expected = {
+                filter_edge_chunks[position].chunk.chunk_id
+                for position in _filter_indices(filter_edge_chunks, metadata_filter, source_filter)
+            }
+            found = store.query(
+                "duty rate tariff",
+                top_k=len(filter_edge_chunks),
+                metadata_filter=metadata_filter,
+                source_filter=source_filter,
+            )
+            assert {chunk.chunk.chunk_id for chunk, _ in found} == expected, (
+                metadata_filter,
+                source_filter,
+            )
+
+    def test_an_unpostable_value_is_scanned_rather_than_dropped(self, filter_edge_chunks):
+        """Test a field one chunk holds a list in still filters the rest of the corpus."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(filter_edge_chunks)
+
+        found = store.query("duty rate tariff", top_k=10, metadata_filter={"tags": "duty"})
+
+        assert [chunk.chunk.chunk_id for chunk, _ in found] == ["3M_2023_10K.md_s1_c4"]
+
+    def test_metadata_cannot_shadow_the_chunk_it_belongs_to(self, filter_edge_chunks):
+        """Test a source filter reads the chunk's own source, not metadata named alike."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(filter_edge_chunks)
+
+        assert store.query("duty", top_k=10, source_filter="SHADOW") == []
+        assert len(store.query("duty", top_k=10, metadata_filter={"source": "NOTES.md"})) == 2
+
+    def test_a_rebuild_rereads_the_corpus(self, filter_edge_chunks, sample_chunks):
+        """Test the positions posted for one corpus never answer for the next."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(filter_edge_chunks)
+        store.query("duty", top_k=10, metadata_filter={"company": "ADOBE"})
+
+        store.build_index(sample_chunks)
+        found = store.query("tariff duty", top_k=10, source_filter="test.txt")
+
+        assert len(found) == len(sample_chunks)
+
+
 @pytest.mark.unit
 class TestBM25StoreListValueFilter:
     """Test BM25 store metadata_filter with list values."""
