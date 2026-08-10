@@ -105,11 +105,12 @@ async def rerank_chunks_with_score(
         concurrency: Max concurrent score requests.
 
     Returns:
-        RerankOutcome carrying the reranked (chunk, relevance_score) tuples. If
-        every score request fails (unreachable endpoint, TLS error, wrong
-        model), the original retrieval order and scores come back with
-        `scored` False and an error is logged; partial failures score the
-        failed chunks 0.0 and still count as scored.
+        RerankOutcome carrying the reranked (chunk, relevance_score) tuples, on
+        whatever scale the endpoint scores. If every score request fails
+        (unreachable endpoint, TLS error, wrong model), the original retrieval
+        order and scores come back with `scored` False and an error is logged;
+        partial failures sort the failed chunks last at 0.0 and still count as
+        scored.
 
     Raises:
         ValueError: If RERANKER_BASE_URL is not configured.
@@ -145,11 +146,14 @@ async def rerank_chunks_with_score(
                     "RERANKER_MODEL, and RERANKER_VERIFY_SSL"
                 )
 
-            # Partial failures score 0.0
-            scored = [(idx, score if score is not None else 0.0) for idx, score in all_scores]
-
-            # Sort by score descending
-            sorted_scores = sorted(scored, key=lambda x: x[1], reverse=True)
+            # Sorting a failed request as 0.0 would rank it above every real
+            # result a logit-scaled reranker put below zero.
+            sorted_scores = sorted(
+                ((idx, score) for idx, score in all_scores if score is not None),
+                key=lambda pair: pair[1],
+                reverse=True,
+            )
+            sorted_scores += [(idx, 0.0) for idx, score in all_scores if score is None]
 
             # Build reranked list
             reranked = [(chunks[idx][0], score) for idx, score in sorted_scores[:k]]

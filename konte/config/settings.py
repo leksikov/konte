@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     PROJECT_CACHE_SIZE: int = 4  # opened projects held in memory, indexes included
     PRELOAD_PROJECTS: str = ""  # comma-separated names opened at API startup, "*" for all
 
+    # Share of a corpus that may be indexed without generated context before
+    # build() fails instead. 1.0 accepts any number of them.
+    CONTEXT_FAILURE_THRESHOLD: float = 0.02
+
     # Concurrency
     MAX_CONCURRENT_CALLS: int = 16  # context and embedding requests in flight
 

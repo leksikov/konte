@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from konte import llm
 
@@ -54,3 +55,63 @@ class TestGetLLM:
 
         assert patient["max_retries"] == 2
         assert impatient["max_retries"] == 0
+
+
+@pytest.mark.unit
+class TestResponseText:
+    """Test that an answer is read whatever shape the provider returns it in."""
+
+    def test_plain_string_is_stripped(self):
+        """Test the ordinary case is untouched."""
+        assert llm.response_text(AIMessage(content="  hello  ")) == "hello"
+
+    def test_content_blocks_are_read(self):
+        """Test a block-shaped answer is not discarded as unreadable."""
+        response = AIMessage(
+            content=[
+                {"type": "text", "text": "This passage is from"},
+                {"type": "text", "text": " Samsung's Q3 report."},
+            ]
+        )
+
+        assert llm.response_text(response) == "This passage is from Samsung's Q3 report."
+
+    def test_string_blocks_are_read(self):
+        """Test the list-of-strings shape is joined too."""
+        assert llm.response_text(AIMessage(content=["one ", "two"])) == "one two"
+
+    def test_non_text_blocks_are_dropped(self):
+        """Test a reasoning trace is not indexed as if it were the answer."""
+        response = AIMessage(
+            content=[
+                {"type": "reasoning", "reasoning": "the user wants context"},
+                {"type": "text", "text": "The chunk sits in the memory section."},
+            ]
+        )
+
+        assert llm.response_text(response) == "The chunk sits in the memory section."
+
+    def test_blocks_carrying_no_text_read_empty(self):
+        """Test a response with nothing to index still reports nothing."""
+        assert llm.response_text(AIMessage(content=[{"type": "tool_use", "id": "1"}])) == ""
+
+
+@pytest.mark.unit
+class TestWasTruncated:
+    """Test detection of a response cut off at the token ceiling."""
+
+    def test_length_finish_reason_is_truncation(self):
+        """Test the ceiling is reported."""
+        response = AIMessage(content="half a sen", response_metadata={"finish_reason": "length"})
+
+        assert llm.was_truncated(response) is True
+
+    def test_normal_stop_is_not_truncation(self):
+        """Test a complete response is not flagged."""
+        response = AIMessage(content="whole", response_metadata={"finish_reason": "stop"})
+
+        assert llm.was_truncated(response) is False
+
+    def test_absent_metadata_is_not_truncation(self):
+        """Test an endpoint that reports no reason is taken at face value."""
+        assert llm.was_truncated(AIMessage(content="whole")) is False

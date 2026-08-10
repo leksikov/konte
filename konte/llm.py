@@ -189,12 +189,22 @@ def get_answer_llm(timeout: float = 60.0) -> ChatOpenAI:
     )
 
 
+def _block_text(block: Any) -> str:
+    """Return the text one content block carries, empty when it carries none."""
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and block.get("type") == "text":
+        text = block.get("text")
+        if isinstance(text, str):
+            return text
+    return ""
+
+
 def response_text(response: BaseMessage) -> str:
     """Return a chat response as plain text.
 
-    Multi-part content (a provider answering with content blocks instead of a
-    string) carries nothing this library can use, so it degrades to the same
-    empty result as a failed request.
+    Content blocks have their text parts joined; a block carrying anything
+    else, such as a reasoning trace, is dropped.
 
     Args:
         response: Message returned by a chat client.
@@ -203,7 +213,23 @@ def response_text(response: BaseMessage) -> str:
         The stripped text, or an empty string when there is none.
     """
     content = response.content
-    return content.strip() if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "".join(_block_text(block) for block in content).strip()
+    return ""
+
+
+def was_truncated(response: BaseMessage) -> bool:
+    """Whether the model stopped because it ran into its token ceiling.
+
+    Args:
+        response: Message returned by a chat client.
+
+    Returns:
+        True when the provider reported hitting the limit.
+    """
+    return response.response_metadata.get("finish_reason") == "length"
 
 
 def active_answer_model() -> str:

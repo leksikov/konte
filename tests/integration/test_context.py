@@ -129,13 +129,14 @@ class TestGenerateContextsBatch:
         from konte.context import generate_contexts_batch
         from konte.models import ContextualizedChunk
 
-        results = await generate_contexts_batch(
+        batch = await generate_contexts_batch(
             segment=sample_segment,
             chunks=sample_chunks,
         )
 
-        assert len(results) == len(sample_chunks)
-        assert all(isinstance(r, ContextualizedChunk) for r in results)
+        assert len(batch.chunks) == len(sample_chunks)
+        assert all(isinstance(r, ContextualizedChunk) for r in batch.chunks)
+        assert batch.failed == 0
 
     async def test_batch_skip_context_returns_empty(
         self, sample_segment, sample_chunks
@@ -143,14 +144,15 @@ class TestGenerateContextsBatch:
         """Test that skip_context=True returns chunks with empty context."""
         from konte.context import generate_contexts_batch
 
-        results = await generate_contexts_batch(
+        batch = await generate_contexts_batch(
             segment=sample_segment,
             chunks=sample_chunks,
             skip_context=True,
         )
 
-        assert len(results) == len(sample_chunks)
-        for result in results:
+        assert len(batch.chunks) == len(sample_chunks)
+        assert batch.failed == 0
+        for result in batch.chunks:
             assert result.context == ""
             assert result.contextualized_content == result.chunk.content
 
@@ -158,10 +160,10 @@ class TestGenerateContextsBatch:
         """Test that batch results maintain chunk order."""
         from konte.context import generate_contexts_batch
 
-        results = await generate_contexts_batch(
+        batch = await generate_contexts_batch(
             segment=sample_segment,
             chunks=sample_chunks,
         )
 
-        for i, result in enumerate(results):
+        for i, result in enumerate(batch.chunks):
             assert result.chunk.chunk_id == sample_chunks[i].chunk_id

@@ -3,6 +3,7 @@
 import asyncio
 import importlib.resources
 from pathlib import Path
+from typing import NamedTuple
 from weakref import WeakKeyDictionary
 
 import structlog
@@ -15,10 +16,11 @@ from openai import (
 )
 
 from konte.config import settings
-from konte.llm import get_llm, response_text
+from konte.llm import get_llm, response_text, was_truncated
 from konte.models import Chunk, ContextualizedChunk
 
 __all__ = [
+    "ContextBatch",
     "call_limiter",
     "generate_context",
     "generate_contexts_batch",
@@ -98,9 +100,35 @@ def _format_prompt(template: str, segment: str, chunk: str) -> str:
     return template.format(segment=segment, chunk=chunk)
 
 
-def _without_context(chunks: list[Chunk]) -> list[ContextualizedChunk]:
-    """Wrap chunks with an empty context, the degraded form used on any failure."""
-    return [ContextualizedChunk(chunk=chunk, context="") for chunk in chunks]
+class _Outcome(NamedTuple):
+    """One chunk's context, flagged when the request came up short.
+
+    A failure cannot be inferred from the empty context it leaves behind: a
+    skip_context run produces the same thing deliberately.
+    """
+
+    context: str
+    failed: bool
+    truncated: bool
+
+
+class ContextBatch(NamedTuple):
+    """A segment's contextualized chunks, and how many of them came up short."""
+
+    chunks: list[ContextualizedChunk]
+    failed: int
+    truncated: int
+
+
+_FAILED = _Outcome("", True, False)
+
+
+def _without_context(chunks: list[Chunk]) -> ContextBatch:
+    """Wrap chunks with an empty context, as skip_context asks for.
+
+    Nothing was requested, so nothing counts as failed.
+    """
+    return ContextBatch([ContextualizedChunk(chunk=chunk, context="") for chunk in chunks], 0, 0)
 
 
 async def _request_context(
@@ -110,7 +138,7 @@ async def _request_context(
     chunk: Chunk,
     limiter: asyncio.Semaphore,
     max_attempts: int,
-) -> str:
+) -> _Outcome:
     """Ask for one chunk's context, retrying that chunk and no other.
 
     The prompt carries the whole segment, so it is formatted under the limiter:
@@ -125,7 +153,7 @@ async def _request_context(
         max_attempts: How many times to send the request before giving up.
 
     Returns:
-        The generated context, or an empty string once the attempts run out.
+        The generated context, marked failed once the attempts run out.
     """
     for attempt in range(1, max_attempts + 1):
         try:
@@ -142,7 +170,7 @@ async def _request_context(
                     status_code=status_code,
                     error=str(e),
                 )
-                return ""
+                return _FAILED
             delay = min(BASE_DELAY * 2 ** (attempt - 1), MAX_DELAY)
             logger.warning(
                 "api_error_retrying",
@@ -162,11 +190,24 @@ async def _request_context(
                 error_type=type(e).__name__,
                 error=str(e),
             )
-            return ""
+            return _FAILED
         else:
-            return response_text(response)
+            context = response_text(response)
+            if not context:
+                # A success carrying no usable text leaves the chunk as
+                # unfindable as an outage would.
+                logger.error("context_generation_empty", chunk_id=chunk.chunk_id)
+                return _FAILED
+            truncated = was_truncated(response)
+            if truncated:
+                logger.warning(
+                    "context_truncated",
+                    chunk_id=chunk.chunk_id,
+                    context_chars=len(context),
+                )
+            return _Outcome(context, False, truncated)
 
-    return ""  # Unreachable: the last attempt either returns or gives up above.
+    return _FAILED  # Unreachable: the last attempt either returns or gives up above.
 
 
 async def generate_context(
@@ -189,7 +230,7 @@ async def generate_context(
         Generated context string (100-200 tokens), or an empty string if the
         request failed.
     """
-    return await _request_context(
+    outcome = await _request_context(
         llm=get_llm(model=model, timeout=timeout),
         template=prompt_template or load_prompt_template(),
         segment=segment,
@@ -197,6 +238,7 @@ async def generate_context(
         limiter=call_limiter(),
         max_attempts=1,
     )
+    return outcome.context
 
 
 async def generate_contexts_batch(
@@ -206,7 +248,7 @@ async def generate_contexts_batch(
     prompt_template: str | None = None,
     timeout: float = 120.0,
     skip_context: bool = False,
-) -> list[ContextualizedChunk]:
+) -> ContextBatch:
     """Generate context for multiple chunks using LLM.
 
     One request per chunk, run concurrently up to the shared ceiling (see
@@ -221,27 +263,32 @@ async def generate_contexts_batch(
         skip_context: If True, return chunks with empty context (standard RAG mode).
 
     Returns:
-        List of ContextualizedChunk objects, in the order they were passed. A
-        chunk whose request could not be completed carries an empty context.
+        A ContextBatch whose chunks are in the order they were passed. A chunk
+        whose request could not be completed carries an empty context and is
+        counted in `failed`.
     """
     if skip_context:
         return _without_context(chunks)
 
     if not chunks:
-        return []
+        return ContextBatch([], 0, 0)
 
     template = prompt_template or load_prompt_template()
     llm = get_llm(model=model, timeout=timeout)
     limiter = call_limiter()
 
-    contexts = await asyncio.gather(
+    outcomes = await asyncio.gather(
         *(
             _request_context(llm, template, segment, chunk, limiter, MAX_RETRIES)
             for chunk in chunks
         )
     )
 
-    return [
-        ContextualizedChunk(chunk=chunk, context=context)
-        for chunk, context in zip(chunks, contexts, strict=True)
-    ]
+    return ContextBatch(
+        [
+            ContextualizedChunk(chunk=chunk, context=outcome.context)
+            for chunk, outcome in zip(chunks, outcomes, strict=True)
+        ],
+        sum(outcome.failed for outcome in outcomes),
+        sum(outcome.truncated for outcome in outcomes),
+    )

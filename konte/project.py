@@ -5,14 +5,14 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar
 
 import structlog
 
 from konte.checkpoint import CheckpointLog
 from konte.chunker import create_chunks
 from konte.config import settings
-from konte.context import generate_contexts_batch, load_prompt_template
+from konte.context import ContextBatch, generate_contexts_batch, load_prompt_template
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
 from konte.models import (
@@ -34,6 +34,13 @@ _SEGMENT_KEY_SEPARATOR = "|"
 _CONFIG_INDENT = 2  # config.json is the one artifact people open by hand
 
 _T = TypeVar("_T")
+
+
+class _ContextTally(NamedTuple):
+    """How many of a build's chunks lost or shortened their context."""
+
+    failed: int
+    truncated: int
 
 
 def _encode_segment_key(key: SegmentKey) -> str:
@@ -295,6 +302,9 @@ class Project:
 
         Raises:
             ValueError: If both indexes are disabled.
+            RuntimeError: If more than settings.CONTEXT_FAILURE_THRESHOLD of the
+                corpus lost its context. Nothing is indexed; re-running retries
+                only the segments that failed.
         """
         if not self._chunks:
             logger.warning("build_no_chunks")
@@ -313,9 +323,11 @@ class Project:
             else load_prompt_template(prompt_path or self._config.context_prompt_path)
         )
 
-        await self._generate_contexts(
+        tally = await self._generate_contexts(
             chunks_by_segment, completed, prompt_template, skip_context
         )
+        # Before the indexes: a rejected corpus should cost no embedding calls.
+        self._require_context_coverage(tally)
         await self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
 
         self._checkpoint.clear()
@@ -675,11 +687,16 @@ class Project:
         completed: set[str],
         prompt_template: str | None,
         skip_context: bool,
-    ) -> None:
+    ) -> _ContextTally:
         """Contextualize every not-yet-processed segment, concurrently.
 
         Each segment appends itself to the checkpoint log as it finishes, so an
-        interrupted run resumes at a segment boundary.
+        interrupted run resumes at a segment boundary. A segment that lost a
+        context is left out of it: checkpointing one would retire those chunks
+        context-free, and no later run would ask for them again.
+
+        Returns:
+            What this run's chunks lost, across every segment it processed.
         """
         total_segments = len(chunks_by_segment)
         logger.info(
@@ -701,7 +718,7 @@ class Project:
         async def contextualize(
             seg_key: SegmentKey,
             seg_key_str: str,
-        ) -> tuple[str, list[ContextualizedChunk]]:
+        ) -> tuple[str, ContextBatch]:
             """Run one segment, tagged with the key it belongs to."""
             segment_chunks = chunks_by_segment[seg_key]
             async with segment_gate:
@@ -720,14 +737,27 @@ class Project:
                 )
 
         produced: dict[str, list[ContextualizedChunk]] = {}
+        failed = truncated = 0
 
         with self._checkpoint.appending() as log:
             tasks = [asyncio.ensure_future(contextualize(*item)) for item in pending]
             try:
                 for finished in asyncio.as_completed(tasks):
-                    seg_key_str, ctx_chunks = await finished
-                    produced[seg_key_str] = ctx_chunks
-                    log.append(seg_key_str, [c.to_storage_dict() for c in ctx_chunks])
+                    seg_key_str, batch = await finished
+                    produced[seg_key_str] = batch.chunks
+                    failed += batch.failed
+                    truncated += batch.truncated
+
+                    if batch.failed:
+                        logger.error(
+                            "segment_contexts_incomplete",
+                            segment_key=seg_key_str,
+                            failed=batch.failed,
+                            num_chunks=len(batch.chunks),
+                        )
+                        continue
+
+                    log.append(seg_key_str, [c.to_storage_dict() for c in batch.chunks])
                     completed.add(seg_key_str)
                     logger.info(
                         "checkpoint_saved",
@@ -750,6 +780,51 @@ class Project:
             "context_generation_complete",
             num_chunks=len(self._contextualized_chunks),
             skipped=skip_context,
+            failed=failed,
+            truncated=truncated,
+        )
+        return _ContextTally(failed, truncated)
+
+    def _require_context_coverage(self, tally: _ContextTally) -> None:
+        """Refuse to index a corpus that lost too much of its context.
+
+        Nothing downstream can detect the loss: the index looks complete either
+        way. Truncated contexts are reported but tolerated, being degraded
+        rather than absent.
+
+        Raises:
+            RuntimeError: If the failed share exceeds
+                settings.CONTEXT_FAILURE_THRESHOLD.
+        """
+        total = len(self._contextualized_chunks)
+        if tally.truncated:
+            logger.warning(
+                "context_truncated_total",
+                truncated=tally.truncated,
+                total_chunks=total,
+            )
+        if not tally.failed or not total:
+            return
+
+        share = tally.failed / total
+        logger.error(
+            "context_generation_incomplete",
+            failed=tally.failed,
+            total_chunks=total,
+            share=round(share, 4),
+            threshold=settings.CONTEXT_FAILURE_THRESHOLD,
+        )
+        if share <= settings.CONTEXT_FAILURE_THRESHOLD:
+            return
+
+        raise RuntimeError(
+            f"{tally.failed} of {total} chunks ({share:.1%}) came back with no "
+            f"generated context, over the {settings.CONTEXT_FAILURE_THRESHOLD:.1%} "
+            "allowed by CONTEXT_FAILURE_THRESHOLD. Indexed, they would be "
+            "searchable only by their own wording, so nothing was indexed. "
+            "Check the context endpoint and run build() again to retry just "
+            "the segments that failed, or raise CONTEXT_FAILURE_THRESHOLD to "
+            "accept the loss."
         )
 
     async def _build_indexes(self, *, use_faiss: bool, use_bm25: bool) -> None:

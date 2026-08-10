@@ -251,11 +251,12 @@ class TestBuildResume:
             appender.append("doc.pdf|0", [{"chunk": chunk.model_dump(), "context": "old context"}])
 
         with patch("konte.project.generate_contexts_batch") as mock_gen:
+            from konte.context import ContextBatch
             from konte.models import ContextualizedChunk
 
-            mock_gen.return_value = [
-                ContextualizedChunk(chunk=chunk, context="new context")
-            ]
+            mock_gen.return_value = ContextBatch(
+                [ContextualizedChunk(chunk=chunk, context="new context")], 0, 0
+            )
 
             # BM25-only: FAISS would construct a real OpenAIEmbeddings client
             await project.build(skip_context=True, enable_faiss=False, resume=False)
@@ -288,11 +289,12 @@ class TestBuildResume:
             appender.append("doc.pdf|0", [{"chunk": chunk1.model_dump(), "context": "ctx1"}])
 
         with patch("konte.project.generate_contexts_batch") as mock_gen:
+            from konte.context import ContextBatch
             from konte.models import ContextualizedChunk
 
-            mock_gen.return_value = [
-                ContextualizedChunk(chunk=chunk2, context="ctx2")
-            ]
+            mock_gen.return_value = ContextBatch(
+                [ContextualizedChunk(chunk=chunk2, context="ctx2")], 0, 0
+            )
 
             # BM25-only: FAISS would construct a real OpenAIEmbeddings client
             await project.build(skip_context=True, enable_faiss=False, resume=True)
@@ -313,7 +315,111 @@ class TestBuildResume:
         project._segments = {("doc.pdf", 0): "Segment text"}
 
         with patch("konte.project.generate_contexts_batch") as mock_gen:
-            mock_gen.return_value = [ContextualizedChunk(chunk=chunk, context="")]
+            from konte.context import ContextBatch
+
+            mock_gen.return_value = ContextBatch(
+                [ContextualizedChunk(chunk=chunk, context="")], 0, 0
+            )
             await project.build(skip_context=True, enable_faiss=False)
 
         assert not project._checkpoint.path.exists()
+
+
+@pytest.mark.unit
+class TestContextCoverage:
+    """Test that a build which lost contexts says so instead of indexing anyway."""
+
+    def _project(self, tmp_path, segments):
+        """Build a project of `segments` one-chunk segments, ready to build."""
+        from konte.models import Chunk
+        from konte.project import Project
+
+        project = Project.create(name="test_project", storage_path=tmp_path)
+        project._chunks = [
+            Chunk(
+                chunk_id=f"id{i}",
+                content=f"Content {i}",
+                source="doc.pdf",
+                segment_idx=i,
+                chunk_idx=0,
+            )
+            for i in range(segments)
+        ]
+        project._segments = {("doc.pdf", i): f"Segment {i}" for i in range(segments)}
+        return project
+
+    def _batches(self, project, failed_segments):
+        """Answer each segment's request, failing the ones named."""
+        from konte.context import ContextBatch
+        from konte.models import ContextualizedChunk
+
+        def batch(segment, chunks, **kwargs):
+            failed = chunks[0].segment_idx in failed_segments
+            return ContextBatch(
+                [ContextualizedChunk(chunk=c, context="" if failed else "ctx") for c in chunks],
+                len(chunks) if failed else 0,
+                0,
+            )
+
+        return patch("konte.project.generate_contexts_batch", side_effect=batch)
+
+    async def test_losing_most_contexts_fails_the_build(self, tmp_path):
+        """Test a corpus mostly without context is reported, not indexed."""
+        project = self._project(tmp_path, segments=4)
+
+        with (
+            self._batches(project, failed_segments={0, 1, 2}),
+            pytest.raises(RuntimeError, match="no generated context"),
+        ):
+            await project.build(enable_faiss=False)
+
+        assert project._bm25 is None
+
+    async def test_a_loss_under_the_threshold_still_builds(self, tmp_path):
+        """Test one unlucky chunk does not throw away an otherwise good corpus."""
+        from konte.config import settings
+
+        project = self._project(tmp_path, segments=100)
+
+        with patch.object(settings, "CONTEXT_FAILURE_THRESHOLD", 0.05):
+            with self._batches(project, failed_segments={7}):
+                await project.build(enable_faiss=False)
+
+        assert project._bm25 is not None
+        assert len(project._contextualized_chunks) == 100
+
+    async def test_a_failed_segment_is_not_checkpointed(self, tmp_path):
+        """Test a resumed build retries the segments that lost their contexts.
+
+        Checkpointing them would retire those chunks context-free, and the
+        resumed build would count no failures and report success.
+        """
+        project = self._project(tmp_path, segments=4)
+
+        with self._batches(project, failed_segments={0, 1, 2}), pytest.raises(RuntimeError):
+            await project.build(enable_faiss=False)
+
+        checkpoint = project._checkpoint.read()
+        assert checkpoint.completed_segments == ["doc.pdf|3"]
+
+    async def test_resuming_retries_only_what_failed(self, tmp_path):
+        """Test the retry costs one request per lost segment, not per segment."""
+        project = self._project(tmp_path, segments=4)
+
+        with self._batches(project, failed_segments={0, 1, 2}), pytest.raises(RuntimeError):
+            await project.build(enable_faiss=False)
+
+        with self._batches(project, failed_segments=set()) as retry:
+            await project.build(enable_faiss=False, resume=True)
+
+        assert retry.call_count == 3
+        assert len(project._contextualized_chunks) == 4
+        assert all(c.context == "ctx" for c in project._contextualized_chunks)
+
+    async def test_skip_context_is_not_read_as_total_loss(self, tmp_path):
+        """Test standard-RAG mode still builds, though every context is empty."""
+        project = self._project(tmp_path, segments=4)
+
+        await project.build(skip_context=True, enable_faiss=False)
+
+        assert project._bm25 is not None

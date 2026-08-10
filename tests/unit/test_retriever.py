@@ -442,6 +442,40 @@ class TestConfidenceIsNotTheRanking:
         assert response.top_score == pytest.approx(0.93)
         assert response.suggested_action == "deliver"
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ((7.5, -2.0), (1.0, 0.0)),  # logits, either side of zero
+            ((1.0000001, 0.3), (1.0, 0.3)),  # a sigmoid landing just past the top
+        ],
+    )
+    async def test_scores_outside_the_unit_range_are_clamped(self, raw, expected):
+        """Test a reranker's own scale cannot fail the response model.
+
+        RetrievalResult constrains score to 0-1, so an out-of-range score would
+        raise a ValidationError out of a served query instead of answering it.
+        """
+        from konte.stores.reranker import RerankOutcome
+        from konte.stores.retriever import Retriever
+
+        corpus = self._corpus()
+        faiss = _StubFAISS([(corpus[0], 0.31), (corpus[1], 0.28)])
+        retriever = Retriever(faiss_store=faiss, bm25_store=None)
+
+        with patch(
+            "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
+        ) as rerank:
+            rerank.return_value = RerankOutcome([(corpus[0], raw[0]), (corpus[1], raw[1])], True)
+            response = await retriever.retrieve_with_rerank("query", mode="semantic", top_k=2)
+
+        assert [r.score for r in response.results] == pytest.approx(list(expected))
+        assert response.top_score == pytest.approx(expected[0])
+        # Clamping is monotonic, so the reranker's ordering survives it.
+        assert [r.chunk_id for r in response.results] == [
+            corpus[0].chunk.chunk_id,
+            corpus[1].chunk.chunk_id,
+        ]
+
 
 @pytest.mark.unit
 class TestFusionWeights:

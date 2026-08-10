@@ -164,6 +164,16 @@ def _drop_redundant(results: ScoredChunks, limit: int) -> ScoredChunks:
     return kept
 
 
+def _clamp_unit(score: float) -> float:
+    """Hold a score inside the 0-1 range the response models declare.
+
+    A reranker scores on whatever scale its head was trained on — logits either
+    side of zero, or a sigmoid landing a hair past 1.0 — and only the ordering
+    reaches here, so clamping moves no result. max() first folds NaN to 0.0.
+    """
+    return min(1.0, max(0.0, score))
+
+
 def _determine_suggested_action(top_score: float) -> SuggestedAction:
     """Determine suggested action based on top score.
 
@@ -199,7 +209,7 @@ def _build_retrieval_response(
         RetrievalResponse with agent decision hints.
     """
     results = ranked.results[:top_k]
-    measured = [ranked.absolute.get(chunk.chunk.chunk_id, 0.0) for chunk, _ in results]
+    measured = [_clamp_unit(ranked.absolute.get(chunk.chunk.chunk_id, 0.0)) for chunk, _ in results]
 
     top_score = max(measured, default=0.0)
     bottom_score = min(measured, default=0.0)
@@ -209,7 +219,7 @@ def _build_retrieval_response(
             RetrievalResult(
                 content=chunk.chunk.content,
                 context=chunk.context,
-                score=score,
+                score=_clamp_unit(score),
                 source=chunk.chunk.source,
                 chunk_id=chunk.chunk.chunk_id,
                 metadata=chunk.chunk.metadata,
