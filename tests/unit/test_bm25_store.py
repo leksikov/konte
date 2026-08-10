@@ -122,6 +122,116 @@ class TestBM25StoreQuery:
 
 
 @pytest.mark.unit
+class TestBM25Tokenization:
+    """Test that terms survive the punctuation and particles attached to them."""
+
+    @staticmethod
+    def _store(contents):
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(
+            [
+                ContextualizedChunk(
+                    chunk=Chunk(
+                        chunk_id=f"c{i}",
+                        content=text,
+                        source="t.txt",
+                        segment_idx=0,
+                        chunk_idx=i,
+                    ),
+                    context="",
+                )
+                for i, text in enumerate(contents)
+            ]
+        )
+        return store
+
+    def test_punctuation_does_not_hide_a_term(self):
+        """Test a term ending a clause is the same term as one that does not."""
+        from konte.stores.bm25_store import _tokenize
+
+        assert _tokenize("Revenue grew 12% in FY2022, driven by cloud.") == [
+            "revenue",
+            "grew",
+            "12",
+            "in",
+            "fy2022",
+            "driven",
+            "by",
+            "cloud",
+        ]
+
+    def test_codes_and_contractions_stay_whole(self):
+        """Test punctuation between two alphanumerics is kept, so codes survive."""
+        from konte.stores.bm25_store import _tokenize
+
+        assert _tokenize("Heading 8542.31 (circuits), $27.5 billion, don't") == [
+            "heading",
+            "8542.31",
+            "circuits",
+            "27.5",
+            "billion",
+            "don't",
+        ]
+
+    def test_korean_is_indexed_below_the_particle(self):
+        """Test the noun's terms are a subset of the terms it carries a particle in."""
+        from konte.stores.bm25_store import _tokenize
+
+        assert set(_tokenize("탈수기는")) == {"탈수", "수기", "기는"}
+        assert set(_tokenize("탈수기")) < set(_tokenize("탈수기는"))
+
+    def test_sentence_final_term_is_retrievable(self):
+        """Test a query reaches the document that ended a sentence with the term."""
+        store = self._store(
+            [
+                "PayPal reported positive working capital in FY2022.",
+                "Adobe cloud segment grew during the period.",
+                "Anti-dumping duties may apply to certain imports.",
+            ]
+        )
+
+        found = store.query_with_coverage("working capital FY2022", top_k=1)
+
+        assert found.results[0][0].chunk.chunk_id == "c0"
+        assert found.coverage["c0"] == pytest.approx(1.0)
+
+    def test_korean_query_reaches_an_inflected_document(self):
+        """Test the noun matches the document that wrote it with a particle attached."""
+        store = self._store(
+            [
+                "의류 탈수기는 제8450호에 분류됩니다.",
+                "관세평가협정에 따라 과세가격을 결정합니다.",
+                "반덤핑관세는 수입물품에 부과되는 특별관세입니다.",
+            ]
+        )
+
+        found = store.query_with_coverage("의류 탈수기", top_k=1)
+
+        assert found.results[0][0].chunk.chunk_id == "c0"
+        assert found.coverage["c0"] == pytest.approx(1.0)
+
+    def test_scoring_matches_the_reference_implementation(self, sample_chunks):
+        """Test skipping unindexed terms and scaling repeats leaves scores unchanged."""
+        import numpy as np
+
+        from konte.stores import BM25Store
+        from konte.stores.bm25_store import _invert, _score, _tokenize
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        postings = _invert(store._index)
+
+        for query in ("duty duty rate", "zirconium", "customs valuation 8542.31", ""):
+            tokens = _tokenize(query)
+            assert np.allclose(
+                _score(store._index, postings, tokens, store._length_norm),
+                store._index.get_scores(tokens),
+            )
+
+
+@pytest.mark.unit
 class TestBM25StoreCoverage:
     """Test the absolute reading that survives comparison across queries."""
 
@@ -252,6 +362,26 @@ class TestBM25StorePersistence:
         store = BM25Store()
         with pytest.raises(FileNotFoundError):
             store.load(tmp_path / "nonexistent", list)
+
+    def test_load_rejects_an_index_from_another_tokenizer(self, sample_chunks, tmp_path):
+        """Test a stale index is refused rather than silently matching nothing."""
+        import pickle
+
+        from konte.stores import BM25Store
+        from konte.stores.bm25_store import _TOKENIZER_VERSION
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        store.save(tmp_path)
+
+        with (tmp_path / "bm25.pkl").open("rb") as handle:
+            data = pickle.load(handle)
+        data["tokenizer"] = _TOKENIZER_VERSION - 1
+        with (tmp_path / "bm25.pkl").open("wb") as handle:
+            pickle.dump(data, handle)
+
+        with pytest.raises(ValueError, match="tokenizer"):
+            BM25Store().load(tmp_path, lambda: sample_chunks)
 
     def test_save_writes_no_chunk_payload(self, sample_chunks, tmp_path):
         """Test that the lexical index stores no second copy of the corpus."""

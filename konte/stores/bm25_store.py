@@ -1,6 +1,8 @@
 """BM25 lexical search store."""
 
 import pickle
+import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path
@@ -22,6 +24,30 @@ Corpus = Callable[[], Sequence[ContextualizedChunk]]
 
 LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
 
+# A stale index stops matching silently, not loudly. Bump on any _tokenize change.
+_TOKENIZER_VERSION = 2
+
+# Scripts with no word spacing: "탈수기는" is a noun plus its particle, so these
+# index as character bigrams the way Elasticsearch's CJK analyzer does.
+_CJK = (
+    "ᄀ-ᇿ"  # Hangul Jamo
+    "぀-ヿ"  # Hiragana, Katakana
+    "㄰-㆏"  # Hangul Compatibility Jamo
+    "ㇰ-ㇿ"  # Katakana Phonetic Extensions
+    "㐀-䶿"  # CJK Unified Ideographs Extension A
+    "一-鿿"  # CJK Unified Ideographs
+    "ꥠ-꥿"  # Hangul Jamo Extended-A
+    "가-힣"  # Hangul Syllables
+    "ힰ-퟿"  # Hangul Jamo Extended-B
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "ｦ-ﾝ"  # Halfwidth Katakana
+    "\U00020000-\U0002fa1f"  # Extensions B-F, Compatibility Supplement
+)
+
+# Interior punctuation only: "8542.31" survives, "FY2022," sheds its comma.
+_WORD_RE = re.compile(f"[^\\W_{_CJK}]+(?:[.,'’][^\\W_{_CJK}]+)*")
+_CJK_RE = re.compile(f"[{_CJK}]+")
+
 
 class LexicalResults(NamedTuple):
     """Ranked chunks, and how much of the query each one carries.
@@ -36,15 +62,26 @@ class LexicalResults(NamedTuple):
 
 
 def _tokenize(text: str) -> list[str]:
-    """Simple tokenization for BM25.
+    """Split text into the terms BM25 indexes and matches.
 
     Args:
         text: Text to tokenize.
 
     Returns:
-        List of lowercase tokens.
+        Lowercase tokens. BM25 reads them as a bag, so the CJK bigrams trail
+        the words rather than sitting where they were drawn from.
     """
-    return text.lower().split()
+    text = text.lower()
+    tokens = _WORD_RE.findall(text)
+    if text.isascii():  # no CJK possible
+        return tokens
+
+    for run in _CJK_RE.findall(text):
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens += [run[i : i + 2] for i in range(len(run) - 1)]
+    return tokens
 
 
 def _chunk_field(chunk: ContextualizedChunk, key: str) -> Any:
@@ -119,6 +156,72 @@ def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
     return top[np.argsort(-scores[top], kind="stable")]
 
 
+class _Postings(NamedTuple):
+    """Which documents hold each term, as spans of two corpus-wide arrays."""
+
+    documents: np.ndarray  # document positions, grouped by term
+    frequencies: np.ndarray  # term counts, aligned with documents
+    spans: dict[str, tuple[int, int]]  # term -> half-open span into both
+
+
+def _invert(index: BM25Okapi) -> _Postings:
+    """Group the per-document term frequencies by term.
+
+    BM25Okapi.get_scores walks the whole corpus once per query token, and
+    bigrams make a CJK query several times longer.
+    """
+    grouped: dict[str, tuple[list[int], list[int]]] = {}
+    for position, frequencies in enumerate(index.doc_freqs):
+        for term, count in frequencies.items():
+            entry = grouped.get(term)
+            if entry is None:
+                grouped[term] = entry = ([], [])
+            entry[0].append(position)
+            entry[1].append(count)
+
+    total = sum(len(documents) for documents, _ in grouped.values())
+    documents = np.empty(total, dtype=np.int32)
+    counts = np.empty(total, dtype=np.float32)
+    spans = {}
+
+    start = 0
+    for term, (term_documents, term_counts) in grouped.items():
+        stop = start + len(term_documents)
+        documents[start:stop] = term_documents
+        counts[start:stop] = term_counts
+        spans[term] = (start, stop)
+        start = stop
+
+    return _Postings(documents, counts, spans)
+
+
+def _score(
+    index: BM25Okapi,
+    postings: _Postings,
+    tokens: Sequence[str],
+    length_norm: np.ndarray,
+) -> np.ndarray:
+    """Score every document against the query terms.
+
+    Scores identical to BM25Okapi.get_scores; keep them that way.
+    """
+    scores = np.zeros(len(index.doc_freqs))
+    saturation = index.k1 + 1
+
+    for token, count in Counter(tokens).items():
+        idf = index.idf.get(token)
+        span = postings.spans.get(token)
+        if not idf or span is None:  # unindexed, or floored to zero weight
+            continue
+        documents = postings.documents[span[0] : span[1]]
+        matched = postings.frequencies[span[0] : span[1]].astype(np.float64)
+        scores[documents] += (count * idf) * (
+            matched * saturation / (matched + length_norm[documents])
+        )
+
+    return scores
+
+
 def _term_weights(index: BM25Okapi, tokens: Sequence[str], unseen: float) -> dict[str, float]:
     """Weight each distinct query term by how much it narrows the corpus.
 
@@ -155,16 +258,22 @@ class BM25Store:
         self._index: BM25Okapi | None = None
         self._corpus: Corpus = list  # nothing indexed yet
         self._unseen_idf = 0.0
+        self._length_norm = np.zeros(0)
+        self._postings: _Postings | None = None
 
     def _attach(self, index: BM25Okapi, corpus: Corpus) -> None:
         """Bind a ranking model to the chunks it was built over.
 
-        The rarest term's IDF is read here rather than per query: scanning the
-        vocabulary is not free on a corpus worth ranking.
+        The rarest term's IDF and the length normalization are derived here
+        rather than per query: both scan a structure the size of the corpus.
+        Postings wait for the first query, where the corpus is read too.
         """
         self._index = index
         self._corpus = corpus
         self._unseen_idf = max(index.idf.values(), default=0.0)
+        self._postings = None
+        doc_len = np.array(index.doc_len, dtype=np.float64)
+        self._length_norm = index.k1 * (1 - index.b + index.b * doc_len / index.avgdl)
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build BM25 index from contextualized chunks.
@@ -199,7 +308,7 @@ class BM25Store:
             return
 
         with atomic_writer(directory / "bm25.pkl") as handle:
-            pickle.dump({"index": self._index}, handle)
+            pickle.dump({"index": self._index, "tokenizer": _TOKENIZER_VERSION}, handle)
 
         # An earlier version kept a second copy of the corpus here.
         (directory / LEGACY_CHUNKS_FILENAME).unlink(missing_ok=True)
@@ -216,6 +325,7 @@ class BM25Store:
 
         Raises:
             FileNotFoundError: If the index file is missing.
+            ValueError: If the index was built by a different tokenizer.
         """
         directory = Path(directory)
         index_path = directory / "bm25.pkl"
@@ -226,6 +336,15 @@ class BM25Store:
         # Unpickling executes arbitrary code: only load index dirs this library wrote.
         with index_path.open("rb") as f:
             data = pickle.load(f)
+
+        written_by = data.get("tokenizer", 1)
+        if written_by != _TOKENIZER_VERSION:
+            raise ValueError(
+                f"BM25 index at {index_path} was built by tokenizer v{written_by}, "
+                f"but this version indexes v{_TOKENIZER_VERSION} terms. "
+                "Rebuild the project to reindex it."
+            )
+
         self._attach(data["index"], cache(corpus))
 
         logger.info("bm25_index_loaded", directory=str(directory))
@@ -285,10 +404,13 @@ class BM25Store:
         if candidates is not None and not candidates.size:
             return LexicalResults([], {})
 
+        if self._postings is None:
+            self._postings = _invert(self._index)
+
         # IDF is computed over the whole corpus, so scoring cannot be restricted
         # to the candidates; only the ranking that follows is.
         tokens = _tokenize(query)
-        scores = self._index.get_scores(tokens)
+        scores = _score(self._index, self._postings, tokens, self._length_norm)
         if candidates is not None:
             scores = scores[candidates]
 
