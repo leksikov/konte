@@ -62,6 +62,56 @@ def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
     return dict(grouped)
 
 
+def _pick_source(path: Path, taken: set[str]) -> str:
+    """File a document under the shortest tail of its path no other one holds.
+
+    Sharing a source name collides chunk ids and overwrites the segment map.
+    The bare filename comes first: metadata filters are written against it.
+    """
+    resolved = path.resolve()
+    parts = resolved.parts
+
+    for depth in range(1, len(parts)):
+        name = "/".join(parts[-depth:])
+        if name not in taken:
+            if depth > 1:
+                logger.warning("document_source_disambiguated", path=str(resolved), source=name)
+            return name
+
+    name = str(resolved)
+    suffix = 1
+    while name in taken:
+        suffix += 1
+        name = f"{resolved}#{suffix}"
+    return name
+
+
+def _duplicate_source(
+    stored: dict[SegmentKey, str],
+    incoming: dict[SegmentKey, str],
+    source: str,
+) -> str | None:
+    """The document already in the project holding exactly these segments.
+
+    Segments cover the whole text, so matching all of another's is that
+    document again — under a second name, just handed to it by _pick_source.
+    """
+    if not incoming:
+        return None
+
+    segment_counts: defaultdict[str, int] = defaultdict(int)
+    for other, _ in stored:
+        segment_counts[other] += 1
+
+    size = len(incoming)
+    for other, count in segment_counts.items():
+        if count == size and all(
+            stored[(other, index)] == incoming[(source, index)] for index in range(size)
+        ):
+            return other
+    return None
+
+
 def _parse_chunks(path: Path) -> list[Chunk]:
     """Rebuild the raw chunk list, empty when the artifact is absent."""
     data = read_json(path)
@@ -144,32 +194,55 @@ class Project:
 
         Loads, segments, and chunks documents.
 
+        A document is filed under its filename, or under as much of its path as
+        it takes to be unique — two `report.md` would otherwise collide.
+
         Args:
             file_paths: Document paths to add.
 
         Returns:
             Number of chunks created.
+
+        Raises:
+            ValueError: If a document's text is already in the project; the
+                ones ahead of it in `file_paths` are already added.
         """
         added = 0
+        taken = {chunk.source for chunk in self._chunks}
 
         for raw_path in file_paths:
             file_path = Path(raw_path)
             logger.info("loading_document", path=str(file_path))
 
+            source = _pick_source(file_path, taken)
             chunks, segments_map = create_chunks(
                 text=load_document(file_path),
-                source=file_path.name,
+                source=source,
                 segment_size=self._config.segment_size,
                 segment_overlap=self._config.segment_overlap,
                 chunk_size=self._config.chunk_size,
                 chunk_overlap=self._config.chunk_overlap,
             )
 
+            duplicate = _duplicate_source(self._segments, segments_map, source)
+            if duplicate is not None:
+                raise ValueError(
+                    f"{file_path} holds the same text as '{duplicate}', already in "
+                    f"project '{self._config.name}'. Indexing it twice would spend "
+                    "two of every response's results on one passage."
+                )
+
+            taken.add(source)
             self._segments.update(segments_map)
             self._chunks.extend(chunks)
             added += len(chunks)
 
-            logger.info("document_chunked", path=str(file_path), num_chunks=len(chunks))
+            logger.info(
+                "document_chunked",
+                path=str(file_path),
+                source=source,
+                num_chunks=len(chunks),
+            )
 
         logger.info("documents_added", total_chunks=len(self._chunks))
         return added

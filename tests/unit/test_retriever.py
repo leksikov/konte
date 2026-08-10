@@ -642,3 +642,206 @@ class TestAsyncRetrieval:
             )
 
         extractor.async_variant.assert_awaited_once_with("test query")
+
+
+def _overlapping_corpus():
+    """A corpus where one passage was cut twice, as segment overlap does."""
+    shared = (
+        "Depreciation of the Hwaseong fabrication line rose to 1.2 trillion won "
+        "after the extreme ultraviolet retrofit completed in the second quarter."
+    )
+    contents = [
+        shared,
+        shared,
+        f"{shared} Utilization recovered to ninety-one percent by September.",
+        "Employee headcount remained flat across all regions.",
+        "Cash flow from operations totalled two billion dollars.",
+    ]
+    return [
+        ContextualizedChunk(
+            chunk=Chunk(
+                chunk_id=f"report.md_s{i}_c0",
+                content=content,
+                source="report.md",
+                segment_idx=i,
+                chunk_idx=0,
+            ),
+            context=f"This excerpt is from segment {i}.",
+        )
+        for i, content in enumerate(contents)
+    ]
+
+
+@pytest.mark.unit
+class TestRedundantResultsAreDropped:
+    """Test that overlapping segments cannot spend top-k twice on one passage.
+
+    A boundary chunk is cut again at the head of the next segment, so the pair
+    carries one passage under two chunk ids and ranks together.
+    """
+
+    def _retriever(self, corpus, semantic=None):
+        from konte.stores.bm25_store import BM25Store
+        from konte.stores.retriever import Retriever
+
+        store = BM25Store()
+        store.build_index(corpus)
+        return Retriever(
+            faiss_store=None if semantic is None else _StubFAISS(semantic),
+            bm25_store=store,
+        )
+
+    def test_lexical_drops_the_duplicate(self):
+        """Test a chunk whose text a better-ranked one carries is not returned."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus)
+
+        response = retriever.retrieve_lexical(
+            "Hwaseong extreme ultraviolet retrofit", top_k=3, use_keyword_extraction=False
+        )
+
+        contents = [result.content for result in response.results]
+        assert len(contents) == len(set(contents))
+        assert not any(
+            later in earlier
+            for rank, earlier in enumerate(contents)
+            for later in contents[rank + 1 :]
+        )
+
+    def test_the_longer_chunk_survives(self):
+        """Test the passage is kept whole rather than clipped to its shorter cut."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus)
+
+        response = retriever.retrieve_lexical(
+            "utilization recovered September", top_k=3, use_keyword_extraction=False
+        )
+
+        assert "Utilization recovered" in response.results[0].content
+
+    def test_the_freed_slot_carries_new_content(self):
+        """Test dropping a duplicate does not shorten the response."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus)
+
+        response = retriever.retrieve_lexical(
+            "Hwaseong retrofit headcount regions cash flow operations",
+            top_k=3,
+            use_keyword_extraction=False,
+        )
+
+        assert response.total_found == 3
+
+    def test_hybrid_drops_the_duplicate(self):
+        """Test fusion cannot reintroduce a passage under its second chunk id."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus, semantic=[(corpus[0], 0.81), (corpus[1], 0.79)])
+
+        response = retriever.retrieve_hybrid(
+            "Hwaseong extreme ultraviolet retrofit", top_k=3, use_keyword_extraction=False
+        )
+
+        contents = [result.content for result in response.results]
+        assert len(contents) == len(set(contents))
+
+    async def test_the_reranker_is_not_asked_to_score_duplicates(self):
+        """Test the redundant candidate is gone before the network call."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus)
+
+        with patch(
+            "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
+        ) as rerank:
+            rerank.return_value = RerankOutcome([(corpus[1], 0.93)], True)
+            await retriever.retrieve_with_rerank(
+                "Hwaseong retrofit",
+                mode="lexical",
+                top_k=2,
+                initial_k=4,
+                use_keyword_extraction=False,
+            )
+
+        candidates = [chunk.chunk.content for chunk, _ in rerank.await_args.args[1]]
+        assert len(candidates) == len(set(candidates))
+
+    async def test_the_reranker_gets_at_most_initial_k_candidates(self):
+        """Test initial_k bounds what is sent, as it is documented to."""
+        corpus = _overlapping_corpus()
+        retriever = self._retriever(corpus, semantic=[(c, 0.5) for c in corpus])
+
+        with patch(
+            "konte.stores.retriever.rerank_chunks_with_score", new_callable=AsyncMock
+        ) as rerank:
+            rerank.return_value = RerankOutcome([(corpus[1], 0.93)], True)
+            await retriever.retrieve_with_rerank(
+                "cash flow operations",
+                mode="hybrid",
+                top_k=1,
+                initial_k=2,
+                use_keyword_extraction=False,
+            )
+
+        assert len(rerank.await_args.args[1]) == 2
+
+
+@pytest.mark.unit
+class TestDropRedundant:
+    """Test the redundancy rule itself, away from any index."""
+
+    def _scored(self, *contents):
+        return [
+            (
+                ContextualizedChunk(
+                    chunk=Chunk(
+                        chunk_id=f"c{i}",
+                        content=content,
+                        source="report.md",
+                        segment_idx=i,
+                        chunk_idx=0,
+                    ),
+                    context="",
+                ),
+                1.0 - i / 100,
+            )
+            for i, content in enumerate(contents)
+        ]
+
+    def test_identical_text_under_a_second_id_is_dropped(self):
+        """Test differing chunk ids do not make one passage two results."""
+        from konte.stores.retriever import _drop_redundant
+
+        kept = _drop_redundant(self._scored("same passage", "same passage"), 10)
+
+        assert len(kept) == 1
+
+    def test_a_contained_chunk_is_dropped(self):
+        """Test the short cut of a passage falls to the long one above it."""
+        from konte.stores.retriever import _drop_redundant
+
+        kept = _drop_redundant(self._scored("a passage and its tail", "a passage"), 10)
+
+        assert [c.chunk.chunk_id for c, _ in kept] == ["c0"]
+
+    def test_a_containing_chunk_survives_a_shorter_one_above_it(self):
+        """Test text is never lost to a result that carries only part of it."""
+        from konte.stores.retriever import _drop_redundant
+
+        kept = _drop_redundant(self._scored("a passage", "a passage and its tail"), 10)
+
+        assert [c.chunk.chunk_id for c, _ in kept] == ["c0", "c1"]
+
+    def test_merely_overlapping_chunks_both_survive(self):
+        """Test the ordinary chunk overlap is not read as redundancy."""
+        from konte.stores.retriever import _drop_redundant
+
+        kept = _drop_redundant(self._scored("alpha beta gamma", "beta gamma delta"), 10)
+
+        assert len(kept) == 2
+
+    def test_ranking_order_is_preserved(self):
+        """Test dropping closes the gap rather than reordering what is left."""
+        from konte.stores.retriever import _drop_redundant
+
+        kept = _drop_redundant(self._scored("first", "first", "second", "third"), 10)
+
+        assert [c.chunk.chunk_id for c, _ in kept] == ["c0", "c2", "c3"]

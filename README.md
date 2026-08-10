@@ -365,7 +365,9 @@ Filter retrieval results by source filename or custom metadata fields.
 
 ### source_filter — Substring Match
 
-`source_filter` matches against the chunk's source filename (case-sensitive substring):
+`source_filter` matches against the chunk's source filename (case-sensitive substring). A
+document is filed under its filename, or under as much of its path as it takes to be unique
+when two documents share one:
 
 ```python
 # Only return chunks from Samsung documents
@@ -475,7 +477,7 @@ class RetrievalResult:
     content: str      # Original chunk text
     context: str      # LLM-generated context
     score: float      # Ranking score within this response (0-1), not a threshold
-    source: str       # Source filename
+    source: str       # Source filename, path-qualified if two documents share one
     chunk_id: str     # Unique chunk identifier
     metadata: dict    # Additional metadata
 ```

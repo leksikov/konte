@@ -25,7 +25,8 @@ logger = structlog.get_logger()
 ScoredChunks = list[tuple[ContextualizedChunk, float]]
 
 RRF_K = 60
-_FUSION_CANDIDATE_MULTIPLIER = 2
+# Candidates ranked per result returned, so dropping redundant ones still fills top_k.
+_CANDIDATE_MULTIPLIER = 2
 _INJECTED_EVIDENCE_SCORE = 0.95
 
 
@@ -138,6 +139,29 @@ def _merge_absolute(*readings: dict[str, float]) -> dict[str, float]:
             if score > merged.get(chunk_id, 0.0):
                 merged[chunk_id] = score
     return merged
+
+
+def _drop_redundant(results: ScoredChunks, limit: int) -> ScoredChunks:
+    """Keep the best `limit` of `results`, best first, dropping repeated text.
+
+    Overlapping segments cut a boundary passage twice, so it ranks twice under
+    two chunk ids. The two cuts share a boundary, so a copy is a kept result's
+    whole, head, or tail; a repeat buried inside a longer chunk is left alone.
+    A lower-ranked superset survives — dropping it would lose the text it adds.
+    """
+    kept: ScoredChunks = []
+    texts: list[str] = []
+
+    for chunk, score in results:
+        content = chunk.chunk.content
+        if any(seen.endswith(content) or seen.startswith(content) for seen in texts):
+            continue
+        kept.append((chunk, score))
+        texts.append(content)
+        if len(kept) == limit:
+            break
+
+    return kept
 
 
 def _determine_suggested_action(top_score: float) -> SuggestedAction:
@@ -566,16 +590,31 @@ class Retriever:
         metadata_filter: MetadataFilter | None = None,
         source_filter: str | None = None,
     ) -> _Ranked:
-        """Rank with one mode without wrapping the outcome in a response."""
+        """Rank with one mode without wrapping the outcome in a response.
+
+        Over-fetching leaves room to drop redundant results without shortening
+        the response; fusion already draws on that many, a single index does not.
+        """
         self._warn_missing_indexes(mode)
 
         if mode == "semantic":
-            return self._semantic_results(
-                queries.semantic, top_k, metadata_filter, source_filter
+            candidates = self._semantic_results(
+                queries.semantic,
+                top_k * _CANDIDATE_MULTIPLIER,
+                metadata_filter,
+                source_filter,
             )
-        if mode == "lexical":
-            return self._lexical_results(queries.lexical, top_k, metadata_filter, source_filter)
-        return self._hybrid_results(queries, top_k, metadata_filter, source_filter)
+        elif mode == "lexical":
+            candidates = self._lexical_results(
+                queries.lexical,
+                top_k * _CANDIDATE_MULTIPLIER,
+                metadata_filter,
+                source_filter,
+            )
+        else:
+            candidates = self._hybrid_results(queries, top_k, metadata_filter, source_filter)
+
+        return _Ranked(_drop_redundant(candidates.results, top_k), candidates.absolute)
 
     def _warn_missing_indexes(self, mode: RetrievalMode) -> None:
         """Report the indexes this mode asked for and did not get."""
@@ -650,19 +689,14 @@ class Retriever:
         Fusion consumes rank positions only, so each index's reading is carried
         around it rather than through it.
         """
-        if not self._has_semantic:
-            return self._lexical_results(
-                queries.lexical, top_k, metadata_filter, source_filter
-            )
-        if not self._has_lexical:
-            return self._semantic_results(
-                queries.semantic, top_k, metadata_filter, source_filter
-            )
+        fetch_k = top_k * _CANDIDATE_MULTIPLIER
 
-        fetch_k = top_k * _FUSION_CANDIDATE_MULTIPLIER
-        semantic = self._semantic_results(
-            queries.semantic, fetch_k, metadata_filter, source_filter
-        )
+        if not self._has_semantic:
+            return self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter)
+        if not self._has_lexical:
+            return self._semantic_results(queries.semantic, fetch_k, metadata_filter, source_filter)
+
+        semantic = self._semantic_results(queries.semantic, fetch_k, metadata_filter, source_filter)
         lexical = self._lexical_results(queries.lexical, fetch_k, metadata_filter, source_filter)
         return _Ranked(
             reciprocal_rank_fusion(

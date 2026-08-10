@@ -167,3 +167,121 @@ class TestSaveDurability:
         reopened = Project.open("persist_test", storage_path=tmp_path)
         assert [c.chunk_id for c in reopened._chunks] == ["id0"]
         assert reopened._chunks[0].content == "Only chunk that remains"
+
+
+def _document(directory, name, body):
+    """Write a document long enough to segment, and return its path."""
+    path = directory / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{body}\n\n" * 40, encoding="utf-8")
+    return path
+
+
+@pytest.mark.unit
+class TestDocumentsAreNamedApart:
+    """Test that two documents cannot be filed under one source name.
+
+    A shared name let the second document overwrite the first's segments and
+    let fusion merge their chunks into one result.
+    """
+
+    def test_same_filename_from_two_directories(self, tmp_path):
+        """Test the second `report.md` is filed under enough of its path to differ."""
+        project = Project.create(name="named", storage_path=tmp_path / "store")
+        project.add_documents(
+            [
+                _document(tmp_path / "kr", "report.md", "Hwaseong output rose."),
+                _document(tmp_path / "us", "report.md", "Taylor output fell."),
+            ]
+        )
+
+        assert {chunk.source for chunk in project._chunks} == {"report.md", "us/report.md"}
+
+    def test_chunk_ids_stay_unique(self, tmp_path):
+        """Test no two chunks share an id, which fusion reads as one chunk."""
+        project = Project.create(name="named", storage_path=tmp_path / "store")
+        project.add_documents(
+            [
+                _document(tmp_path / "kr", "report.md", "Hwaseong output rose."),
+                _document(tmp_path / "us", "report.md", "Taylor output fell."),
+            ]
+        )
+
+        ids = [chunk.chunk_id for chunk in project._chunks]
+        assert len(ids) == len(set(ids))
+
+    def test_neither_document_loses_its_segments(self, tmp_path):
+        """Test each document's chunks are contextualized against its own text."""
+        project = Project.create(name="named", storage_path=tmp_path / "store")
+        project.add_documents(
+            [
+                _document(tmp_path / "kr", "report.md", "Hwaseong output rose."),
+                _document(tmp_path / "us", "report.md", "Taylor output fell."),
+            ]
+        )
+
+        assert "Hwaseong" in project._segments[("report.md", 0)]
+        assert "Taylor" in project._segments[("us/report.md", 0)]
+
+    def test_a_lone_filename_is_left_alone(self, tmp_path):
+        """Test the common case still files under the bare name callers filter on."""
+        project = Project.create(name="named", storage_path=tmp_path / "store")
+        project.add_documents([_document(tmp_path / "kr", "report.md", "Hwaseong output rose.")])
+
+        assert {chunk.source for chunk in project._chunks} == {"report.md"}
+
+    def test_a_reopened_project_still_names_documents_apart(self, tmp_path):
+        """Test the names already on disk are what a later add avoids."""
+        project = Project.create(name="named", storage_path=tmp_path / "store")
+        project.add_documents([_document(tmp_path / "kr", "report.md", "Hwaseong output rose.")])
+        project.save()
+
+        reopened = Project.open("named", storage_path=tmp_path / "store")
+        reopened.add_documents([_document(tmp_path / "us", "report.md", "Taylor output fell.")])
+
+        assert {chunk.source for chunk in reopened._chunks} == {"report.md", "us/report.md"}
+
+
+@pytest.mark.unit
+class TestReAddingADocumentIsRefused:
+    """Test that the same text cannot enter a project twice, silently."""
+
+    def test_the_same_file_twice(self, tmp_path):
+        """Test a repeated `konte add` is reported instead of doubling the corpus."""
+        project = Project.create(name="readd", storage_path=tmp_path / "store")
+        path = _document(tmp_path / "kr", "report.md", "Hwaseong output rose.")
+        project.add_documents([path])
+
+        with pytest.raises(ValueError, match="report.md"):
+            project.add_documents([path])
+
+    def test_a_copy_under_another_name(self, tmp_path):
+        """Test identity is the text, not the path it arrived by."""
+        project = Project.create(name="readd", storage_path=tmp_path / "store")
+        project.add_documents([_document(tmp_path / "kr", "report.md", "Hwaseong output rose.")])
+
+        with pytest.raises(ValueError):
+            project.add_documents([_document(tmp_path / "us", "copy.md", "Hwaseong output rose.")])
+
+    def test_the_refused_document_leaves_nothing_behind(self, tmp_path):
+        """Test the rejected text is not half-added."""
+        project = Project.create(name="readd", storage_path=tmp_path / "store")
+        path = _document(tmp_path / "kr", "report.md", "Hwaseong output rose.")
+        added = project.add_documents([path])
+
+        with pytest.raises(ValueError):
+            project.add_documents([path])
+
+        assert len(project._chunks) == added
+        assert {chunk.source for chunk in project._chunks} == {"report.md"}
+
+    def test_a_different_document_is_still_accepted(self, tmp_path):
+        """Test the check refuses copies, not same-named neighbours."""
+        project = Project.create(name="readd", storage_path=tmp_path / "store")
+        project.add_documents([_document(tmp_path / "kr", "report.md", "Hwaseong output rose.")])
+
+        added = project.add_documents(
+            [_document(tmp_path / "us", "report.md", "Taylor output fell.")]
+        )
+
+        assert added > 0
