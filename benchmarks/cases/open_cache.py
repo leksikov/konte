@@ -40,7 +40,7 @@ def run(ctx: Context) -> dict:
     if name not in available_real_projects():
         return {"status": "skipped", "reason": f"no built project {name!r}"}
 
-    storage, project_name = real_project(name)
+    storage, project_name = real_project(name, ctx.revision, reindex_lexical=True)
     konte = importlib.import_module("konte")
     pin_keyword_extraction()
 

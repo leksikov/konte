@@ -65,7 +65,7 @@ def run(ctx: Context) -> dict:
         return {"status": "skipped", "reason": f"no built project {name!r}"}
 
     with stub_embeddings():
-        storage, project_name = real_project(name)
+        storage, project_name = real_project(name, ctx.revision, reindex_lexical=True)
         project = open_project(project_name, storage)
         pin_keyword_extraction()
 

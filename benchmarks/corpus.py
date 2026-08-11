@@ -24,6 +24,7 @@ sides of the comparison, so it cannot go through the code under test.
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import shutil
 from pathlib import Path
@@ -177,25 +178,80 @@ def document_excerpt(chunks: int) -> Path:
 # --------------------------------------------------------------------------
 
 
-def real_project(name: str) -> tuple[Path, str]:
+def real_project(
+    name: str, revision: str = "shared", *, reindex_lexical: bool = False
+) -> tuple[Path, str]:
     """Copy an already-built project into scratch storage and return it.
 
     Returns ``(storage_path, project_name)`` so a case can open it the ordinary
-    way. The copy exists because the newer revision's ``save()`` deletes the
-    legacy lexical corpus file and slims the lexical index, neither of which the
-    older revision can read back - measuring against the original would destroy
-    the baseline halfway through the run.
+    way.
+
+    Two things this has to get right, both learned the hard way:
+
+    *The copy has to actually be used.* ``Project.open(name, storage_path=...)``
+    uses that argument only to find ``config.json``; the data path comes from
+    the ``storage_path`` recorded *inside* the config, and only a relative one
+    is rebased. A project built in place records an absolute path, so opening a
+    copy silently reads the original. The copied config is rewritten here so the
+    copy stands on its own.
+
+    *A copy may need reindexing.* The lexical index records the tokenizer that
+    wrote it and a revision refuses to load another's terms, which is the right
+    call - stale terms would silently return wrong results. ``reindex_lexical``
+    rebuilds that index from the project's own stored chunks using whichever
+    revision is running, so both sides get an index they can read over
+    byte-identical chunk text. No model is called: the generated context is
+    already in ``chunks.json``.
     """
     source = PROTECTED_STORAGE / name
     if not source.is_dir():
         available = sorted(p.name for p in PROTECTED_STORAGE.iterdir() if p.is_dir())
         raise FileNotFoundError(f"no built project {name!r}; found: {available}")
 
-    storage = projects_dir("real")
+    storage = projects_dir(f"real-{revision}")
     target = storage / name
     if not target.exists():
         shutil.copytree(source, target)
+        _rebase_config(target, storage)
+        if reindex_lexical:
+            _reindex_lexical(target)
     return storage, name
+
+
+def _rebase_config(project_dir: Path, storage: Path) -> None:
+    """Point a copied project's config at the copy rather than the original."""
+    config_path = project_dir / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["storage_path"] = str(storage.resolve())
+    config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _reindex_lexical(project_dir: Path) -> None:
+    """Rebuild the lexical index over the project's stored chunks, in place.
+
+    Imports konte, so it runs under whichever revision the case is running.
+    """
+    import importlib
+
+    models = importlib.import_module("konte.models")
+    bm25_module = importlib.import_module("konte.stores.bm25_store")
+
+    chunks_path = project_dir / "chunks.json"
+    if not chunks_path.exists():
+        return
+    records = json.loads(chunks_path.read_text(encoding="utf-8"))
+    # The named constructor arrived partway through the range under test; the
+    # stored shape ({"chunk": ..., "context": ...}) is the same on both sides,
+    # so plain construction is the fallback for the revision that lacks it.
+    from_storage = getattr(models.ContextualizedChunk, "from_storage_dict", None)
+    chunks = [
+        from_storage(record) if from_storage else models.ContextualizedChunk(**record)
+        for record in records
+    ]
+
+    store = bm25_module.BM25Store()
+    store.build_index(chunks)
+    store.save(project_dir)
 
 
 def available_real_projects() -> list[str]:

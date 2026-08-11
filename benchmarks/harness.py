@@ -178,15 +178,19 @@ def run_case(
             text=True,
             timeout=timeout,
         )
-        if proc.returncode != 0 or not out_path.stat().st_size:
+        # A case that raises still writes its payload, traceback included, and
+        # *then* exits non-zero. Read the file first: keying off the exit code
+        # alone throws away the only diagnosis of why the case failed.
+        if not out_path.stat().st_size:
             return {
                 "case": case,
                 "revision": revision,
                 "status": "error",
                 "returncode": proc.returncode,
-                "stderr": proc.stderr[-4000:],
+                "stderr": proc.stderr[-4000:] or "(no output; the process died before writing)",
             }
         payload = json.loads(out_path.read_text())
+        payload.setdefault("returncode", proc.returncode)
         # Kept even on success: konte logs retries and backoff to stderr, and a
         # build that succeeded slowly is a different story from one that
         # succeeded quickly.

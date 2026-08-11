@@ -130,7 +130,7 @@ def run(ctx: Context) -> dict:
         result["retrieval"] = {"status": "skipped", "reason": f"no built project {name!r}"}
         return result
 
-    storage, project_name = real_project(name)
+    storage, project_name = real_project(name, ctx.revision, reindex_lexical=True)
     result["project"] = name
 
     # Defaults first: once extraction is pinned it cannot be unpinned within

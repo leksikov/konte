@@ -96,7 +96,7 @@ def run(ctx: Context) -> dict:
     top_k = int(ctx.options.get("top_k", TOP_K))
     answer_limit = int(ctx.options.get("answers", 20))
 
-    storage, project_name = real_project(name)
+    storage, project_name = real_project(name, ctx.revision, reindex_lexical=True)
     project = open_project(project_name, storage)
 
     per_question = []
