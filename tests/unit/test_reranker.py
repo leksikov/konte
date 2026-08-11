@@ -65,6 +65,7 @@ class TestRerankerFailureModes:
     async def test_all_requests_failed_falls_back_to_original(self, sample_chunks, monkeypatch):
         """If every score request fails, original order and scores are kept."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", "test-reranker")
 
         async def fail_all(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
             return (idx, None)
@@ -79,6 +80,7 @@ class TestRerankerFailureModes:
     async def test_partial_failure_scores_failed_chunk_zero(self, sample_chunks, monkeypatch):
         """A single failed request scores 0.0; the rest rerank normally."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", "test-reranker")
 
         async def fail_first(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
             if idx == 0:
