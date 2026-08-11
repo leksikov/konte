@@ -136,7 +136,7 @@ def _measure_live(ctx: Context) -> dict:
     # A failed context call yields empty context rather than an error, so a
     # build aimed at the wrong endpoint still "succeeds" - slowly, having
     # generated nothing. Refuse to start rather than produce that number.
-    assert_live_endpoint()
+    endpoint = assert_live_endpoint()
 
     start = time.perf_counter()
     project = build_project(name, storage, document, enable_faiss=True, skip_context=False)
@@ -154,6 +154,11 @@ def _measure_live(ctx: Context) -> dict:
         "chunks": len(chunks),
         "chunks_with_context": contextualized,
         "build_seconds": seconds,
+        # Recorded so a stored result carries the endpoint it was measured
+        # against; comparing two runs made against different servers is
+        # otherwise indistinguishable from comparing two revisions.
+        "endpoint": endpoint,
+        "context_model": getattr(project._config, "context_model", None),
     }
 
 

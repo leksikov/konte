@@ -252,6 +252,12 @@ CLAIMS = [
         lambda m: (_get(m, "live", "build_seconds"), _seconds),
     ),
     Claim(
+        "build_concurrency_live_gemma",
+        "End-to-end build, second endpoint",
+        "same change, an endpoint with stronger prefix caching",
+        lambda m: (_get(m, "live", "build_seconds"), _seconds),
+    ),
+    Claim(
         "build_concurrency_live",
         "Chunks that actually received generated context",
         "every chunk",
@@ -386,6 +392,9 @@ def build_report(results_dir: Path) -> str:
     lines += ["", "## Do both revisions return the same results?", ""]
     lines += _parity_section(stored)
 
+    lines += ["", "## Prefix caching", ""]
+    lines += _prefix_cache_section(stored)
+
     lines += ["", "## Accuracy", ""]
     lines += _accuracy_section(stored)
 
@@ -408,6 +417,121 @@ def build_report(results_dir: Path) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _prefix_cache_section(stored: dict) -> list[str]:
+    """Whether endpoints reward konte's shared-prefix prompt shape."""
+    probe = stored.get("prefix_cache")
+    if not probe:
+        return [
+            "_Not run. `uv run python -m benchmarks.prefix_cache_probe --label <name> "
+            "--base-url <url> --model <model>`._"
+        ]
+
+    lines = [
+        "Every context prompt is `[segment ~8000 tokens][chunk ~800]`, so all chunks of a "
+        "segment share a long prefix. Whether that is worth anything depends on when the "
+        "requests arrive, not only on what they contain.",
+        "",
+        "| Endpoint | Sequential, shared | Concurrent, shared | Concurrent, distinct | Sharing helps |",
+        "|---|---|---|---|---|",
+    ]
+    for label, result in sorted(probe.items()):
+        seq = result.get("sequential_shared") or {}
+        shared = result.get("concurrent_shared") or {}
+        distinct = result.get("concurrent_distinct") or {}
+        cold, warm = seq.get("first_s"), seq.get("rest_median_s")
+        speedup = (
+            distinct.get("wall_s") / shared["wall_s"]
+            if shared.get("wall_s")
+            else None
+        )
+        lines.append(
+            f"| {label} | {cold:.2f}s cold -> {warm:.2f}s warm | {shared.get('wall_s', 0):.2f}s "
+            f"| {distinct.get('wall_s', 0):.2f}s | "
+            f"{'yes, ' + format(speedup, '.1f') + 'x' if speedup and speedup > 1.15 else 'no'} |"
+        )
+
+    helps = [r for r in probe.values() if r.get("sharing_helps_when_concurrent")]
+    if helps:
+        lines += [
+            "",
+            f"**Sharing a prefix pays off on {len(helps)} of {len(probe)} endpoints measured, "
+            f"including for requests issued simultaneously.** That is what makes segment "
+            f"scheduling matter: the older revision held one segment's prefix in flight at a "
+            f"time, while the newer one admits up to `MAX_CONCURRENT_CALLS` segments at once "
+            f"(`project.py`, `segment_gate`), so the server sees interleaved prefixes. "
+            f"The end-to-end builds above still came out faster after the change, so on these "
+            f"endpoints overlapping segments outweighs the lost cache locality on wall-clock - "
+            f"but it is bought by recomputing prefixes, which a provider that bills cached "
+            f"input at a discount would charge for.",
+        ]
+    return lines
+
+
+#: Fixed so the reported interval is reproducible from the stored scores.
+_BOOTSTRAP_SEED = 7
+_BOOTSTRAP_ROUNDS = 20000
+
+
+def _paired_significance(scored: dict, control: dict | None) -> dict | None:
+    """Test the answer-score gap as paired observations, pooling any repeat run.
+
+    A per-question pairing is what the question actually asks: did *this* answer
+    get worse. Comparing two means instead would let a single question's score
+    look decisive, because the mean barely moves when most answers are identical.
+    """
+    import random
+    from math import comb
+
+    diffs: list[float] = []
+    for payload in (scored, control):
+        if not payload:
+            continue
+        before = {
+            g["question"]: g["score"]
+            for g in _get(payload, "revisions", "baseline", "graded", default=[]) or []
+            if isinstance(g.get("score"), (int, float))
+        }
+        after = {
+            g["question"]: g["score"]
+            for g in _get(payload, "revisions", "head", "graded", default=[]) or []
+            if isinstance(g.get("score"), (int, float))
+        }
+        diffs += [after[q] - before[q] for q in before if q in after]
+
+    if not diffs:
+        return None
+
+    discordant = [d for d in diffs if d]
+    negative = sum(1 for d in discordant if d < 0)
+
+    rng = random.Random(_BOOTSTRAP_SEED)
+    means = sorted(
+        sum(rng.choices(diffs, k=len(diffs))) / len(diffs) for _ in range(_BOOTSTRAP_ROUNDS)
+    )
+    lo = means[int(0.025 * _BOOTSTRAP_ROUNDS)]
+    hi = means[int(0.975 * _BOOTSTRAP_ROUNDS)]
+
+    if discordant:
+        k = min(negative, len(discordant) - negative)
+        p = min(
+            1.0,
+            sum(comb(len(discordant), i) for i in range(k + 1)) / 2 ** len(discordant) * 2,
+        )
+    else:
+        p = 1.0
+
+    return {
+        "n": len(diffs),
+        "discordant": len(discordant),
+        "negative": negative,
+        "positive": len(discordant) - negative,
+        "mean": sum(diffs) / len(diffs),
+        "lo": lo,
+        "hi": hi,
+        "p": p,
+    }
 
 
 def _accuracy_section(stored: dict) -> list[str]:
@@ -534,28 +658,26 @@ def _accuracy_section(stored: dict) -> list[str]:
             "",
         ]
 
-    # A second run of the *same* revision bounds how much of any gap is sampling.
-    control = stored.get("accuracy_control_scored")
-    if control:
-        for revision in ("head", "baseline"):
-            base = _get(scored, "revisions", revision, "summary", default={}) or {}
-            repeat = _get(control, "revisions", revision, "summary", default={}) or {}
-            if base.get("count") and repeat.get("count"):
-                drift = abs((repeat["mean_score"] or 0) - (base["mean_score"] or 0))
-                gap = abs((sa.get("mean_score") or 0) - (sb.get("mean_score") or 0))
-                lines += [
-                    f"**Noise floor:** running the *{revision}* revision twice, unchanged, "
-                    f"moved its mean score by {drift:.3f} "
-                    f"({base['mean_score']:.3f} -> {repeat['mean_score']:.3f}). The gap between "
-                    f"the two revisions is {gap:.3f}. "
-                    + (
-                        "The gap is inside the noise floor, so it is not evidence of a change."
-                        if gap <= drift
-                        else "The gap exceeds the noise floor and is worth investigating."
-                    ),
-                    "",
-                ]
-                break
+    # Whether the score gap means anything is a question about paired
+    # observations, not about how steady a mean is across reruns. Most answers
+    # do not move at all, which holds the mean still and would make a
+    # mean-stability check declare a one-question difference "significant".
+    stat = _paired_significance(scored, stored.get("accuracy_control_scored"))
+    if stat:
+        lines += [
+            f"**Is the gap real?** Pairing each question's score across revisions gives "
+            f"{stat['n']} paired observations, of which {stat['discordant']} differ "
+            f"({stat['negative']} lower after, {stat['positive']} higher). Mean paired "
+            f"difference {stat['mean']:+.4f}, bootstrap 95% CI "
+            f"[{stat['lo']:+.4f}, {stat['hi']:+.4f}], sign test p = {stat['p']:.3f}. "
+            + (
+                "The interval includes zero and the sign test is far from significant, so "
+                "this is sampling in the generator, not a measured change in answer quality."
+                if stat["lo"] <= 0 <= stat["hi"]
+                else "The interval excludes zero; this warrants investigation."
+            ),
+            "",
+        ]
     regressions = [
         (q, gb[q], ga[q])
         for q in gb

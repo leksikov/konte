@@ -31,11 +31,25 @@ changelog, the two numbers behind it, and whether it held up.
 | Context generation wall-clock | segments overlap under one ceiling | 3.8 s | 2.8 s | -26.7% | confirmed |
 | Index build wall-clock | embedding batches overlap in a window | 3.1 s | 1.1 s | -65.9% | confirmed |
 | End-to-end build against the configured endpoint | a build costs its request volume divided by the ceiling | 84.1 s | 66.6 s | -20.9% | confirmed |
+| End-to-end build, second endpoint | same change, an endpoint with stronger prefix caching | 28.7 s | 21.8 s | -24.2% | confirmed |
 | Chunks that actually received generated context | every chunk | 74 | 74 | +0.0% | no change |
 
 ## Do both revisions return the same results?
 
 **Identical.** All 8 queries returned the same chunks in the same order with the same scores on both revisions. The speed numbers above compare the same operation.
+
+## Prefix caching
+
+Every context prompt is `[segment ~8000 tokens][chunk ~800]`, so all chunks of a segment share a long prefix. Whether that is worth anything depends on when the requests arrive, not only on what they contain.
+
+| Endpoint | Sequential, shared | Concurrent, shared | Concurrent, distinct | Sharing helps |
+|---|---|---|---|---|
+| hosted | 2.04s cold -> 0.93s warm | 1.16s | 2.81s | yes, 2.4x |
+| selfhosted_a | 0.75s cold -> 0.10s warm | 0.58s | 2.77s | yes, 4.8x |
+| selfhosted_b | 0.79s cold -> 0.19s warm | 0.86s | 2.84s | yes, 3.3x |
+| selfhosted_b_repeat | 0.79s cold -> 0.19s warm | 0.79s | 2.85s | yes, 3.6x |
+
+**Sharing a prefix pays off on 4 of 4 endpoints measured, including for requests issued simultaneously.** That is what makes segment scheduling matter: the older revision held one segment's prefix in flight at a time, while the newer one admits up to `MAX_CONCURRENT_CALLS` segments at once (`project.py`, `segment_gate`), so the server sees interleaved prefixes. The end-to-end builds above still came out faster after the change, so on these endpoints overlapping segments outweighs the lost cache locality on wall-clock - but it is bought by recomputing prefixes, which a provider that bills cached input at a discount would charge for.
 
 ## Accuracy
 
@@ -72,6 +86,8 @@ Both revisions' answers graded in one pass by the same judge, using the `answer`
 | scored 1.0 | 40.0% | 50.0% | +25.0% |
 
 5 of 20 answers scored differently, and 5 of those 5 were generated from **identical retrieved evidence**. Where the evidence is the same and the answer is not, the difference is the generator sampling, not anything under test.
+
+**Is the gap real?** Pairing each question's score across revisions gives 40 paired observations, of which 11 differ (7 lower after, 4 higher). Mean paired difference -0.0425, bootstrap 95% CI [-0.1050, +0.0150], sign test p = 0.549. The interval includes zero and the sign test is far from significant, so this is sampling in the generator, not a measured change in answer quality.
 
 **3 answers scored materially lower after.**
 
@@ -256,15 +272,19 @@ _After:_
 | Case | Scale | Status |
 |---|---|---|
 | accuracy | - | both revisions ok |
+| accuracy_control | - | both revisions ok |
+| accuracy_control_scored | - | incomplete |
 | accuracy_scored | - | incomplete |
 | build_concurrency | chunks=21 | both revisions ok |
 | build_concurrency_live | chunks=21 | both revisions ok |
+| build_concurrency_live_gemma | chunks=21 | both revisions ok |
 | checkpoint_io | requested_segments=100 | both revisions ok |
 | chunking | document=synthetic-500-chunks.md, characters=2083263, chunks_produced=553, segments_produced=50 | both revisions ok |
 | import_cost | - | both revisions ok |
 | keyword_extraction | - | both revisions ok |
 | open_cache | project=all_tariff_documents | both revisions ok |
 | output_parity | project=wco_korean_feb2026 | both revisions ok |
+| prefix_cache | - | incomplete |
 | query_bm25 | requested_chunks=20000, queries=200 | both revisions ok |
 | query_faiss_filter | project=all_tariff_documents | both revisions ok |
 | retrieval_parity | requested_chunks=2000 | both revisions ok |
@@ -288,6 +308,31 @@ _After:_
 | `live.build_seconds` | 84.11 | 66.57 |
 | `live.chunks` | 74 | 74 |
 | `live.chunks_with_context` | 74 | 74 |
+| `live.requested_chunks` | 60 | 60 |
+| `retry.chunks` | 21 | 21 |
+| `retry.chunks_with_context` | 21 | 21 |
+| `retry.distinct_prompts` | 21 | 21 |
+| `retry.rate_limit_responses` | 3 | 3 |
+| `retry.requests_resent` | 10 | 0 |
+| `retry.total_requests` | 34 | 24 |
+
+### build_concurrency_live_gemma
+
+| Measurement | Before | After |
+|---|---|---|
+| `context.build_seconds` | 3.792 | 2.667 |
+| `context.chunks` | 132 | 132 |
+| `context.effective_parallelism` | 8.702 | 12.37 |
+| `context.requests` | 132 | 132 |
+| `context.round_trip_seconds` | 0.25 | 0.25 |
+| `index.build_seconds` | 3.037 | 1.018 |
+| `index.chunks` | 889 | 889 |
+| `index.embed_round_trip_seconds` | 0.2 | 0.2 |
+| `live.build_seconds` | 28.73 | 21.77 |
+| `live.chunks` | 74 | 74 |
+| `live.chunks_with_context` | 74 | 74 |
+| `live.context_model` | gemma-4-26B-A4B-it | gemma-4-26B-A4B-it |
+| `live.endpoint` | https://gemma_4_26b.asia03.app.backend.ai/v1 | https://gemma_4_26b.asia03.app.backend.ai/v1 |
 | `live.requested_chunks` | 60 | 60 |
 | `retry.chunks` | 21 | 21 |
 | `retry.chunks_with_context` | 21 | 21 |
