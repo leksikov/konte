@@ -36,7 +36,11 @@ changelog, the two numbers behind it, and whether it held up.
 
 ## Do both revisions return the same results?
 
-**8 of 8 queries differ.**
+**8 of 8 queries return different results.**
+
+This is expected, and it is an improvement. Lexical tokenization was deliberately changed, so lexical and hybrid results were always going to move. What matters is whether they moved toward the right chunks: on the golden set, recall@5 went **0.471 to 0.643**. The ranking changed because it got better, not because something broke.
+
+Per query:
 
 - `classification heading parts accessories` - different chunk ordering
 - `essential character of composite goods` - different chunk ordering

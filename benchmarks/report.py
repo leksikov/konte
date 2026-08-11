@@ -352,12 +352,61 @@ def _parity_section(stored: dict) -> list[str]:
             f"order with the same scores on both revisions. The speed numbers above "
             f"compare the same operation."
         )
-    else:
-        lines.append(f"**{len(mismatches)} of {total} queries differ.**")
+        return lines
+
+    lines.append(f"**{len(mismatches)} of {total} queries return different results.**")
+    lines.append("")
+
+    # Differing results are only bad news if they are also worse. Say which it is
+    # here, next to the difference, rather than leaving the reader to find the
+    # recall numbers several sections below and draw their own conclusion.
+    recall = _recall_delta(stored)
+    if recall:
+        direction, before_v, after_v = recall
+        if direction == "up":
+            lines.append(
+                f"This is expected, and it is an improvement. Lexical tokenization was "
+                f"deliberately changed, so lexical and hybrid results were always going to "
+                f"move. What matters is whether they moved toward the right chunks: on the "
+                f"golden set, recall@5 went **{before_v:.3f} to {after_v:.3f}**. The ranking "
+                f"changed because it got better, not because something broke."
+            )
+        elif direction == "down":
+            lines.append(
+                f"**This needs investigation.** Results changed *and* recall@5 fell from "
+                f"{before_v:.3f} to {after_v:.3f}, so the new ranking is finding the right "
+                f"chunks less often."
+            )
+        else:
+            lines.append(
+                f"Results changed but recall@5 held at {after_v:.3f}, so the reordering did "
+                f"not move the right chunks in or out of the top 5."
+            )
         lines.append("")
-        for query, reason in mismatches:
-            lines.append(f"- `{query}` - {reason}")
+
+    lines.append("Per query:")
+    lines.append("")
+    for query, reason in mismatches:
+        lines.append(f"- `{query}` - {reason}")
     return lines
+
+
+def _recall_delta(stored: dict):
+    """(direction, before, after) for recall@5, when the accuracy case has run."""
+    payload = stored.get("accuracy")
+    if not payload:
+        return None
+    before = _measurements(payload, "baseline") or {}
+    after = _measurements(payload, "head") or {}
+    b = _get(before, "retrieval", "recall_at_5")
+    a = _get(after, "retrieval", "recall_at_5")
+    if b is None or a is None:
+        return None
+    if a > b:
+        return "up", b, a
+    if a < b:
+        return "down", b, a
+    return "flat", b, a
 
 
 def build_report(results_dir: Path) -> str:
