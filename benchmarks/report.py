@@ -255,7 +255,7 @@ CLAIMS = [
         lambda m: (_get(m, "live", "build_seconds"), _seconds),
     ),
     Claim(
-        "build_concurrency_live_gemma",
+        "build_concurrency_live_alt",
         "End-to-end build, second endpoint",
         "same change, an endpoint with stronger prefix caching",
         lambda m: (_get(m, "live", "build_seconds"), _seconds),
@@ -729,6 +729,7 @@ def _output_section(stored: dict) -> list[str]:
         return ["_No successful run on both revisions._"]
 
     lines: list[str] = []
+    names = _Pseudonyms()
 
     # --- segmentation and chunking -----------------------------------------
     cut_b, cut_a = before.get("chunking", {}), after.get("chunking", {})
@@ -875,7 +876,8 @@ def _output_section(stored: dict) -> list[str]:
             lines += [
                 "| | Before | After |",
                 "|---|---|---|",
-                f"| model | {b.get('model', '-')} | {a.get('model', '-')} |",
+                f"| model | {names.label('model', b.get('model'))} "
+                f"| {names.label('model', a.get('model'))} |",
                 f"| chunks used | {b.get('sources_used', '-')} | {a.get('sources_used', '-')} |",
                 f"| same evidence | {'yes' if b.get('retrieved') == a.get('retrieved') else 'NO'} | |",
                 "",
@@ -884,6 +886,43 @@ def _output_section(stored: dict) -> list[str]:
                 text = side.get("answer") or side.get("error") or "-"
                 lines += [f"_{label}:_", "", "> " + text.replace("\n", "\n> "), ""]
     return lines
+
+
+#: Measurement keys whose values name a model or a server. The report is
+#: committed to a public repository, so concrete identifiers are replaced with
+#: stable labels: which endpoint answered is what the comparison needs, and the
+#: vendor's name is not part of the finding. The raw values stay in the result
+#: JSON under benchmarks/results/, which is not tracked.
+_IDENTIFYING_KEYS = ("model", "context_model", "endpoint", "base_url")
+
+
+class _Pseudonyms:
+    """Assign each distinct model or endpoint a stable, neutral label."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, str] = {}
+
+    def label(self, kind: str, value) -> str:
+        if value in (None, "", "-"):
+            return "-"
+        text = str(value)
+        if text not in self._seen:
+            letter = chr(ord("A") + len(self._seen))
+            self._seen[text] = f"{kind} {letter}"
+        return self._seen[text]
+
+
+def _identifying(key: str) -> str | None:
+    """Return the label kind for a key that names a model or server."""
+    tail = key.rsplit(".", 1)[-1]
+    if tail in ("endpoint", "base_url"):
+        return "endpoint"
+    if tail in ("model", "context_model"):
+        return "model"
+    if tail == "source":
+        # A filter's source is a filename from the operator's own corpus.
+        return "source"
+    return None
 
 
 #: Fields too large to print, or already rendered elsewhere.
@@ -927,6 +966,7 @@ def _cell(value) -> str:
 def _detail_section(stored: dict) -> list[str]:
     """Every recorded number, side by side, for anything the table summarizes."""
     lines = []
+    names = _Pseudonyms()
     for case, payload in sorted(stored.items()):
         if payload.get("_aliased_from") or "runs" not in payload:
             continue  # superseded, or not a per-revision case result
@@ -936,7 +976,13 @@ def _detail_section(stored: dict) -> list[str]:
             continue
         lines += [f"### {case}", "", "| Measurement | Before | After |", "|---|---|---|"]
         for key in sorted(set(before) | set(after)):
-            lines.append(f"| `{key}` | {_cell(before.get(key))} | {_cell(after.get(key))} |")
+            kind = _identifying(key)
+            if kind:
+                b = names.label(kind, before.get(key))
+                a = names.label(kind, after.get(key))
+            else:
+                b, a = _cell(before.get(key)), _cell(after.get(key))
+            lines.append(f"| `{key}` | {b} | {a} |")
         lines.append("")
     return lines
 

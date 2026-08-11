@@ -183,7 +183,7 @@ Answer generation is sampled, so identical wording is not expected and not requi
 
 | | Before | After |
 |---|---|---|
-| model | Qwen3.6-35B-A3B | Qwen3.6-35B-A3B |
+| model | model A | model A |
 | chunks used | 5 | 5 |
 | same evidence | yes | |
 
@@ -222,7 +222,7 @@ _After:_
 
 | | Before | After |
 |---|---|---|
-| model | Qwen3.6-35B-A3B | Qwen3.6-35B-A3B |
+| model | model A | model A |
 | chunks used | 5 | 5 |
 | same evidence | yes | |
 
@@ -275,7 +275,7 @@ _After:_
 | accuracy_control | - | both revisions ok |
 | build_concurrency | chunks=21 | both revisions ok |
 | build_concurrency_live | chunks=21 | both revisions ok |
-| build_concurrency_live_gemma | chunks=21 | both revisions ok |
+| build_concurrency_live_alt | chunks=21 | both revisions ok |
 | checkpoint_io | requested_segments=100 | both revisions ok |
 | chunking | document=synthetic-500-chunks.md, characters=2083263, chunks_produced=553, segments_produced=50 | both revisions ok |
 | import_cost | - | both revisions ok |
@@ -313,7 +313,7 @@ _After:_
 | `retry.requests_resent` | 10 | 0 |
 | `retry.total_requests` | 34 | 24 |
 
-### build_concurrency_live_gemma
+### build_concurrency_live_alt
 
 | Measurement | Before | After |
 |---|---|---|
@@ -328,8 +328,8 @@ _After:_
 | `live.build_seconds` | 28.73 | 21.77 |
 | `live.chunks` | 74 | 74 |
 | `live.chunks_with_context` | 74 | 74 |
-| `live.context_model` | gemma-4-26B-A4B-it | gemma-4-26B-A4B-it |
-| `live.endpoint` | https://gemma_4_26b.asia03.app.backend.ai/v1 | https://gemma_4_26b.asia03.app.backend.ai/v1 |
+| `live.context_model` | model A | model A |
+| `live.endpoint` | endpoint B | endpoint B |
 | `live.requested_chunks` | 60 | 60 |
 | `retry.chunks` | 21 | 21 |
 | `retry.chunks_with_context` | 21 | 21 |
@@ -468,7 +468,7 @@ _After:_
 | Measurement | Before | After |
 |---|---|---|
 | `filter.matching_chunks` | 6,270 | 6,270 |
-| `filter.source` | 관세율표_용어_가이드_qwen3.md | 관세율표_용어_가이드_qwen3.md |
+| `filter.source` | source C | source C |
 | `filter.total_chunks` | 10,660 | 10,660 |
 | `filtered_query_ms.iqr` | 0.05202 | 0.01731 |
 | `filtered_query_ms.max` | 2.421 | 0.9647 |
