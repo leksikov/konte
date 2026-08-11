@@ -15,7 +15,8 @@ class TestSettings:
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
             from konte.config import Settings
 
-            s = Settings()
+            # _env_file=None so a developer's local .env cannot mask a default
+            s = Settings(_env_file=None)
             assert s.EMBEDDING_MODEL == "text-embedding-3-small"
             assert s.CONTEXT_MODEL == "gpt-4.1-mini"
             assert s.SEGMENT_SIZE == 8000
@@ -37,7 +38,7 @@ class TestSettings:
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
             from konte.config import Settings
 
-            s = Settings()
+            s = Settings(_env_file=None)
             assert 0 < s.KEYWORD_EXTRACTION_TIMEOUT <= 5.0
 
     def test_storage_path_expansion(self):
