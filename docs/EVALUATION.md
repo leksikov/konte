@@ -28,10 +28,10 @@ Same retrieval pipeline, different answer-generation models:
 
 | Model | HS Code (100 q) | Diverse RAG (70 q) |
 |-------|-----------------|---------------------|
-| **gpt-4.1** | **95.0% (0.950)** | **91.4% (0.816)** |
-| Qwen3-30B-A3B-Instruct | 89.0% (0.910) | 80.0% (0.797) |
+| **Hosted frontier model** | **95.0% (0.950)** | **91.4% (0.816)** |
+| Self-hosted 30B open-weight model | 89.0% (0.910) | 80.0% (0.797) |
 
-Key finding: the answer model matters more than prompt tuning — gpt-4.1 outperforms Qwen3-30B by +6% (HS code) and +11% (diverse questions) with an identical retrieval stack.
+Key finding: the answer model matters more than prompt tuning — the hosted frontier model outperforms the self-hosted 30B by +6% (HS code) and +11% (diverse questions) with an identical retrieval stack.
 
 ### Results by Question Type (Diverse RAG, 70 questions)
 

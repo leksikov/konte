@@ -348,7 +348,7 @@ response, answer = await project.query_with_answer(
 
 ### With Reranking
 
-Combine answer generation with reranking for better retrieval quality. Reranking requires a vLLM server exposing a `/score` endpoint (e.g. serving Qwen3-Reranker-8B), configured via `RERANKER_BASE_URL`:
+Combine answer generation with reranking for better retrieval quality. Reranking requires a vLLM server exposing a `/score` endpoint, configured via `RERANKER_BASE_URL`:
 
 ```python
 response, answer = await project.query_with_answer(
@@ -601,7 +601,7 @@ LLM_MODEL=your-model-name
 
 # Optional: reranker (vLLM-style /score endpoint), required only for rerank=True
 RERANKER_BASE_URL=https://your-endpoint/v1
-RERANKER_MODEL=Qwen3-Reranker-8B
+RERANKER_MODEL=your-reranker-model
 ```
 
 ## Examples
