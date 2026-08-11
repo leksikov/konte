@@ -14,9 +14,9 @@ changelog, the two numbers behind it, and whether it held up.
 | Lexical index file | ~25 MB -> ~2 MB at 20k chunks | 13.4 MB | 2.9 MB | -78.3% | confirmed |
 | Duplicated corpus file (bm25_chunks.json) | removed | 9.2 MB | - | - | confirmed, gone |
 | Project directory as a multiple of its text | 4.97x -> 2.94x | 6.27x | 3.77x | -39.8% | confirmed |
-| Project directory as a multiple of its text, non-ASCII | 4.97x -> 2.94x | None | None | - | unmeasured |
-| Project directory size, non-ASCII corpus | not claimed; JSON stopped escaping non-ASCII | None | None | - | unmeasured |
-| Corpus JSON, non-ASCII text | not claimed; was pretty-printed and escaped | None | None | - | unmeasured |
+| Project directory as a multiple of its text, non-ASCII | 4.97x -> 2.94x | 10.07x | 5.09x | -49.5% | confirmed |
+| Project directory size, non-ASCII corpus | not claimed; JSON stopped escaping non-ASCII | 47.8 MB | 24.2 MB | -49.5% | confirmed |
+| Corpus JSON, non-ASCII text | not claimed; was pretty-printed and escaped | 9.8 MB | 5.8 MB | -40.4% | confirmed |
 | Opening a project | indexes only; corpus parsed on first use | 860.46 ms | 396.35 ms | -53.9% | confirmed |
 | Per-request project lookup | ~330 ms reopen -> a dictionary lookup | 926.11 ms | 0.03 ms | -100.0% | confirmed |
 | Unfiltered lexical query, steady state | 84 ms -> 68 ms at 100k chunks | 18.52 ms | 0.42 ms | -97.7% | confirmed |
@@ -24,8 +24,8 @@ changelog, the two numbers behind it, and whether it held up.
 | Peak memory holding a lexical project | not claimed; a consequence of storing the corpus once | 8,028 MB | 1,663 MB | -79.3% | confirmed |
 | Filtered vector query, steady state | 16-42 ms -> 0.05-0.4 ms of id selection at 100k chunks | 2.29 ms | 0.97 ms | -57.8% | confirmed |
 | First filtered query | builds the postings once | 2.56 ms | 47.77 ms | +1763.4% | one-off cost, by design |
-| Query cost against a stalled endpoint | ~360 s -> 5 s | None | None | - | unmeasured |
-| Requests for 8 repeats of one query | cached after the first | None | None | - | unmeasured |
+| Query cost against a stalled endpoint | ~360 s -> 5 s | 361.4 s | 5.1 s | -98.6% | confirmed |
+| Requests for 8 repeats of one query | cached after the first | 8 | 1 | -87.5% | confirmed |
 | Requests resent by a single rate limit | the whole segment -> the one chunk | None | None | - | unmeasured |
 | Chunks losing their context when one chunk exhausts its retries | the whole segment -> the one chunk | None | None | - | unmeasured |
 | Context generation wall-clock | segments overlap under one ceiling | None | None | - | unmeasured |
@@ -293,12 +293,14 @@ _After:_
 | checkpoint_io | requested_segments=100 | both revisions ok |
 | chunking | document=synthetic-500-chunks.md, characters=2083263, chunks_produced=553, segments_produced=50 | both revisions ok |
 | import_cost | - | both revisions ok |
+| keyword_extraction | - | both revisions ok |
 | open_cache | project=all_tariff_documents | both revisions ok |
 | output_parity | project=wco_korean_feb2026 | both revisions ok |
 | query_bm25 | requested_chunks=20000, queries=200 | both revisions ok |
 | query_faiss_filter | project=all_tariff_documents | both revisions ok |
 | retrieval_parity | requested_chunks=2000 | both revisions ok |
 | storage_size | document=synthetic-2000-chunks.md, requested_chunks=2000, source_text_bytes=8319205 | both revisions ok |
+| storage_size_korean | document=excerpt-2000-chunks.md, requested_chunks=2000, source_text_bytes=4982686 | both revisions ok |
 
 ## Measurements in full
 
@@ -349,6 +351,25 @@ _After:_
 | `warm_import_ms.min` | 635 | 536.8 |
 | `warm_import_ms.n` | 7 | 7 |
 | `warm_import_ms.p95` | 652.9 | 550.6 |
+
+### keyword_extraction
+
+| Measurement | Before | After |
+|---|---|---|
+| `cache.distinct_queries.calls` | 8 | 8 |
+| `cache.distinct_queries.requests_sent` | 8 | 8 |
+| `cache.repeated_query.calls` | 8 | 8 |
+| `cache.repeated_query.latency_ms.iqr` | 1.081 | 0.001146 |
+| `cache.repeated_query.latency_ms.max` | 37.93 | 35.83 |
+| `cache.repeated_query.latency_ms.median` | 2.658 | 0.000375 |
+| `cache.repeated_query.latency_ms.min` | 2.105 | 0.0002091 |
+| `cache.repeated_query.latency_ms.n` | 8 | 8 |
+| `cache.repeated_query.latency_ms.p95` | 37.93 | 35.83 |
+| `cache.repeated_query.requests_sent` | 8 | 1 |
+| `has_extraction_cache` | False | True |
+| `stalled_endpoint.fell_back_to_tokenization` | True | True |
+| `stalled_endpoint.requests_sent` | 3 | 1 |
+| `stalled_endpoint.seconds_until_fallback` | 361.4 | 5.128 |
 
 ### open_cache
 
@@ -456,4 +477,20 @@ _After:_
 | `files.segments.json` | 9,196,301 | 9,195,899 |
 | `project_dir_bytes` | 52,149,527 | 31,379,274 |
 | `project_dir_multiple_of_text` | 6.269 | 3.772 |
+
+### storage_size_korean
+
+| Measurement | Before | After |
+|---|---|---|
+| `corpus.document` | excerpt-2000-chunks.md | excerpt-2000-chunks.md |
+| `corpus.requested_chunks` | 2,000 | 2,000 |
+| `corpus.source_text_bytes` | 4,982,686 | 4,982,686 |
+| `files.bm25.pkl` | 10,274,769 | 7,671,382 |
+| `files.bm25_chunks.json` | 10,132,960 | - |
+| `files.chunks.json` | 10,270,834 | 6,124,658 |
+| `files.config.json` | 432 | 374 |
+| `files.raw_chunks.json` | 10,142,810 | 6,060,646 |
+| `files.segments.json` | 9,337,998 | 5,487,104 |
+| `project_dir_bytes` | 50,159,803 | 25,344,164 |
+| `project_dir_multiple_of_text` | 10.07 | 5.086 |
 
