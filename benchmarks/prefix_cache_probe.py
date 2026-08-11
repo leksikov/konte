@@ -89,10 +89,7 @@ async def probe(label: str, base_url: str | None, model: str, api_key: str) -> d
 
     start = time.perf_counter()
     concurrent_distinct = await asyncio.gather(
-        *(
-            _call(client, model, _prefix(f"{stamp}-d{i}"), f"\n청크 {i}")
-            for i in range(REQUESTS)
-        )
+        *(_call(client, model, _prefix(f"{stamp}-d{i}"), f"\n청크 {i}") for i in range(REQUESTS))
     )
     wall_distinct = time.perf_counter() - start
 

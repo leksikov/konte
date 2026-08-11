@@ -221,9 +221,7 @@ def scratch_root() -> Path:
     Deliberately outside the repository and outside real project storage; the
     scale tiers run to tens of gigabytes.
     """
-    root = Path(
-        os.environ.get("KONTE_BENCH_SCRATCH", Path(tempfile.gettempdir()) / "konte-bench")
-    )
+    root = Path(os.environ.get("KONTE_BENCH_SCRATCH", Path(tempfile.gettempdir()) / "konte-bench"))
     root.mkdir(parents=True, exist_ok=True)
     return root
 

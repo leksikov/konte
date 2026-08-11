@@ -101,9 +101,7 @@ def _top_k(project, query: str, mode: str) -> list[dict]:
 def _retrieval(project, pinned: bool) -> dict:
     if pinned:
         pin_keyword_extraction()
-    return {
-        query: {mode: _top_k(project, query, mode) for mode in MODES} for query in QUERIES
-    }
+    return {query: {mode: _top_k(project, query, mode) for mode in MODES} for query in QUERIES}
 
 
 def _answers(project) -> dict:

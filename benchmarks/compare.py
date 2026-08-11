@@ -57,9 +57,7 @@ def run_pair(
         for revision in REVISIONS:
             started = time.time()
             print(f"  [{case}] trial {trial + 1}/{trials} {revision} ...", flush=True)
-            result = run_case(
-                case, revision, timeout=timeout, options=options, overrides=overrides
-            )
+            result = run_case(case, revision, timeout=timeout, options=options, overrides=overrides)
             result["wall_seconds"] = time.time() - started
             runs[revision].append(result)
             status = result.get("status")

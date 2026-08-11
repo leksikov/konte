@@ -273,8 +273,6 @@ _After:_
 |---|---|---|
 | accuracy | - | both revisions ok |
 | accuracy_control | - | both revisions ok |
-| accuracy_control_scored | - | incomplete |
-| accuracy_scored | - | incomplete |
 | build_concurrency | chunks=21 | both revisions ok |
 | build_concurrency_live | chunks=21 | both revisions ok |
 | build_concurrency_live_gemma | chunks=21 | both revisions ok |
@@ -284,7 +282,6 @@ _After:_
 | keyword_extraction | - | both revisions ok |
 | open_cache | project=all_tariff_documents | both revisions ok |
 | output_parity | project=wco_korean_feb2026 | both revisions ok |
-| prefix_cache | - | incomplete |
 | query_bm25 | requested_chunks=20000, queries=200 | both revisions ok |
 | query_faiss_filter | project=all_tariff_documents | both revisions ok |
 | retrieval_parity | requested_chunks=2000 | both revisions ok |

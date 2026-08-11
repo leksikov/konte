@@ -185,7 +185,10 @@ CLAIMS = [
         "query_bm25",
         "Peak memory holding a lexical project",
         "not claimed; a consequence of storing the corpus once",
-        lambda m: (_get(m, "rss_mb", "after_first_query"), lambda v: "-" if v is None else f"{v:,.0f} MB"),
+        lambda m: (
+            _get(m, "rss_mb", "after_first_query"),
+            lambda v: "-" if v is None else f"{v:,.0f} MB",
+        ),
     ),
     Claim(
         "query_faiss_filter",
@@ -371,7 +374,14 @@ def build_report(results_dir: Path) -> str:
         before, fmt = claim.extract(before_m)
         after, _ = claim.extract(after_m)
         rows.append(
-            (claim, before, after, _verdict(before, after, claim.direction), _change(before, after), fmt)
+            (
+                claim,
+                before,
+                after,
+                _verdict(before, after, claim.direction),
+                _change(before, after),
+                fmt,
+            )
         )
 
     lines = [
@@ -445,11 +455,7 @@ def _prefix_cache_section(stored: dict) -> list[str]:
         shared = result.get("concurrent_shared") or {}
         distinct = result.get("concurrent_distinct") or {}
         cold, warm = seq.get("first_s"), seq.get("rest_median_s")
-        speedup = (
-            distinct.get("wall_s") / shared["wall_s"]
-            if shared.get("wall_s")
-            else None
-        )
+        speedup = distinct.get("wall_s") / shared["wall_s"] if shared.get("wall_s") else None
         lines.append(
             f"| {label} | {cold:.2f}s cold -> {warm:.2f}s warm | {shared.get('wall_s', 0):.2f}s "
             f"| {distinct.get('wall_s', 0):.2f}s | "
@@ -634,7 +640,9 @@ def _accuracy_section(stored: dict) -> list[str]:
         lines.append(f"| {label} | {fmt(b)} | {fmt(a)} | {_change(b, a)} |")
     lines.append("")
 
-    gb = {g["question"]: g for g in _get(scored, "revisions", "baseline", "graded", default=[]) or []}
+    gb = {
+        g["question"]: g for g in _get(scored, "revisions", "baseline", "graded", default=[]) or []
+    }
     ga = {g["question"]: g for g in _get(scored, "revisions", "head", "graded", default=[]) or []}
 
     # Same evidence in, different answer out, is the generator sampling - not a
@@ -651,7 +659,9 @@ def _accuracy_section(stored: dict) -> list[str]:
         and gb[q]["score"] != ga[q]["score"]
     ]
     same_evidence = [
-        q for q in moved_scores if rb_q.get(q, {}).get("retrieved") == ra_q.get(q, {}).get("retrieved")
+        q
+        for q in moved_scores
+        if rb_q.get(q, {}).get("retrieved") == ra_q.get(q, {}).get("retrieved")
     ]
     if moved_scores:
         lines += [
@@ -741,7 +751,10 @@ def _output_section(stored: dict) -> list[str]:
         "",
     ]
     if chunk_b != chunk_a:
-        lines += ["| chunk | before sha | after sha | before tokens | after tokens |", "|---|---|---|---|---|"]
+        lines += [
+            "| chunk | before sha | after sha | before tokens | after tokens |",
+            "|---|---|---|---|---|",
+        ]
         for i in range(max(len(chunk_b), len(chunk_a))):
             cb = cut_b["chunks"][i] if i < len(chunk_b) else {}
             ca = cut_a["chunks"][i] if i < len(chunk_a) else {}
@@ -753,7 +766,12 @@ def _output_section(stored: dict) -> list[str]:
         lines.append("")
     else:
         sample = cut_b.get("chunks", [])[:5]
-        lines += ["First chunks, identical on both revisions:", "", "| chunk | tokens | starts |", "|---|---|---|"]
+        lines += [
+            "First chunks, identical on both revisions:",
+            "",
+            "| chunk | tokens | starts |",
+            "|---|---|---|",
+        ]
         for chunk in sample:
             head = chunk["head"].replace("\n", " ").replace("|", "\\|")
             lines.append(f"| `{chunk['chunk_id']}` | {chunk['tokens']} | {head}... |")
@@ -777,7 +795,14 @@ def _output_section(stored: dict) -> list[str]:
         rb, ra = before.get(key), after.get(key)
         if not isinstance(rb, dict) or not isinstance(ra, dict):
             continue
-        lines += [f"### {title}", "", note, "", "| Query | Mode | Top-k identical | Overlap |", "|---|---|---|---|"]
+        lines += [
+            f"### {title}",
+            "",
+            note,
+            "",
+            "| Query | Mode | Top-k identical | Overlap |",
+            "|---|---|---|---|",
+        ]
         for query in rb:
             for mode, hits_b in (rb.get(query) or {}).items():
                 hits_a = (ra.get(query) or {}).get(mode) or []
@@ -791,7 +816,10 @@ def _output_section(stored: dict) -> list[str]:
 
         example = next(iter(rb), None)
         if example:
-            lines += [f"Top-{len(rb[example].get('hybrid', []))} hybrid results for `{example}`:", ""]
+            lines += [
+                f"Top-{len(rb[example].get('hybrid', []))} hybrid results for `{example}`:",
+                "",
+            ]
             lines += ["| # | Before | After |", "|---|---|---|"]
             hb = (rb[example] or {}).get("hybrid") or []
             ha = (ra.get(example) or {}).get("hybrid") or []
@@ -931,8 +959,9 @@ def _notes_section(stored: dict) -> list[str]:
     """Caveats that the table alone would misrepresent."""
     notes = []
 
-    chunking = _measurements(stored.get("chunking", {}), "baseline"), _measurements(
-        stored.get("chunking", {}), "head"
+    chunking = (
+        _measurements(stored.get("chunking", {}), "baseline"),
+        _measurements(stored.get("chunking", {}), "head"),
     )
     if all(chunking):
         before, after = (_get(m, "first_build", "tokenizer_encode_calls") for m in chunking)
@@ -945,8 +974,9 @@ def _notes_section(stored: dict) -> list[str]:
                 f"is splitter reuse, not tokenizer calls."
             )
 
-    faiss = _measurements(stored.get("query_faiss_filter", {}), "baseline"), _measurements(
-        stored.get("query_faiss_filter", {}), "head"
+    faiss = (
+        _measurements(stored.get("query_faiss_filter", {}), "baseline"),
+        _measurements(stored.get("query_faiss_filter", {}), "head"),
     )
     if all(faiss):
         before_steady = _get(faiss[0], "filtered_query_ms", "median")
@@ -965,8 +995,9 @@ def _notes_section(stored: dict) -> list[str]:
                     f"not faster."
                 )
 
-    bm25 = _measurements(stored.get("query_bm25", {}), "baseline"), _measurements(
-        stored.get("query_bm25", {}), "head"
+    bm25 = (
+        _measurements(stored.get("query_bm25", {}), "baseline"),
+        _measurements(stored.get("query_bm25", {}), "head"),
     )
     if all(bm25):
         notes.append(
@@ -976,8 +1007,9 @@ def _notes_section(stored: dict) -> list[str]:
             "or answers only vector queries, and never touches the lexical corpus at all."
         )
 
-    live = _measurements(stored.get("build_concurrency_live", {}), "baseline"), _measurements(
-        stored.get("build_concurrency_live", {}), "head"
+    live = (
+        _measurements(stored.get("build_concurrency_live", {}), "baseline"),
+        _measurements(stored.get("build_concurrency_live", {}), "head"),
     )
     if all(live):
         got = [(_get(m, "live", "chunks_with_context") or 0) for m in live]

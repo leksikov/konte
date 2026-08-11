@@ -60,14 +60,19 @@ def _measure_retry(ctx: Context) -> dict:
     # retry budget. Below that threshold the client absorbs the 429 silently and
     # konte's retry path never runs at all - which is what makes a naive
     # "fail one request once" probe show no difference between the revisions.
-    with stub_endpoint(rate_limit_nth_prompt=4, rate_limit_attempts=3) as (
-        base_url,
-        state,
-    ), point_llm_at(base_url, MODEL_NAME):
+    with (
+        stub_endpoint(rate_limit_nth_prompt=4, rate_limit_attempts=3) as (
+            base_url,
+            state,
+        ),
+        point_llm_at(base_url, MODEL_NAME),
+    ):
         project = build_project(name, storage, document, enable_faiss=False, skip_context=False)
 
     chunks = len(getattr(project, "_contextualized_chunks", []) or [])
-    with_context = sum(1 for chunk in (getattr(project, "_contextualized_chunks", []) or []) if chunk.context)
+    with_context = sum(
+        1 for chunk in (getattr(project, "_contextualized_chunks", []) or []) if chunk.context
+    )
     return {
         "chunks": chunks,
         "chunks_with_context": with_context,
@@ -87,9 +92,7 @@ def _measure_context(ctx: Context) -> dict:
     name = "overlap_build"
     _fresh(storage, name)
 
-    with stub_endpoint(latency=ROUND_TRIP) as (base_url, state), point_llm_at(
-        base_url, MODEL_NAME
-    ):
+    with stub_endpoint(latency=ROUND_TRIP) as (base_url, state), point_llm_at(base_url, MODEL_NAME):
         start = time.perf_counter()
         project = build_project(name, storage, document, enable_faiss=False, skip_context=False)
         seconds = time.perf_counter() - start

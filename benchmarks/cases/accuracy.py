@@ -128,9 +128,7 @@ def run(ctx: Context) -> dict:
     for golden in goldens[:answer_limit]:
         question = golden.get("input") or ""
         try:
-            _, generated = asyncio.run(
-                project.query_with_answer(question, mode=mode, max_chunks=5)
-            )
+            _, generated = asyncio.run(project.query_with_answer(question, mode=mode, max_chunks=5))
             answers.append(
                 {
                     "question": question,

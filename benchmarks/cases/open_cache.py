@@ -61,8 +61,7 @@ def run(ctx: Context) -> dict:
     # perform the very work it is trying to detect and always answer "yes".
     instance = vars(project)
     corpus_parsed_at_open = {
-        name: name in instance
-        for name in ("_chunks", "_segments", "_contextualized_chunks")
+        name: name in instance for name in ("_chunks", "_segments", "_contextualized_chunks")
     }
 
     start = time.perf_counter()
