@@ -406,6 +406,10 @@ def build_report(results_dir: Path) -> str:
 
     lines += ["", "## Run detail", "", "| Case | Scale | Status |", "|---|---|---|"]
     for case, payload in sorted(stored.items()):
+        # Judge output and endpoint probes live alongside case results but are
+        # not per-revision runs; listing them here would report them "incomplete".
+        if "runs" not in payload:
+            continue
         before_m = _measurements(payload, "baseline")
         after_m = _measurements(payload, "head")
         detail = _scale_of(before_m or {})
@@ -896,8 +900,8 @@ def _detail_section(stored: dict) -> list[str]:
     """Every recorded number, side by side, for anything the table summarizes."""
     lines = []
     for case, payload in sorted(stored.items()):
-        if payload.get("_aliased_from"):
-            continue  # already printed under the run that superseded it
+        if payload.get("_aliased_from") or "runs" not in payload:
+            continue  # superseded, or not a per-revision case result
         before = _flatten(_measurements(payload, "baseline") or {})
         after = _flatten(_measurements(payload, "head") or {})
         if not before and not after:
