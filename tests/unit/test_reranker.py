@@ -51,6 +51,31 @@ class TestRerankerConfiguration:
         with pytest.raises(ValueError, match="RERANKER_BASE_URL"):
             await rerank_chunks_with_score("query", sample_chunks)
 
+    async def test_rerank_without_model_raises(self, sample_chunks, monkeypatch):
+        """A configured endpoint with no model raises instead of guessing one."""
+        monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", None)
+
+        with pytest.raises(ValueError, match="RERANKER_MODEL"):
+            await rerank_chunks_with_score("query", sample_chunks)
+
+    async def test_explicit_model_works_without_the_setting(self, sample_chunks, monkeypatch):
+        """An explicit model= is sufficient on its own, and is what gets sent."""
+        monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", None)
+        sent = []
+
+        async def score(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
+            sent.append(model)
+            return (idx, 0.5)
+
+        with patch("konte.stores.reranker._score_single_chunk", side_effect=score):
+            outcome = await rerank_chunks_with_score("query", sample_chunks, model="explicit-model")
+
+        assert outcome.scored is True
+        assert len(outcome.results) == 3
+        assert set(sent) == {"explicit-model"}
+
     async def test_rerank_empty_chunks_returns_empty(self, monkeypatch):
         """Empty input returns empty output without touching the endpoint."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", None)
@@ -65,6 +90,7 @@ class TestRerankerFailureModes:
     async def test_all_requests_failed_falls_back_to_original(self, sample_chunks, monkeypatch):
         """If every score request fails, original order and scores are kept."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", "test-reranker")
 
         async def fail_all(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
             return (idx, None)
@@ -79,6 +105,7 @@ class TestRerankerFailureModes:
     async def test_partial_failure_scores_failed_chunk_zero(self, sample_chunks, monkeypatch):
         """A single failed request scores 0.0; the rest rerank normally."""
         monkeypatch.setattr(settings, "RERANKER_BASE_URL", "https://example.com/v1")
+        monkeypatch.setattr(settings, "RERANKER_MODEL", "test-reranker")
 
         async def fail_first(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
             if idx == 0:

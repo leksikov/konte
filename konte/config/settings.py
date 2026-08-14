@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Reranker (optional - requires a vLLM server exposing a /score endpoint)
     RERANKER_BASE_URL: str | None = None
-    RERANKER_MODEL: str = "Qwen3-Reranker-8B"
+    RERANKER_MODEL: str | None = None
     RERANKER_VERIFY_SSL: bool = True
 
     # Storage

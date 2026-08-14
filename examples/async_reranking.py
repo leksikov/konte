@@ -9,10 +9,10 @@ Demonstrates:
 
 Requires: OPENAI_API_KEY or LLM_BASE_URL configured.
 Reranking additionally requires RERANKER_BASE_URL pointing at a vLLM server
-that exposes a /score endpoint (e.g. serving Qwen3-Reranker-8B):
+that exposes a /score endpoint:
 
-    RERANKER_BASE_URL=https://your-vllm-endpoint/v1
-    RERANKER_MODEL=Qwen3-Reranker-8B
+    RERANKER_BASE_URL=https://your-endpoint/v1
+    RERANKER_MODEL=your-reranker-model
 """
 
 import asyncio
@@ -126,8 +126,8 @@ async def main():
         for i, r in enumerate(response_standard.results[:5], 1):
             print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
 
-        if not settings.RERANKER_BASE_URL:
-            print("\nSkipping reranking demo: RERANKER_BASE_URL is not set.")
+        if not (settings.RERANKER_BASE_URL and settings.RERANKER_MODEL):
+            print("\nSkipping reranking demo: RERANKER_BASE_URL/RERANKER_MODEL are not set.")
             print("See the module docstring for how to configure a reranker endpoint.")
             return
 

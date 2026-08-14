@@ -1,4 +1,4 @@
-"""Reranker module using a vLLM /score endpoint (e.g. Qwen3-Reranker-8B)."""
+"""Reranker module using a vLLM /score endpoint."""
 
 import asyncio
 from typing import NamedTuple
@@ -101,7 +101,8 @@ async def rerank_chunks_with_score(
         query: The search query.
         chunks: List of (chunk, score) tuples from initial retrieval.
         top_k: Number of top results to return. Defaults to len(chunks).
-        model: Reranker model name. Defaults to settings.RERANKER_MODEL.
+        model: Reranker model name. Defaults to settings.RERANKER_MODEL,
+            which must then be configured.
         concurrency: Max concurrent score requests.
 
     Returns:
@@ -113,13 +114,18 @@ async def rerank_chunks_with_score(
         scored.
 
     Raises:
-        ValueError: If RERANKER_BASE_URL is not configured.
+        ValueError: If RERANKER_BASE_URL or the reranker model is not configured.
     """
     if not chunks:
         return RerankOutcome([], False)
 
     score_endpoint = _resolve_score_endpoint()
     reranker_model = model or settings.RERANKER_MODEL
+    if not reranker_model:
+        raise ValueError(
+            "Reranking requires a model name. Set RERANKER_MODEL to the model "
+            "your /score endpoint serves, or pass model= explicitly."
+        )
     k = top_k or len(chunks)
     semaphore = asyncio.Semaphore(concurrency)
 

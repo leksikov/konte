@@ -29,9 +29,11 @@ Same retrieval pipeline, different answer-generation models:
 | Model | HS Code (100 q) | Diverse RAG (70 q) |
 |-------|-----------------|---------------------|
 | **gpt-4.1** | **95.0% (0.950)** | **91.4% (0.816)** |
-| Qwen3-30B-A3B-Instruct | 89.0% (0.910) | 80.0% (0.797) |
+| Self-hosted 30B-A3B instruct model | 89.0% (0.910) | 80.0% (0.797) |
 
-Key finding: the answer model matters more than prompt tuning — gpt-4.1 outperforms Qwen3-30B by +6% (HS code) and +11% (diverse questions) with an identical retrieval stack.
+Key finding: the answer model matters more than prompt tuning — gpt-4.1 outperforms the self-hosted 30B by +6% (HS code) and +11% (diverse questions) with an identical retrieval stack.
+
+The self-hosted model is described by its architecture rather than named because it ran on an internal endpoint that is not public; the exact identifier is recorded with the run rather than in this repository. Reproducing the comparison needs only the retrieval settings above and any 30B-class instruct model behind `LLM_BASE_URL`.
 
 ### Results by Question Type (Diverse RAG, 70 questions)
 

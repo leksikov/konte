@@ -33,7 +33,7 @@ async def main():
     )
 
     print(answer.answer)        # LLM-generated answer
-    print(answer.model)         # e.g., "Qwen3-VL-8B-Instruct"
+    print(answer.model)         # Model that generated the answer
     print(answer.sources_used)  # Number of chunks used
 
 asyncio.run(main())
@@ -112,7 +112,7 @@ the answer is good enough.
 response, answer = await project.query_with_answer(query)
 
 answer.answer        # LLM-generated answer text
-answer.model         # Model used (e.g., "Qwen3-VL-8B-Instruct")
+answer.model         # Model that generated the answer
 answer.sources_used  # Number of chunks used for generation
 ```
 
