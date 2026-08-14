@@ -348,7 +348,7 @@ response, answer = await project.query_with_answer(
 
 ### With Reranking
 
-Combine answer generation with reranking for better retrieval quality. Reranking requires a vLLM server exposing a `/score` endpoint, configured via `RERANKER_BASE_URL`:
+Combine answer generation with reranking for better retrieval quality. Reranking requires a vLLM server exposing a `/score` endpoint, configured via `RERANKER_BASE_URL` and `RERANKER_MODEL` (the model that endpoint serves — both are required, and `rerank=True` raises without them):
 
 ```python
 response, answer = await project.query_with_answer(
