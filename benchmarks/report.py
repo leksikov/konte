@@ -184,7 +184,7 @@ CLAIMS = [
     ),
     Claim(
         "query_bm25",
-        "Peak memory holding a lexical project",
+        "Memory held by an open lexical project",
         "not claimed; a consequence of storing the corpus once",
         lambda m: (
             _get(m, "rss_mb", "after_first_query"),
@@ -1095,16 +1095,14 @@ def _trial_count(payload: dict) -> int:
 
 
 def _identifying(key: str) -> str | None:
-    """Return the label kind for a key that names a model or server."""
-    tail = key.rsplit(".", 1)[-1]
-    if tail in ("endpoint", "base_url"):
-        return "endpoint"
-    if tail in ("model", "context_model"):
-        return "model"
-    if tail == "source":
-        # A filter's source is a filename from the operator's own corpus.
-        return "source"
-    return None
+    """Return the label kind for a flattened key that names an identifier.
+
+    Reads the same table `_harvest_identifiers` walks, so there is one answer to
+    "is this an identifier" rather than two that can drift apart - which is how
+    project names and corpus filenames reached a report that claimed to
+    pseudonymize them.
+    """
+    return _IDENTIFYING_TAILS.get(key.rsplit(".", 1)[-1])
 
 
 #: Fields too large to print, or already rendered elsewhere.
