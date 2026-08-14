@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -289,12 +290,44 @@ def _load(results_dir: Path) -> dict[str, dict]:
     return stored
 
 
+def _merge_trials(runs: list[dict]) -> dict:
+    """Combine repeated trials of one case into a single set of measurements.
+
+    Every numeric leaf that all trials recorded becomes the median across them;
+    strings, lists, and keys some trial is missing are taken from the first.
+    Reading only the first trial would make `--trials 5` cost five times the
+    wall-clock and change nothing it reports, which is worse than not offering
+    the flag.
+    """
+    first = runs[0]
+    merged: dict = {}
+    for key, value in first.items():
+        others = [run[key] for run in runs[1:] if key in run]
+        if len(others) != len(runs) - 1:
+            merged[key] = value
+        elif isinstance(value, dict) and all(isinstance(other, dict) for other in others):
+            merged[key] = _merge_trials([value, *others])
+        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+            merged[key] = value
+        elif all(isinstance(o, (int, float)) and not isinstance(o, bool) for o in others):
+            merged[key] = statistics.median([value, *others])
+        else:
+            merged[key] = value
+    return merged
+
+
 def _measurements(payload: dict, revision: str) -> dict | None:
     runs = _get(payload, "runs", revision, default=[]) or []
-    for run in runs:
-        if run.get("status") == "ok":
-            return run.get("measurements") or {}
-    return None
+    ok = [run.get("measurements") or {} for run in runs if run.get("status") == "ok"]
+    if not ok:
+        return None
+    return ok[0] if len(ok) == 1 else _merge_trials(ok)
+
+
+def _answers(stored: dict, revision: str) -> list[dict]:
+    """The generated answers a revision's accuracy run recorded."""
+    measurements = _measurements(stored.get("accuracy", {}), revision) or {}
+    return [a for a in (measurements.get("answers") or []) if a.get("question")]
 
 
 def _verdict(before, after, direction: str) -> str:
@@ -411,6 +444,11 @@ def _recall_delta(stored: dict):
 
 def build_report(results_dir: Path) -> str:
     stored = _load(results_dir)
+    # One instance for the whole report, so "model A" means the same model in
+    # every section, and so the final scrub knows every identifier the results
+    # carry - including ones no section prints directly.
+    names = _Pseudonyms()
+    _harvest_identifiers(stored, names)
 
     rows = []
     for claim in CLAIMS:
@@ -458,7 +496,7 @@ def build_report(results_dir: Path) -> str:
     lines += _accuracy_section(stored)
 
     lines += ["", "## Segments, chunks, retrieval and answers", ""]
-    lines += _output_section(stored)
+    lines += _output_section(stored, names)
 
     lines += ["", "## Reading these numbers", ""]
     lines += _notes_section(stored)
@@ -473,13 +511,24 @@ def build_report(results_dir: Path) -> str:
         after_m = _measurements(payload, "head")
         detail = _scale_of(before_m or {})
         status = "both revisions ok" if before_m and after_m else "incomplete"
+        skipped = {
+            revision
+            for revision in ("baseline", "head")
+            for run in _get(payload, "runs", revision, default=[]) or []
+            if run.get("status") == "skipped"
+        }
+        if skipped:
+            status = f"skipped on {', '.join(sorted(skipped))}"
+        trials = _trial_count(payload)
+        if trials > 1:
+            detail = f"{detail}, {trials} trials"
         lines.append(f"| {case} | {detail} | {status} |")
 
     lines += ["", "## Measurements in full", ""]
-    lines += _detail_section(stored)
+    lines += _detail_section(stored, names)
 
     lines.append("")
-    return "\n".join(lines)
+    return names.scrub("\n".join(lines))
 
 
 def _prefix_cache_section(stored: dict) -> list[str]:
@@ -608,9 +657,10 @@ def _accuracy_section(stored: dict) -> list[str]:
 
     goldens = before.get("goldens") or {}
     lines = [
-        f"Golden set: `{Path(str(goldens.get('path', '?'))).name}` - "
-        f"{goldens.get('count', 0)} questions, {goldens.get('with_ground_truth', 0)} with "
-        f"ground-truth context.",
+        f"Golden set: {goldens.get('count', 0)} questions, "
+        f"{goldens.get('with_ground_truth', 0)} with ground-truth context. The file is named "
+        f"in `benchmarks/results/accuracy.json`, which is untracked - it is the operator's "
+        f"own evaluation data, not part of this repository.",
         "",
         "### Retrieval accuracy",
         "",
@@ -694,11 +744,14 @@ def _accuracy_section(stored: dict) -> list[str]:
     }
     ga = {g["question"]: g for g in _get(scored, "revisions", "head", "graded", default=[]) or []}
 
-    # Same evidence in, different answer out, is the generator sampling - not a
-    # retrieval or ranking change. Stated with the retrieval data rather than
-    # asserted, because it is the whole basis for reading a score gap as noise.
-    rb_q = {q["question"]: q for q in rb.get("per_question") or []}
-    ra_q = {q["question"]: q for q in ra.get("per_question") or []}
+    # Whether two answers came from the same evidence has to be read off the
+    # retrieval each answer was actually generated from - recorded with the
+    # answer - and not off the standalone retrieval pass, which is a separate
+    # query and can select different chunks on the revision without an
+    # extraction cache. Older result files have no such record; the comparison
+    # is then unavailable, which is stated rather than approximated.
+    eb = {a["question"]: a.get("evidence") for a in _answers(stored, "baseline")}
+    ea = {a["question"]: a.get("evidence") for a in _answers(stored, "head")}
     moved_scores = [
         q
         for q in gb
@@ -707,17 +760,22 @@ def _accuracy_section(stored: dict) -> list[str]:
         and isinstance(ga[q].get("score"), (int, float))
         and gb[q]["score"] != ga[q]["score"]
     ]
-    same_evidence = [
-        q
-        for q in moved_scores
-        if rb_q.get(q, {}).get("retrieved") == ra_q.get(q, {}).get("retrieved")
-    ]
-    if moved_scores:
+    comparable = [q for q in moved_scores if eb.get(q) is not None and ea.get(q) is not None]
+    same_evidence = [q for q in comparable if eb[q] == ea[q]]
+    if moved_scores and not comparable:
         lines += [
-            f"{len(moved_scores)} of {len(gb)} answers scored differently, and "
-            f"{len(same_evidence)} of those {len(moved_scores)} were generated from "
-            f"**identical retrieved evidence**. Where the evidence is the same and the answer "
-            f"is not, the difference is the generator sampling, not anything under test.",
+            f"{len(moved_scores)} of {len(gb)} answers scored differently. Whether they saw "
+            f"the same evidence cannot be told from these results - the retrieval behind each "
+            f"answer was not recorded. Re-run `accuracy` to restore the comparison.",
+            "",
+        ]
+    elif moved_scores:
+        lines += [
+            f"{len(moved_scores)} of {len(gb)} answers scored differently. Of the "
+            f"{len(comparable)} where the evidence behind each answer was recorded, "
+            f"{len(same_evidence)} were generated from **identical chunks**. Where the "
+            f"evidence is the same and the answer is not, the difference is in the generator; "
+            f"where it differs, the answer is not comparable across revisions at all.",
             "",
         ]
 
@@ -734,8 +792,10 @@ def _accuracy_section(stored: dict) -> list[str]:
             f"difference {stat['mean']:+.4f}, bootstrap 95% CI "
             f"[{stat['lo']:+.4f}, {stat['hi']:+.4f}], sign test p = {stat['p']:.3f}. "
             + (
-                "The interval includes zero and the sign test is far from significant, so "
-                "this is sampling in the generator, not a measured change in answer quality."
+                "The interval includes zero and the sign test is not significant, so this "
+                "sample cannot separate a real shift from noise. That is an inconclusive "
+                "result, not a demonstration that answer quality held: an effect this size "
+                "would need more graded answers to detect either way."
                 if stat["lo"] <= 0 <= stat["hi"]
                 else "The interval excludes zero; this warrants investigation."
             ),
@@ -767,7 +827,7 @@ def _accuracy_section(stored: dict) -> list[str]:
     return lines
 
 
-def _output_section(stored: dict) -> list[str]:
+def _output_section(stored: dict, names: _Pseudonyms) -> list[str]:
     """Show what each revision produced: chunks, top-k, and answers."""
     payload = stored.get("output_parity")
     if not payload:
@@ -778,7 +838,6 @@ def _output_section(stored: dict) -> list[str]:
         return ["_No successful run on both revisions._"]
 
     lines: list[str] = []
-    names = _Pseudonyms()
 
     # --- segmentation and chunking -----------------------------------------
     cut_b, cut_a = before.get("chunking", {}), after.get("chunking", {})
@@ -944,9 +1003,27 @@ def _output_section(stored: dict) -> list[str]:
 #: JSON under benchmarks/results/, which is not tracked.
 _IDENTIFYING_KEYS = ("model", "context_model", "endpoint", "base_url")
 
+#: Every key, anywhere in a result payload, whose value names something the
+#: report must not print: a model, a server, or a file out of the operator's own
+#: corpus. Harvested whether or not a section renders that key, because the same
+#: string can reach the page by another route - inside a generated answer, or in
+#: a heading built from a project name.
+_IDENTIFYING_TAILS = {
+    "endpoint": "endpoint",
+    "base_url": "endpoint",
+    "model": "model",
+    "context_model": "model",
+    "source": "source",
+    "document": "source",
+    "project": "project",
+    "name": "project",
+    "path": "file",
+    "goldens_path": "file",
+}
+
 
 class _Pseudonyms:
-    """Assign each distinct model or endpoint a stable, neutral label."""
+    """Assign each distinct model, endpoint, project or file a stable label."""
 
     def __init__(self) -> None:
         self._seen: dict[str, str] = {}
@@ -959,6 +1036,62 @@ class _Pseudonyms:
             letter = chr(ord("A") + len(self._seen))
             self._seen[text] = f"{kind} {letter}"
         return self._seen[text]
+
+    def register(self, kind: str, value) -> None:
+        """Give a value a label now, without rendering it here.
+
+        A path registers its basename under the same label as well: the full
+        path is what a measurement stores, but the bare filename is what turns
+        up in prose.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return
+        alias = self.label(kind, value)
+        stem = Path(value).name
+        if stem and stem != value:
+            self._seen.setdefault(stem, alias)
+
+    def scrub(self, text: str) -> str:
+        """Replace every registered identifier wherever it still appears.
+
+        The last line of defence, and the only one that covers free-form text:
+        a filename quoted inside a generated answer never passed through
+        `label`. Longest first, so a full path is replaced before the basename
+        inside it is.
+        """
+        for raw in sorted(self._seen, key=len, reverse=True):
+            text = text.replace(raw, self._seen[raw])
+        return text
+
+
+def _harvest_identifiers(stored: dict, names: _Pseudonyms) -> None:
+    """Register every identifier the stored results carry, rendered or not."""
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                kind = _IDENTIFYING_TAILS.get(key)
+                if kind and isinstance(value, str):
+                    names.register(kind, value)
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(stored)
+
+
+def _trial_count(payload: dict) -> int:
+    """How many trials of this case produced a usable run on both revisions."""
+    counts = [
+        sum(
+            1
+            for run in _get(payload, "runs", revision, default=[]) or []
+            if run.get("status") == "ok"
+        )
+        for revision in ("baseline", "head")
+    ]
+    return min(counts) if counts else 0
 
 
 def _identifying(key: str) -> str | None:
@@ -1012,10 +1145,9 @@ def _cell(value) -> str:
     return str(value)
 
 
-def _detail_section(stored: dict) -> list[str]:
+def _detail_section(stored: dict, names: _Pseudonyms) -> list[str]:
     """Every recorded number, side by side, for anything the table summarizes."""
     lines = []
-    names = _Pseudonyms()
     for case, payload in sorted(stored.items()):
         if payload.get("_aliased_from") or "runs" not in payload:
             continue  # superseded, or not a per-revision case result
@@ -1061,12 +1193,13 @@ def _notes_section(stored: dict) -> list[str]:
     if all(chunking):
         before, after = (_get(m, "first_build", "tokenizer_encode_calls") for m in chunking)
         if before and after:
+            share = (before - after) / before
             notes.append(
-                f"- **Tokenizer calls barely moved ({before:,} to {after:,}), and that is expected.** "
-                f"konte's own double-encoding is gone - exactly the {before - after} calls it "
-                f"accounted for - but it was a rounding error against the text splitter's "
-                f"internal per-piece encoding, which neither revision changes. The chunking win "
-                f"is splitter reuse, not tokenizer calls."
+                f"- **Tokenizer calls fell from {before:,} to {after:,} ({share:.0%}).** "
+                f"The double-encoding konte did for its own logging is gone, and so is the "
+                f"per-segment splitter construction that re-encoded the same text again. What "
+                f"remains is the text splitter's own per-piece encoding, which neither "
+                f"revision changes - so this is the floor, not a target for further work."
             )
 
     faiss = (
