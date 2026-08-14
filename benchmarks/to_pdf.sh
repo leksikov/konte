@@ -11,8 +11,28 @@ SRC="${1:-$ROOT/benchmarks/RESULTS.md}"
 OUT="${2:-$ROOT/benchmarks/results/konte-performance-before-after.pdf}"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
-BASELINE_REF="${KONTE_BENCH_BASELINE_REF:-de54b54}"
-HEAD_REF="$(git -C "$ROOT" rev-parse --short HEAD)"
+# The revisions the stored results were produced by, not whatever the working
+# tree and environment say now: rendering an older report, or rendering after
+# the baseline ref moved, would otherwise stamp measurements with two commits
+# that never ran them.
+read -r BASELINE_REF HEAD_REF <<<"$(
+  "$ROOT/.venv/bin/python" - "$ROOT/benchmarks/results" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+pair = ("unknown", "unknown")
+for path in sorted(Path(sys.argv[1]).glob("*.json")):
+    try:
+        revisions = json.loads(path.read_text()).get("revisions") or {}
+    except (json.JSONDecodeError, OSError):
+        continue
+    if revisions.get("baseline") and revisions.get("head"):
+        pair = (revisions["baseline"][:12], revisions["head"][:12])
+        break
+print(*pair)
+PY
+)"
 GENERATED="$(date '+%Y-%m-%d %H:%M')"
 
 work="$(mktemp -d)"
@@ -27,7 +47,7 @@ title: "konte: performance before and after"
 
 <div class="frontmatter">
 
-**Compared:** \`$BASELINE_REF\` (before) against the merged performance work (after)  ·
+**Compared:** \`$BASELINE_REF\` (before) against \`$HEAD_REF\` (after)  ·
 **Generated:** $GENERATED  ·
 **Host:** $(uname -s) $(uname -m), Python $(cd "$ROOT" && .venv/bin/python -V 2>&1 | cut -d' ' -f2)
 
