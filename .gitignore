@@ -114,3 +114,7 @@ scripts/build_wco_feb2026.py
 scripts/rebuild_wco_korean.py
 docs/knowledge_base_analysis.md
 examples/demo_source_filter_and_regex.py
+
+# Benchmark harness artifacts
+.benchmark-baseline/
+benchmarks/results/
