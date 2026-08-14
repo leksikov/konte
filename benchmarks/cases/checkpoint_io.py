@@ -30,6 +30,14 @@ from benchmarks.stub_endpoint import MODEL_NAME, stub_endpoint
 CHUNKS_PER_SEGMENT = 10
 DEFAULT_SEGMENTS = 100
 
+#: The shared prefix of both checkpoint filenames - `context_checkpoint.json`
+#: on the older revision, `context_checkpoint.jsonl` on the newer one. Matching
+#: the filename rather than a looser word keeps the storage directory and the
+#: project name (both of which contain "checkpoint") out of the tally, so this
+#: counts checkpoint traffic and not the config, corpus and index writes that
+#: any build performs.
+CHECKPOINT_MATCH = "context_checkpoint"
+
 
 def run(ctx: Context) -> dict:
     segments = int(ctx.options.get("segments", DEFAULT_SEGMENTS))
@@ -44,7 +52,7 @@ def run(ctx: Context) -> dict:
         shutil.rmtree(directory)
 
     with stub_endpoint() as (base_url, state), point_llm_at(base_url, MODEL_NAME):
-        with counting_writes("checkpoint") as written:
+        with counting_writes(CHECKPOINT_MATCH) as written:
             start = time.perf_counter()
             project = build_project(
                 name,

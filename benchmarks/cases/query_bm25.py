@@ -21,7 +21,13 @@ import time
 
 from benchmarks.build import ensure_project, open_project
 from benchmarks.corpus import projects_dir, synthetic_document
-from benchmarks.harness import Context, peak_rss_mb, pin_keyword_extraction, summarize
+from benchmarks.harness import (
+    Context,
+    current_rss_mb,
+    peak_rss_mb,
+    pin_keyword_extraction,
+    summarize,
+)
 
 DEFAULT_CHUNKS = 20000
 QUERY_COUNT = 200
@@ -51,15 +57,24 @@ def run(ctx: Context) -> dict:
 
     document = synthetic_document(size)
     storage = projects_dir(f"bm25-{size}-{ctx.revision}")
-    ensure_project(f"bm25_{size}", storage, document, enable_faiss=False, skip_context=True)
+    # Built in its own process: a build in this one leaves its peak behind in
+    # every later sample, and what a held project costs is the measurement.
+    ensure_project(
+        f"bm25_{size}",
+        storage,
+        document,
+        isolate=True,
+        enable_faiss=False,
+        skip_context=True,
+    )
 
     pin_keyword_extraction()
-    rss_before_open = peak_rss_mb()
+    rss_before_open = current_rss_mb()
 
     start = time.perf_counter()
     project = open_project(f"bm25_{size}", storage)
     open_seconds = time.perf_counter() - start
-    rss_after_open = peak_rss_mb()
+    rss_after_open = current_rss_mb()
 
     queries = _queries(count)
 
@@ -68,7 +83,7 @@ def run(ctx: Context) -> dict:
     start = time.perf_counter()
     first = project.query(queries[0], mode="lexical", top_k=20)
     cold_seconds = time.perf_counter() - start
-    rss_after_first = peak_rss_mb()
+    rss_after_first = current_rss_mb()
 
     warm = []
     for query in queries[1:]:
@@ -82,9 +97,13 @@ def run(ctx: Context) -> dict:
         "first_query_seconds": cold_seconds,
         "first_query_results": len(first.results),
         "warm_query_ms": summarize(warm),
+        # Resident size at each step, not the process high-water mark: the
+        # project is built elsewhere, so these three are what opening it and
+        # then serving one lexical query actually cost.
         "rss_mb": {
             "before_open": rss_before_open,
             "after_open": rss_after_open,
             "after_first_query": rss_after_first,
+            "process_peak": peak_rss_mb(),
         },
     }

@@ -24,6 +24,7 @@ from benchmarks.build import open_project
 from benchmarks.corpus import available_real_projects, real_project
 from benchmarks.harness import (
     Context,
+    current_rss_mb,
     peak_rss_mb,
     pin_keyword_extraction,
     stub_embeddings,
@@ -82,13 +83,13 @@ def run(ctx: Context) -> dict:
             project.query(query, mode="semantic", top_k=20)
             unfiltered.append(time.perf_counter() - start)
 
-        rss_before_filter = peak_rss_mb()
+        rss_before_filter = current_rss_mb()
 
         # First filtered query: where the newer revision builds its postings.
         start = time.perf_counter()
         first = project.query(queries[0], mode="semantic", top_k=20, source_filter=source)
         first_filtered_seconds = time.perf_counter() - start
-        rss_after_filter = peak_rss_mb()
+        rss_after_filter = current_rss_mb()
 
         filtered = []
         for query in queries:
@@ -103,9 +104,14 @@ def run(ctx: Context) -> dict:
         "first_filtered_query_ms": first_filtered_seconds * 1000,
         "first_filtered_results": len(first.results),
         "filtered_query_ms": summarize(filtered),
+        # Resident size, not the process high-water mark: copying, reindexing
+        # and opening the project all happen first, so a peak taken here is
+        # that earlier work's peak and the difference across one lazily built
+        # index is zero however much the index actually costs.
         "rss_mb": {
             "before_first_filter": rss_before_filter,
             "after_first_filter": rss_after_filter,
             "postings_mb": rss_after_filter - rss_before_filter,
+            "process_peak": peak_rss_mb(),
         },
     }

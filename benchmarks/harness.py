@@ -89,10 +89,38 @@ def revision_root(revision: str) -> Path:
     raise ValueError(f"unknown revision {revision!r}, expected one of {REVISIONS}")
 
 
+def _resolved_sha(ref: str, cwd: Path) -> str:
+    """Full commit sha for a ref, or "" when it cannot be resolved."""
+    proc = subprocess.run(
+        ["git", "rev-parse", ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def ensure_baseline() -> Path:
-    """Create the baseline worktree if it is not already checked out."""
+    """Create the baseline worktree, or confirm the existing one is the right commit.
+
+    A worktree left over from an earlier sweep is checked out at whatever
+    ``KONTE_BENCH_BASELINE_REF`` was then. Accepting it because the directory
+    exists would benchmark that stale commit while labelling the run with the
+    ref requested now, which is a wrong answer rather than a slow one - so the
+    commit is compared, and a mismatch is rebuilt.
+    """
+    wanted = _resolved_sha(BASELINE_REF, REPO_ROOT)
     if (BASELINE_ROOT / "konte" / "__init__.py").exists():
-        return BASELINE_ROOT
+        current = _resolved_sha("HEAD", BASELINE_ROOT)
+        if current and current == wanted:
+            return BASELINE_ROOT
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(BASELINE_ROOT)],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     subprocess.run(
         ["git", "worktree", "add", str(BASELINE_ROOT), BASELINE_REF],
         cwd=REPO_ROOT,
@@ -100,7 +128,21 @@ def ensure_baseline() -> Path:
         capture_output=True,
         text=True,
     )
+    checked_out = _resolved_sha("HEAD", BASELINE_ROOT)
+    if wanted and checked_out != wanted:
+        raise RuntimeError(
+            f"baseline worktree is at {checked_out[:12]}, expected {wanted[:12]} "
+            f"for ref {BASELINE_REF!r}"
+        )
     return BASELINE_ROOT
+
+
+def revision_sha(revision: str) -> str:
+    """Commit each revision actually runs from, for stamping into results."""
+    root = revision_root(revision)
+    if revision == "baseline":
+        ensure_baseline()
+    return _resolved_sha("HEAD", root)
 
 
 def read_dotenv(path: Path) -> dict[str, str]:
@@ -404,16 +446,13 @@ def counting_writes(match: str) -> Iterator[list[int]]:
     Total bytes *written* is the interesting quantity for a file that is
     rewritten repeatedly - its final size says nothing about what the build
     cost. The two revisions write through different calls (one replaces the
-    file, one appends to an open handle), so both routes are counted.
+    file, one appends to an open handle), and both land here because
+    ``Path.write_text`` and ``Path.write_bytes`` are themselves implemented on
+    top of ``Path.open``. Counting at that one chokepoint means a full rewrite
+    and an append are counted the same way, and neither is counted twice.
     """
-    original_write_text = Path.write_text
     original_open = Path.open
     tally = [0]
-
-    def write_text(self, data, *args, **kwargs):
-        if match in str(self):
-            tally[0] += len(data.encode()) if isinstance(data, str) else len(data)
-        return original_write_text(self, data, *args, **kwargs)
 
     def opener(self, mode="r", *args, **kwargs):
         handle = original_open(self, mode, *args, **kwargs)
@@ -421,12 +460,10 @@ def counting_writes(match: str) -> Iterator[list[int]]:
             return _CountingHandle(handle, tally)
         return handle
 
-    Path.write_text = write_text
     Path.open = opener
     try:
         yield tally
     finally:
-        Path.write_text = original_write_text
         Path.open = original_open
 
 
@@ -547,6 +584,27 @@ def peak_rss_mb() -> float:
     """
     raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+
+
+def current_rss_mb() -> float:
+    """Resident set size *right now*, in MB.
+
+    ``peak_rss_mb`` is a process-lifetime high-water mark, so once a build has
+    run in the same process every later sample reads back that build's peak and
+    two samples taken around a structure being allocated differ by zero. What a
+    project costs to hold, and what a lazily built index adds, are both current
+    sizes. Read without adding a dependency: procfs on Linux, ``ps`` on macOS.
+    """
+    statm = Path("/proc/self/statm")
+    if statm.exists():
+        resident_pages = int(statm.read_text().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    proc = subprocess.run(
+        ["ps", "-o", "rss=", "-p", str(os.getpid())],
+        capture_output=True,
+        text=True,
+    )
+    return int(proc.stdout.strip()) / 1024 if proc.returncode == 0 else float("nan")
 
 
 def dir_bytes(path: Path) -> int:
