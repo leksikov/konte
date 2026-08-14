@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import shutil
 from pathlib import Path
@@ -42,7 +43,16 @@ ENCODING_NAME = "o200k_base"
 #: chunk count a claim is stated at.
 EFFECTIVE_TOKENS_PER_CHUNK = 720
 
-SOURCE_DOCUMENT = REPO_ROOT / "example_knowledge_base" / "wco_hs_explanatory_notes.md"
+#: The document the real-text tier is cut from. Untracked local data, so the
+#: environment can point at a different one; the repository file is only the
+#: default. Read here rather than at the call site so the recovery the error
+#: message suggests is the one that actually works.
+SOURCE_DOCUMENT = Path(
+    os.environ.get(
+        "KONTE_BENCH_SOURCE_DOC",
+        REPO_ROOT / "example_knowledge_base" / "wco_hs_explanatory_notes.md",
+    )
+)
 
 _SENTENCES = [
     "This heading covers goods presented in sets put up for retail sale, provided the "

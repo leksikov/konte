@@ -24,6 +24,10 @@ from benchmarks.harness import Context, subprocess_env, summarize
 
 TRIALS = 7
 
+#: Cold trials are each paid for with a real BPE download on the revision that
+#: fetches one, so fewer of them than the warm trials.
+COLD_TRIALS = 3
+
 #: Import konte, then ask tiktoken which encodings it has had to build. A
 #: revision that resolves the tokenizer at import leaves one registered here;
 #: one that defers it leaves none. Revision-agnostic - it probes tiktoken, not
@@ -63,11 +67,17 @@ def run(ctx: Context) -> dict:
     encodings = probe.stdout.strip() if probe.returncode == 0 else probe.stderr[-500:]
 
     # A cache directory that starts empty forces the BPE table to be fetched,
-    # which is what a fresh container or CI runner actually experiences.
-    with tempfile.TemporaryDirectory(prefix="tiktoken-cold-") as cold_dir:
-        cold_env = {**env, "TIKTOKEN_CACHE_DIR": cold_dir}
-        cold = _time_import(ctx.root, cold_env, 2)
-        cold_cache_files = len(list(Path(cold_dir).iterdir()))
+    # which is what a fresh container or CI runner actually experiences. One
+    # directory per trial, because the first import fills the cache and every
+    # later import sharing it is warm - averaging those together would report
+    # a cold cost the code never pays.
+    cold: list[float] = []
+    cold_cache_files = 0
+    for _ in range(COLD_TRIALS):
+        with tempfile.TemporaryDirectory(prefix="tiktoken-cold-") as cold_dir:
+            cold_env = {**env, "TIKTOKEN_CACHE_DIR": cold_dir}
+            cold += _time_import(ctx.root, cold_env, 1)
+            cold_cache_files = max(cold_cache_files, len(list(Path(cold_dir).iterdir())))
 
     return {
         "warm_import_ms": summarize(warm),
