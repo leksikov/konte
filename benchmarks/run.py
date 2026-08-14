@@ -15,18 +15,36 @@ import sys
 import traceback
 from pathlib import Path
 
-from benchmarks.harness import Context, capabilities, isolate_revision, scratch_root
+from benchmarks.harness import (
+    Context,
+    capabilities,
+    isolate_revision,
+    revision_root,
+    scratch_root,
+)
 
 
-def _assert_revision(root: Path) -> str:
-    """Fail loudly if konte did not come from the tree this process selected."""
+def _assert_revision(root: Path, revision: str) -> str:
+    """Fail loudly if konte did not come from the revision this run asked for.
+
+    Checked against the requested revision's tree, not just against the working
+    directory. Revision selection *is* the working directory, so comparing the
+    two to each other always agrees - and a run launched by hand from the repo
+    root with `--revision baseline` would measure head twice and say baseline.
+    """
     import konte
 
     resolved = Path(konte.__file__).resolve()
-    if root.resolve() not in resolved.parents:
+    expected = revision_root(revision).resolve()
+    if expected not in resolved.parents:
         raise RuntimeError(
-            f"revision isolation failed: konte loaded from {resolved}, expected a "
-            f"path under {root.resolve()}"
+            f"revision isolation failed: konte loaded from {resolved}, expected a path "
+            f"under {expected}. Run cases through `benchmarks.compare`, or from within "
+            f"the revision's own tree - the working directory is what selects it."
+        )
+    if root.resolve() != expected:
+        raise RuntimeError(
+            f"working directory {root.resolve()} is not the {revision} tree at {expected}"
         )
     return str(resolved)
 
@@ -63,8 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         module = importlib.import_module(f"benchmarks.cases.{args.case}")
-        payload["measurements"] = module.run(ctx)
-        payload["status"] = "ok"
+        measurements = module.run(ctx)
+        payload["measurements"] = measurements
+        # A case that cannot find the corpus or project it needs says so and
+        # returns nothing to measure. Reporting that as ok would let the report
+        # print "both revisions ok" over a run that measured nothing.
+        if isinstance(measurements, dict) and measurements.get("status") == "skipped":
+            payload["status"] = "skipped"
+            payload["reason"] = measurements.get("reason")
+        else:
+            payload["status"] = "ok"
     except Exception:
         payload["status"] = "error"
         payload["traceback"] = traceback.format_exc()
@@ -72,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     # After the case, so a case measuring cold import is not polluted by the
     # probe importing konte first.
     try:
-        payload["konte_path"] = _assert_revision(ctx.root)
+        payload["konte_path"] = _assert_revision(ctx.root, args.revision)
         payload["capabilities"] = capabilities()
     except Exception:
         payload["status"] = "error"
@@ -84,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         args.out.write_text(text)
     else:
         print(text)
-    return 0 if payload["status"] == "ok" else 1
+    return 0 if payload["status"] in ("ok", "skipped") else 1
 
 
 if __name__ == "__main__":
