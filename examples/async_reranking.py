@@ -126,8 +126,8 @@ async def main():
         for i, r in enumerate(response_standard.results[:5], 1):
             print(f"  [{i}] score={r.score:.3f} | {r.content[:70]}...")
 
-        if not settings.RERANKER_BASE_URL:
-            print("\nSkipping reranking demo: RERANKER_BASE_URL is not set.")
+        if not (settings.RERANKER_BASE_URL and settings.RERANKER_MODEL):
+            print("\nSkipping reranking demo: RERANKER_BASE_URL/RERANKER_MODEL are not set.")
             print("See the module docstring for how to configure a reranker endpoint.")
             return
 
