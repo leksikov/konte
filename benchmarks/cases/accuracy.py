@@ -128,7 +128,9 @@ def run(ctx: Context) -> dict:
     for golden in goldens[:answer_limit]:
         question = golden.get("input") or ""
         try:
-            _, generated = asyncio.run(project.query_with_answer(question, mode=mode, max_chunks=5))
+            used, generated = asyncio.run(
+                project.query_with_answer(question, mode=mode, max_chunks=5)
+            )
             answers.append(
                 {
                     "question": question,
@@ -136,6 +138,13 @@ def run(ctx: Context) -> dict:
                     "actual_output": generated.answer,
                     "model": generated.model,
                     "sources_used": generated.sources_used,
+                    # The chunks this answer was actually written from. Not the
+                    # same thing as the standalone retrieval above: that ran a
+                    # separate query, and on the older revision - which has no
+                    # extraction cache - a second query can select different
+                    # chunks. Comparing answers across revisions only means
+                    # something against the evidence each one really saw.
+                    "evidence": [result.chunk_id for result in used.results],
                 }
             )
         except Exception as error:
