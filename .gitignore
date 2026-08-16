@@ -118,3 +118,7 @@ examples/demo_source_filter_and_regex.py
 # Benchmark harness artifacts
 .benchmark-baseline/
 benchmarks/results/
+
+# Fishydino
+.alyona/
+private/

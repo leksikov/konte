@@ -15,10 +15,15 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
 from konte.config import settings
+from konte.integrity import sign, verify
 from konte.models import Chunk, ContextualizedChunk, MetadataFilter
 from konte.stores.base import matches_filter_value
 
 logger = structlog.get_logger()
+
+# What LangChain's save_local writes under index_name="faiss", and what this
+# store's signatures cover. The docstore half is a pickle.
+SIGNED_FILENAMES = ("faiss.faiss", "faiss.pkl")
 
 _RESERVED_METADATA_FIELDS = frozenset(
     {
@@ -399,6 +404,7 @@ class FAISSStore:
 
         # LangChain FAISS save_local saves both index and docstore
         self._vectorstore.save_local(str(directory), index_name="faiss")
+        sign(directory, SIGNED_FILENAMES)
 
         logger.info("faiss_index_saved", directory=str(directory))
 
@@ -413,6 +419,7 @@ class FAISSStore:
 
         Raises:
             FileNotFoundError: If index files don't exist.
+            IntegrityError: If the index is not the one this installation signed.
         """
         directory = Path(directory)
 
@@ -420,11 +427,14 @@ class FAISSStore:
         if not index_path.exists():
             raise FileNotFoundError(f"FAISS index not found: {index_path}")
 
+        # The docstore is a pickle, and reading one runs what it holds, so both
+        # files are authenticated before LangChain is pointed at them.
+        verify(directory, SIGNED_FILENAMES)
+
         self._vectorstore = FAISS.load_local(
             str(directory),
             embeddings=self._embeddings,
             index_name="faiss",
-            # The docstore is a pickle: only load index dirs this library wrote.
             allow_dangerous_deserialization=True,
         )
         self._filter_index = None

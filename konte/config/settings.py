@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Storage
     STORAGE_PATH: Path = Path("~/.konte")
 
+    # Key the index signatures are made with. Unset keeps it in the storage
+    # root; set it where that root is shared and the key should not live there.
+    INDEX_SIGNING_KEY: str | None = None
+
     # Models
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     CONTEXT_MODEL: str = "gpt-4.1-mini"  # OpenAI model for context/evaluation

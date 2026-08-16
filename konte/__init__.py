@@ -10,12 +10,14 @@ from konte.cache import (
 )
 from konte.config import settings
 from konte.generator import GeneratedAnswer, generate_answer
+from konte.integrity import IntegrityError
 from konte.manager import (
     create_project,
     delete_project,
     get_project,
     list_projects,
     project_exists,
+    trust_project,
 )
 from konte.models import (
     BuildCheckpoint,
@@ -60,6 +62,9 @@ __all__ = [
     "get_project",
     "delete_project",
     "project_exists",
+    "trust_project",
+    # Index integrity
+    "IntegrityError",
     # Serving cache
     "get_shared_project",
     "preload_projects",

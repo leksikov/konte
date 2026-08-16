@@ -13,6 +13,7 @@ import structlog
 from rank_bm25 import BM25Okapi
 
 from konte.config import settings
+from konte.integrity import sign, verify
 from konte.models import ContextualizedChunk, MetadataFilter
 from konte.storage import atomic_writer
 from konte.stores.base import matches_filter_value
@@ -23,6 +24,9 @@ logger = structlog.get_logger()
 Corpus = Callable[[], Sequence[ContextualizedChunk]]
 
 LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
+
+# What this store writes, and what its signatures cover.
+SIGNED_FILENAMES = ("bm25.pkl",)
 
 # A stale index stops matching silently, not loudly. Bump on any _tokenize change.
 _TOKENIZER_VERSION = 2
@@ -415,7 +419,8 @@ class BM25Store:
 
         The model is pickled because rank_bm25 exposes no serialization format
         of its own. The tokenized corpus is not stored — BM25Okapi scores from
-        the per-document term frequencies it already holds.
+        the per-document term frequencies it already holds. The pickle is signed
+        as it is written, since load() will only read one it can authenticate.
 
         Args:
             directory: Directory to save index files.
@@ -429,6 +434,8 @@ class BM25Store:
 
         with atomic_writer(directory / "bm25.pkl") as handle:
             pickle.dump({"index": self._index, "tokenizer": _TOKENIZER_VERSION}, handle)
+
+        sign(directory, SIGNED_FILENAMES)
 
         # An earlier version kept a second copy of the corpus here.
         (directory / LEGACY_CHUNKS_FILENAME).unlink(missing_ok=True)
@@ -445,6 +452,7 @@ class BM25Store:
 
         Raises:
             FileNotFoundError: If the index file is missing.
+            IntegrityError: If the index is not the one this installation signed.
             ValueError: If the index was built by a different tokenizer.
         """
         directory = Path(directory)
@@ -453,7 +461,9 @@ class BM25Store:
         if not index_path.exists():
             raise FileNotFoundError(f"BM25 index not found: {index_path}")
 
-        # Unpickling executes arbitrary code: only load index dirs this library wrote.
+        # Unpickling executes whatever the file holds, so it is authenticated first.
+        verify(directory, SIGNED_FILENAMES)
+
         with index_path.open("rb") as f:
             data = pickle.load(f)
 

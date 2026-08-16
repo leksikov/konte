@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Index files are signed (HMAC-SHA256) when written and authenticated before
+  they are read. Opening a project deserializes `faiss.pkl` and `bm25.pkl`, and
+  deserializing runs whatever the file holds, so anyone who could write into
+  `STORAGE_PATH` could run code as the process that opened the project. An index
+  that fails the check raises `IntegrityError` instead of being loaded. The key
+  is generated on first use and kept in the storage root as `.signing-key`
+  (mode 0600), outside the project directories it signs; `INDEX_SIGNING_KEY`
+  supplies it from the environment instead, for a shared storage root
+- Indexes written by earlier versions carry no signature and no longer load.
+  `konte trust <project>` / `trust_project()` signs the files already on disk
+  for installations that trust them; anything else has to be rebuilt
+
 ### Added
 
 - `use_keyword_extraction` on `Project.query()`, `query_async()`,

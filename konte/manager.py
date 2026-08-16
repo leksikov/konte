@@ -7,9 +7,14 @@ import structlog
 
 from konte.cache import invalidate_project
 from konte.config import settings
+from konte.integrity import sign
 from konte.project import Project
+from konte.stores.bm25_store import SIGNED_FILENAMES as _BM25_FILENAMES
+from konte.stores.faiss_store import SIGNED_FILENAMES as _FAISS_FILENAMES
 
 logger = structlog.get_logger()
+
+_INDEX_FILENAMES = (*_FAISS_FILENAMES, *_BM25_FILENAMES)
 
 
 def create_project(
@@ -107,6 +112,40 @@ def delete_project(
     shutil.rmtree(project_dir)
     invalidate_project(name, storage_path=path)
     logger.info("project_deleted", name=name)
+
+
+def trust_project(
+    name: str,
+    storage_path: Path | None = None,
+) -> list[str]:
+    """Sign the index files a project already has on disk.
+
+    Indexes written before this installation existed cannot be authenticated,
+    so they are refused rather than deserialized. Signing them says they are
+    trusted as they stand — which trusts anything that reached the directory
+    unnoticed as well. Rebuilding is the answer wherever that is in doubt.
+
+    Args:
+        name: Project name.
+        storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
+
+    Returns:
+        The names of the files signed.
+
+    Raises:
+        FileNotFoundError: If project doesn't exist.
+    """
+    path = storage_path or settings.STORAGE_PATH
+    project_dir = path / name
+
+    if not (project_dir / "config.json").exists():
+        raise FileNotFoundError(f"Project not found: {name}")
+
+    signed = [filename for filename in _INDEX_FILENAMES if (project_dir / filename).exists()]
+    sign(project_dir, signed)
+
+    logger.info("project_trusted", name=name, files=signed)
+    return signed
 
 
 def project_exists(

@@ -584,7 +584,8 @@ Set via environment variables or `.env` file (see [.env.example](https://github.
 
 ```bash
 OPENAI_API_KEY=sk-...          # Required for embeddings (FAISS, the default)
-STORAGE_PATH=~/.konte          # Project storage location
+STORAGE_PATH=~/.konte          # Project storage location (a trust boundary, see Storage trust)
+INDEX_SIGNING_KEY=             # Optional: sign indexes with this instead of a key file
 EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
 DEFAULT_TOP_K=20
@@ -602,6 +603,27 @@ LLM_MODEL=your-model-name
 RERANKER_BASE_URL=https://your-endpoint/v1
 RERANKER_MODEL=your-reranker-model
 ```
+
+## Storage trust
+
+`STORAGE_PATH` is a trust boundary. Opening a project deserializes the indexes in its directory — FAISS keeps its docstore as a pickle, and BM25 has no format but one — and deserializing runs whatever the file holds. Anyone who can write into that directory can therefore run code as the process that opens the project.
+
+Konte signs every index file it writes (HMAC-SHA256) and refuses to load one it cannot authenticate, so an index copied in from elsewhere is rejected rather than executed:
+
+```bash
+konte query myproject "..."
+# Error: ~/.konte/myproject/bm25.pkl does not match its signature. ...
+```
+
+The key is generated on first use and kept in the storage root as `.signing-key`, mode `0600` — outside the project directories it signs, so a directory that arrives from somewhere else carries no signature that verifies. Where the storage root itself is shared, set `INDEX_SIGNING_KEY` instead and the key never lands on the volume.
+
+Indexes built before signing existed load only once you adopt them:
+
+```bash
+konte trust myproject   # sign the index files already on disk
+```
+
+`trust_project("myproject")` does the same from Python. That says the files are trusted as they are. Where that is in doubt, run `konte build` again instead.
 
 ## Examples
 

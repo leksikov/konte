@@ -20,6 +20,7 @@ from konte import (
     list_projects,
     project_exists,
     settings,
+    trust_project,
 )
 from konte.models import MetadataFilter, RetrievalMode
 
@@ -204,6 +205,40 @@ def delete(
     with _reporting_errors():
         delete_project(name, storage_path=path)
         console.print(f"[green]Deleted project:[/green] {name}")
+
+
+@app.command("trust")
+def trust(
+    name: str = typer.Argument(..., help="Project name"),
+    storage_path: Path | None = _STORAGE_OPTION,
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation",
+    ),
+) -> None:
+    """Sign the indexes a project already has, so this installation will load them.
+
+    Loading an index deserializes it, which runs whatever it holds, so only
+    indexes signed here are read. Sign an index you did not build only when you
+    know where it came from; otherwise build the project again.
+    """
+    path = _resolve_storage(storage_path)
+    _require_project(name, path)
+
+    if not force and not typer.confirm(f"Trust the index files in {path / name}?"):
+        console.print("[dim]Cancelled[/dim]")
+        raise typer.Exit(0)
+
+    with _reporting_errors():
+        signed = trust_project(name, storage_path=path)
+
+        if not signed:
+            console.print(f"[yellow]No index files to sign in[/yellow] {path / name}")
+            return
+
+        console.print(f"[green]Signed {len(signed)} index file(s):[/green] {', '.join(signed)}")
 
 
 @app.command("add")

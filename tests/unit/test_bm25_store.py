@@ -367,8 +367,9 @@ class TestBM25StorePersistence:
         """Test a stale index is refused rather than silently matching nothing."""
         import pickle
 
+        from konte.integrity import sign
         from konte.stores import BM25Store
-        from konte.stores.bm25_store import _TOKENIZER_VERSION
+        from konte.stores.bm25_store import _TOKENIZER_VERSION, SIGNED_FILENAMES
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -379,6 +380,7 @@ class TestBM25StorePersistence:
         data["tokenizer"] = _TOKENIZER_VERSION - 1
         with (tmp_path / "bm25.pkl").open("wb") as handle:
             pickle.dump(data, handle)
+        sign(tmp_path, SIGNED_FILENAMES)  # the tokenizer check, not the signature
 
         with pytest.raises(ValueError, match="tokenizer"):
             BM25Store().load(tmp_path, lambda: sample_chunks)
@@ -391,7 +393,7 @@ class TestBM25StorePersistence:
         store.build_index(sample_chunks)
         store.save(tmp_path)
 
-        assert [p.name for p in tmp_path.iterdir()] == ["bm25.pkl"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["bm25.pkl", "bm25.pkl.sig"]
 
     def test_save_removes_a_legacy_chunk_payload(self, sample_chunks, tmp_path):
         """Test that rebuilding drops the copy an earlier version left behind."""
