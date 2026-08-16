@@ -448,37 +448,6 @@ def serve(
     run_server(host=host, port=port)
 
 
-@app.command("ui")
-def ui(
-    host: str = typer.Option(
-        "0.0.0.0",
-        "--host",
-        "-h",
-        help="Host to bind to",
-    ),
-    port: int = typer.Option(
-        7860,
-        "--port",
-        "-p",
-        help="Port to bind to",
-    ),
-    share: bool = typer.Option(
-        False,
-        "--share",
-        help="Create public Gradio link",
-    ),
-) -> None:
-    """Start the Gradio UI."""
-    try:
-        from konte.ui import launch
-    except ImportError:
-        console.print("[red]Error:[/red] Gradio not installed. Run: pip install konte[ui]")
-        raise typer.Exit(1) from None
-
-    console.print(f"Starting Gradio UI at http://{host}:{port}")
-    launch(server_name=host, server_port=port, share=share)
-
-
 @app.command("info")
 def info(
     name: str = typer.Argument(..., help="Project name"),
