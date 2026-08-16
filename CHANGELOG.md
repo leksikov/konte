@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covers; `INDEX_SIGNING_KEY` supplies that key from the environment instead
 - `konte trust <project>` / `trust_project()` records index files already on
   disk for installations that trust them
+- A project name must now name one directory under the storage root. It was
+  joined onto the storage path unchecked, so a name holding `..`, a path
+  separator, or an absolute path reached outside the root, where
+  `delete_project()` removed it and `create_project()` wrote into it. Such a
+  name now raises `ValueError` from the manager functions, `Project.open()`,
+  and `ProjectConfig` itself, which also refuses a `config.json` whose stored
+  name reaches outside; `project_exists()` reports it absent instead
 
 ### Added
 

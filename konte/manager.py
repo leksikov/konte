@@ -8,6 +8,7 @@ import structlog
 from konte.cache import invalidate_project
 from konte.config import settings
 from konte.integrity import sign
+from konte.models import validate_project_name
 from konte.project import Project
 from konte.stores.bm25_store import SIGNED_FILENAMES as _BM25_FILENAMES
 from konte.stores.faiss_store import SIGNED_FILENAMES as _FAISS_FILENAMES
@@ -15,6 +16,12 @@ from konte.stores.faiss_store import SIGNED_FILENAMES as _FAISS_FILENAMES
 logger = structlog.get_logger()
 
 _INDEX_FILENAMES = (*_FAISS_FILENAMES, *_BM25_FILENAMES)
+
+
+def _locate(name: str, storage_path: Path | None) -> tuple[Path, Path]:
+    """Return the storage root and the directory the named project sits in."""
+    path = storage_path or settings.STORAGE_PATH
+    return path, path / validate_project_name(name)
 
 
 def create_project(
@@ -33,10 +40,10 @@ def create_project(
         New Project instance.
 
     Raises:
-        ValueError: If project already exists.
+        ValueError: If the name is not a single path component, or a project of
+            that name already exists.
     """
-    path = storage_path or settings.STORAGE_PATH
-    project_dir = path / name
+    path, project_dir = _locate(name, storage_path)
 
     if project_dir.exists():
         raise ValueError(f"Project already exists: {name}")
@@ -85,6 +92,7 @@ def get_project(
         Loaded Project instance.
 
     Raises:
+        ValueError: If the name is not a single path component.
         FileNotFoundError: If project doesn't exist.
     """
     return Project.open(name=name, storage_path=storage_path)
@@ -101,10 +109,10 @@ def delete_project(
         storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
 
     Raises:
+        ValueError: If the name is not a single path component.
         FileNotFoundError: If project doesn't exist.
     """
-    path = storage_path or settings.STORAGE_PATH
-    project_dir = path / name
+    path, project_dir = _locate(name, storage_path)
 
     if not project_dir.exists():
         raise FileNotFoundError(f"Project not found: {name}")
@@ -132,10 +140,10 @@ def trust_project(
         The names of the files recorded.
 
     Raises:
+        ValueError: If the name is not a single path component.
         FileNotFoundError: If project doesn't exist.
     """
-    path = storage_path or settings.STORAGE_PATH
-    project_dir = path / name
+    _, project_dir = _locate(name, storage_path)
 
     if not (project_dir / "config.json").exists():
         raise FileNotFoundError(f"Project not found: {name}")
@@ -158,8 +166,11 @@ def project_exists(
         storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
 
     Returns:
-        True if project exists.
+        True if project exists. A name that reaches outside the storage root
+        is absent rather than an error, so a router can answer on it.
     """
-    path = storage_path or settings.STORAGE_PATH
-    project_dir = path / name
+    try:
+        _, project_dir = _locate(name, storage_path)
+    except ValueError:
+        return False
     return project_dir.exists() and (project_dir / "config.json").exists()

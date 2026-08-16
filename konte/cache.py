@@ -9,6 +9,7 @@ from typing import NamedTuple
 import structlog
 
 from konte.config import settings
+from konte.models import validate_project_name
 from konte.project import Project
 
 logger = structlog.get_logger()
@@ -98,9 +99,11 @@ class ProjectCache:
             A loaded project, shared with every other caller holding it.
 
         Raises:
+            ValueError: If the name is not a single path component.
             FileNotFoundError: If no project of that name exists.
         """
-        key = _Key(name, Path(storage_path or settings.STORAGE_PATH))
+        # Checked before the fingerprint, which would otherwise stat outside the root.
+        key = _Key(validate_project_name(name), Path(storage_path or settings.STORAGE_PATH))
         directory = key.storage_path / key.name
 
         fingerprint = _fingerprint(directory)
@@ -193,6 +196,7 @@ def get_shared_project(name: str, storage_path: Path | None = None) -> Project:
         The shared, loaded project.
 
     Raises:
+        ValueError: If the name is not a single path component.
         FileNotFoundError: If no project of that name exists.
     """
     return _cache.get(name, storage_path)

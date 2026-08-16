@@ -23,6 +23,7 @@ from konte.models import (
     RetrievalMode,
     RetrievalResponse,
     SegmentKey,
+    validate_project_name,
 )
 from konte.storage import read_json, write_json
 from konte.stores import BM25Store, FAISSStore, Retriever
@@ -593,6 +594,9 @@ class Project:
 
         Returns:
             New Project instance.
+
+        Raises:
+            ValueError: If the name is not a single path component.
         """
         defaults: dict[str, Any] = {
             "storage_path": storage_path or settings.STORAGE_PATH,
@@ -621,10 +625,11 @@ class Project:
             Loaded Project instance.
 
         Raises:
+            ValueError: If the name is not a single path component.
             FileNotFoundError: If the project's config.json does not exist.
         """
         path = storage_path or settings.STORAGE_PATH
-        project_dir = path / name
+        project_dir = path / validate_project_name(name)
         config_path = project_dir / "config.json"
 
         if not config_path.exists():

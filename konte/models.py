@@ -1,9 +1,9 @@
 """Pydantic models for Konte contextual RAG library."""
 
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 MetadataFilter = dict[str, Any]  # simple equality filter, AND logic across keys
 RetrievalMode = Literal["hybrid", "semantic", "lexical"]
@@ -133,6 +133,24 @@ class BuildCheckpoint(BaseModel):
     contextualized_chunks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def validate_project_name(name: str) -> str:
+    """Return the name if it names one directory under the storage root.
+
+    Callers join the name onto the storage path, so one the filesystem reads
+    as more than a single component reaches outside the root — where
+    delete_project() would remove whatever it found.
+
+    Raises:
+        ValueError: If the name is not a single path component.
+    """
+    if not name or name == ".." or "\0" in name or PurePath(name).name != name:
+        raise ValueError(
+            f"Invalid project name: {name!r}. A project name is one directory "
+            "name under the storage root: no path separators, no '..', not absolute."
+        )
+    return name
+
+
 class ProjectConfig(BaseModel):
     """Configuration for a project."""
 
@@ -163,3 +181,9 @@ class ProjectConfig(BaseModel):
     fusion_weight_lexical: float = Field(default=0.5, ge=0.0)
 
     model_config = ConfigDict(ser_json_path="str")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """A name read back from config.json is checked like any other."""
+        return validate_project_name(value)
