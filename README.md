@@ -81,10 +81,10 @@ pip install -e .          # library + CLI
 
 Examples below assume an activated environment; with uv, run them as `uv run konte ...` instead.
 
-**Optional extras** — the REST API server and web UI:
+**Optional extras** — the REST API server:
 
 ```bash
-uv sync --extra api --extra ui      # or: pip install -e ".[api,ui]"
+uv sync --extra api      # or: pip install -e ".[api]"
 ```
 
 `uv sync` is exact: name every extra and group you want in one command, or pass `--inexact` to add without removing.
@@ -180,10 +180,9 @@ Serve it instead of scripting it:
 
 ```bash
 konte serve --host 0.0.0.0 --port 8000   # REST API   ([api] extra)
-konte ui --port 7860                     # web UI     ([ui] extra)
 ```
 
-Both open each project once and keep it in memory, so a request costs a search
+The server opens each project once and keeps it in memory, so a request costs a search
 rather than a reload. Set `PRELOAD_PROJECTS` to pay for that opening at startup
 instead of on the first request, and `PROJECT_CACHE_SIZE` to bound how many
 projects a server holds at once:

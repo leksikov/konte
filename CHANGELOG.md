@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `use_keyword_extraction` on `Project.query()`, `query_async()`,
   `query_with_answer()`, every `Retriever` entry point, the `/query` and `/ask`
-  request bodies, the `konte query`/`konte ask` CLI, and the Gradio UI. Unset
+  request bodies, and the `konte query`/`konte ask` CLI. Unset
   follows the new `BM25_KEYWORD_EXTRACTION` setting, so BM25 keyword extraction
   can be turned off per call or per deployment instead of being unconditional
 - `Retriever.retrieve_async()`, the non-blocking counterpart to `retrieve()`
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The API and the UI serve every request from a cached project instead of
+- The API serves every request from a cached project instead of
   reading the whole project back from disk each time. On a 20k-chunk project a
   request spent ~330ms reopening before answering; it now costs a dictionary
   lookup, and the FastAPI routes take the project through a dependency so a cold
@@ -97,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The Gradio UI: the `konte.ui` package, the `konte ui` command, and the `ui`
+  and `server` extras. It was a demo front end over the public API that nothing
+  else imported, and the library ships without it. `server` was `api` plus
+  Gradio, so `api` is now the only server extra
 - `ProjectConfig.context_min_tokens` and `context_max_tokens`, and the
   `CONTEXT_MIN_TOKENS` / `CONTEXT_MAX_TOKENS` settings behind them. Nothing read
   any of the four — context length comes from the prompt template — so setting
