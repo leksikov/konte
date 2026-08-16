@@ -1,18 +1,15 @@
 """Project class - main interface for contextual RAG."""
 
-import asyncio
-import json
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, TypeVar
 
 import structlog
 
 from konte.checkpoint import CheckpointLog
 from konte.chunker import create_chunks
 from konte.config import settings
-from konte.context import ContextBatch, generate_contexts_batch, load_prompt_template
 from konte.generator import GeneratedAnswer, generate_answer
 from konte.loader import load_document
 from konte.models import (
@@ -25,52 +22,13 @@ from konte.models import (
     SegmentKey,
     validate_project_name,
 )
-from konte.storage import read_json, write_json
+from konte.project.builder import ProjectBuilder
+from konte.project.store import ProjectStore
 from konte.stores import BM25Store, FAISSStore, Retriever
-from konte.stores.bm25_store import INDEX_FILENAME as BM25_INDEX_FILENAME
-from konte.stores.bm25_store import LEGACY_INDEX_FILENAME as LEGACY_BM25_INDEX_FILENAME
-from konte.stores.faiss_store import INDEX_FILENAME as FAISS_INDEX_FILENAME
 
 logger = structlog.get_logger()
 
-_SEGMENT_KEY_SEPARATOR = "|"
-
-_CONFIG_INDENT = 2  # config.json is the one artifact people open by hand
-
 _T = TypeVar("_T")
-
-
-class _ContextTally(NamedTuple):
-    """How many of a build's chunks lost or shortened their context."""
-
-    failed: int
-    truncated: int
-
-
-def _encode_segment_key(key: SegmentKey) -> str:
-    """Flatten a (source, segment index) key into a JSON-safe string."""
-    source, index = key
-    return f"{source}{_SEGMENT_KEY_SEPARATOR}{index}"
-
-
-def _decode_segment_key(raw: str) -> SegmentKey:
-    """Parse a stored segment key.
-
-    Keys with no separator were written by an older format that recorded only
-    the segment index, so their source document is unrecoverable.
-    """
-    source, separator, index = raw.rpartition(_SEGMENT_KEY_SEPARATOR)
-    if not separator:
-        return ("unknown", int(raw))
-    return (source, int(index))
-
-
-def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
-    """Group chunks by the segment they were cut from, preserving order."""
-    grouped: defaultdict[SegmentKey, list[Chunk]] = defaultdict(list)
-    for chunk in chunks:
-        grouped[(chunk.source, chunk.segment_idx)].append(chunk)
-    return dict(grouped)
 
 
 def _pick_source(path: Path, taken: set[str]) -> str:
@@ -123,24 +81,6 @@ def _duplicate_source(
     return None
 
 
-def _parse_chunks(path: Path) -> list[Chunk]:
-    """Rebuild the raw chunk list, empty when the artifact is absent."""
-    data = read_json(path)
-    return [] if data is None else [Chunk(**item) for item in data]
-
-
-def _parse_segments(path: Path) -> dict[SegmentKey, str]:
-    """Rebuild the segment texts, empty when the artifact is absent."""
-    data = read_json(path)
-    return {} if data is None else {_decode_segment_key(key): text for key, text in data.items()}
-
-
-def _parse_contextualized(path: Path) -> list[ContextualizedChunk]:
-    """Rebuild the contextualized chunks, empty when the artifact is absent."""
-    data = read_json(path)
-    return [] if data is None else [ContextualizedChunk.from_storage_dict(item) for item in data]
-
-
 class _DeferredArtifact(Generic[_T]):
     """Instance attribute parsed from disk the first time it is read.
 
@@ -168,7 +108,11 @@ class _DeferredArtifact(Generic[_T]):
 
 
 class Project:
-    """Main interface for contextual RAG operations."""
+    """Main interface for contextual RAG operations.
+
+    Owns the corpus and the indexes; ProjectBuilder fills them and ProjectStore
+    keeps them on disk.
+    """
 
     _chunks = _DeferredArtifact[list[Chunk]]()
     _segments = _DeferredArtifact[dict[SegmentKey, str]]()
@@ -181,11 +125,12 @@ class Project:
             config: Project configuration.
         """
         self._config = config
+        self._store = ProjectStore(config.storage_path / config.name)
         self._deferred: dict[str, Callable[[], Any]] = {}
         self._chunks = []
         self._contextualized_chunks = []
         self._segments = {}
-        self._checkpoint = CheckpointLog(self.project_dir)
+        self._checkpoint = CheckpointLog(self._store.directory)
         self._faiss: FAISSStore | None = None
         self._bm25: BM25Store | None = None
         self._retriever: Retriever | None = None
@@ -198,7 +143,7 @@ class Project:
     @property
     def project_dir(self) -> Path:
         """Get project directory path."""
-        return self._config.storage_path / self._config.name
+        return self._store.directory
 
     def add_documents(self, file_paths: Sequence[str | Path]) -> int:
         """Add documents to the project.
@@ -314,25 +259,30 @@ class Project:
             logger.warning("build_no_chunks")
             return
 
-        use_faiss = enable_faiss if enable_faiss is not None else self._config.enable_faiss
-        use_bm25 = enable_bm25 if enable_bm25 is not None else self._config.enable_bm25
-        if not use_faiss and not use_bm25:
-            raise ValueError("At least one index (FAISS or BM25) must be enabled")
-
-        chunks_by_segment = _group_by_segment(self._chunks)
-        completed = self._restore_checkpoint(resume, len(chunks_by_segment))
-        prompt_template = (
-            None
-            if skip_context
-            else load_prompt_template(prompt_path or self._config.context_prompt_path)
+        builder = ProjectBuilder(
+            self._config,
+            self._checkpoint,
+            enable_faiss=enable_faiss,
+            enable_bm25=enable_bm25,
         )
+        try:
+            built = await builder.run(
+                self._chunks,
+                self._segments,
+                skip_context=skip_context,
+                resume=resume,
+                prompt_path=prompt_path,
+            )
+        finally:
+            # A rejected build's contexts are paid for; keep them.
+            self._contextualized_chunks = builder.chunks
 
-        tally = await self._generate_contexts(
-            chunks_by_segment, completed, prompt_template, skip_context
-        )
-        # Before the indexes: a rejected corpus should cost no embedding calls.
-        self._require_context_coverage(tally)
-        await self._build_indexes(use_faiss=use_faiss, use_bm25=use_bm25)
+        # A skipped index keeps the one the project already has.
+        if built.faiss is not None:
+            self._faiss = built.faiss
+        if built.bm25 is not None:
+            self._bm25 = built.bm25
+        self._attach_retriever()
 
         self._checkpoint.clear()
         logger.info("checkpoint_cleared")
@@ -520,32 +470,15 @@ class Project:
 
         Stores storage_path and context_prompt_path as relative paths in config.json
         so the project is portable across machines.
-
-        Each file is replaced in one step, but the set of them is not
-        transactional: a crash partway through leaves newer artifacts beside
-        older ones, which a rebuild resolves.
         """
-        project_dir = self.project_dir
-        project_dir.mkdir(parents=True, exist_ok=True)
-
-        write_json(project_dir / "config.json", self._portable_config(), indent=_CONFIG_INDENT)
-        write_json(project_dir / "raw_chunks.json", [c.model_dump() for c in self._chunks])
-        write_json(
-            project_dir / "segments.json",
-            {_encode_segment_key(key): text for key, text in self._segments.items()},
+        self._store.write(
+            self._config,
+            chunks=self._chunks,
+            segments=self._segments,
+            contextualized_chunks=self._contextualized_chunks,
+            faiss=self._faiss,
+            bm25=self._bm25,
         )
-        write_json(
-            project_dir / "chunks.json",
-            [c.to_storage_dict() for c in self._contextualized_chunks],
-        )
-
-        if self._faiss is not None:
-            self._faiss.save(project_dir)
-
-        if self._bm25 is not None:
-            self._bm25.save(project_dir)
-
-        logger.info("project_saved", path=str(project_dir))
 
     def load(self) -> None:
         """Load project state from disk.
@@ -556,24 +489,25 @@ class Project:
         Raises:
             FileNotFoundError: If the project directory does not exist.
         """
-        project_dir = self.project_dir
+        store = self._store
 
-        if not project_dir.exists():
-            raise FileNotFoundError(f"Project not found: {project_dir}")
+        if not store.exists():
+            raise FileNotFoundError(f"Project not found: {store.directory}")
 
-        self._defer("_chunks", lambda: _parse_chunks(project_dir / "raw_chunks.json"))
-        self._defer("_segments", lambda: _parse_segments(project_dir / "segments.json"))
-        self._defer(
-            "_contextualized_chunks",
-            lambda: _parse_contextualized(project_dir / "chunks.json"),
+        self._defer("_chunks", store.read_chunks)
+        self._defer("_segments", store.read_segments)
+        self._defer("_contextualized_chunks", store.read_contextualized_chunks)
+
+        # Passed as a callable: reading the chunks here would defeat the
+        # deferred parse.
+        self._faiss, self._bm25 = store.read_indexes(
+            self._config, lambda: self._contextualized_chunks
         )
-
-        self._load_indexes(project_dir)
         self._attach_retriever()
 
         logger.info(
             "project_loaded",
-            path=str(project_dir),
+            path=str(store.directory),
             faiss=self._faiss is not None,
             bm25=self._bm25 is not None,
         )
@@ -629,22 +563,9 @@ class Project:
             FileNotFoundError: If the project's config.json does not exist.
         """
         path = storage_path or settings.STORAGE_PATH
-        project_dir = path / validate_project_name(name)
-        config_path = project_dir / "config.json"
+        store = ProjectStore(path / validate_project_name(name))
 
-        if not config_path.exists():
-            raise FileNotFoundError(f"Project config not found: {config_path}")
-
-        config_data = json.loads(config_path.read_text(encoding="utf-8"))
-
-        if not Path(config_data.get("storage_path", "")).is_absolute():
-            config_data["storage_path"] = str(path.resolve())
-
-        prompt_path = config_data.get("context_prompt_path")
-        if prompt_path and not Path(prompt_path).is_absolute():
-            config_data["context_prompt_path"] = str((project_dir / prompt_path).resolve())
-
-        project = cls(ProjectConfig(**config_data))
+        project = cls(store.read_config(path))
         project.load()
         return project
 
@@ -659,196 +580,6 @@ class Project:
         self.__dict__[name] = value
         return value
 
-    def _restore_checkpoint(self, resume: bool, total_segments: int) -> set[str]:
-        """Pick up an interrupted build, or start a fresh one.
-
-        Args:
-            resume: If False, any checkpoint on disk is ignored.
-            total_segments: Segment count, reported in the resume log line.
-
-        Returns:
-            The segment keys already contextualized.
-        """
-        self._contextualized_chunks = []
-
-        checkpoint = self._checkpoint.read() if resume else None
-        if checkpoint is None:
-            # Appending to what an earlier build left would fold two runs into one.
-            self._checkpoint.clear()
-            return set()
-
-        self._contextualized_chunks = [
-            ContextualizedChunk.from_storage_dict(item)
-            for item in checkpoint.contextualized_chunks
-        ]
-        completed = set(checkpoint.completed_segments)
-        logger.info(
-            "checkpoint_resumed",
-            completed_segments=len(completed),
-            total_segments=total_segments,
-        )
-        return completed
-
-    async def _generate_contexts(
-        self,
-        chunks_by_segment: dict[SegmentKey, list[Chunk]],
-        completed: set[str],
-        prompt_template: str | None,
-        skip_context: bool,
-    ) -> _ContextTally:
-        """Contextualize every not-yet-processed segment, concurrently.
-
-        Each segment appends itself to the checkpoint log as it finishes, so an
-        interrupted run resumes at a segment boundary. A segment that lost a
-        context is left out of it: checkpointing one would retire those chunks
-        context-free, and no later run would ask for them again.
-
-        Returns:
-            What this run's chunks lost, across every segment it processed.
-        """
-        total_segments = len(chunks_by_segment)
-        logger.info(
-            "context_generation_started",
-            total_segments=total_segments,
-            skip_context=skip_context,
-        )
-
-        pending: list[tuple[SegmentKey, str]] = []
-        for seg_key in chunks_by_segment:
-            seg_key_str = _encode_segment_key(seg_key)
-            if seg_key_str in completed:
-                logger.info("segment_skipped", segment_key=seg_key_str, reason="checkpoint")
-                continue
-            pending.append((seg_key, seg_key_str))
-
-        segment_gate = asyncio.Semaphore(settings.concurrency_limit)
-
-        async def contextualize(
-            seg_key: SegmentKey,
-            seg_key_str: str,
-        ) -> tuple[str, ContextBatch]:
-            """Run one segment, tagged with the key it belongs to."""
-            segment_chunks = chunks_by_segment[seg_key]
-            async with segment_gate:
-                logger.info(
-                    "generating_context_for_segment",
-                    segment_key=seg_key_str,
-                    total_segments=total_segments,
-                    num_chunks=len(segment_chunks),
-                )
-                return seg_key_str, await generate_contexts_batch(
-                    segment=self._segments.get(seg_key, ""),
-                    chunks=segment_chunks,
-                    model=self._config.context_model,
-                    prompt_template=prompt_template,
-                    skip_context=skip_context,
-                )
-
-        produced: dict[str, list[ContextualizedChunk]] = {}
-        failed = truncated = 0
-
-        with self._checkpoint.appending() as log:
-            tasks = [asyncio.ensure_future(contextualize(*item)) for item in pending]
-            try:
-                for finished in asyncio.as_completed(tasks):
-                    seg_key_str, batch = await finished
-                    produced[seg_key_str] = batch.chunks
-                    failed += batch.failed
-                    truncated += batch.truncated
-
-                    if batch.failed:
-                        logger.error(
-                            "segment_contexts_incomplete",
-                            segment_key=seg_key_str,
-                            failed=batch.failed,
-                            num_chunks=len(batch.chunks),
-                        )
-                        continue
-
-                    log.append(seg_key_str, [c.to_storage_dict() for c in batch.chunks])
-                    completed.add(seg_key_str)
-                    logger.info(
-                        "checkpoint_saved",
-                        segment_key=seg_key_str,
-                        completed=len(completed),
-                        total=total_segments,
-                    )
-            except BaseException:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
-
-        # Segment order, not the order the responses arrived.
-        self._contextualized_chunks.extend(
-            chunk for _, seg_key_str in pending for chunk in produced[seg_key_str]
-        )
-
-        logger.info(
-            "context_generation_complete",
-            num_chunks=len(self._contextualized_chunks),
-            skipped=skip_context,
-            failed=failed,
-            truncated=truncated,
-        )
-        return _ContextTally(failed, truncated)
-
-    def _require_context_coverage(self, tally: _ContextTally) -> None:
-        """Refuse to index a corpus that lost too much of its context.
-
-        Nothing downstream can detect the loss: the index looks complete either
-        way. Truncated contexts are reported but tolerated, being degraded
-        rather than absent.
-
-        Raises:
-            RuntimeError: If the failed share exceeds
-                settings.CONTEXT_FAILURE_THRESHOLD.
-        """
-        total = len(self._contextualized_chunks)
-        if tally.truncated:
-            logger.warning(
-                "context_truncated_total",
-                truncated=tally.truncated,
-                total_chunks=total,
-            )
-        if not tally.failed or not total:
-            return
-
-        share = tally.failed / total
-        logger.error(
-            "context_generation_incomplete",
-            failed=tally.failed,
-            total_chunks=total,
-            share=round(share, 4),
-            threshold=settings.CONTEXT_FAILURE_THRESHOLD,
-        )
-        if share <= settings.CONTEXT_FAILURE_THRESHOLD:
-            return
-
-        raise RuntimeError(
-            f"{tally.failed} of {total} chunks ({share:.1%}) came back with no "
-            f"generated context, over the {settings.CONTEXT_FAILURE_THRESHOLD:.1%} "
-            "allowed by CONTEXT_FAILURE_THRESHOLD. Indexed, they would be "
-            "searchable only by their own wording, so nothing was indexed. "
-            "Check the context endpoint and run build() again to retry just "
-            "the segments that failed, or raise CONTEXT_FAILURE_THRESHOLD to "
-            "accept the loss."
-        )
-
-    async def _build_indexes(self, *, use_faiss: bool, use_bm25: bool) -> None:
-        """Build the enabled indexes and wire a retriever over them."""
-        if use_faiss:
-            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            await self._faiss.abuild_index(self._contextualized_chunks)
-            logger.info("faiss_index_built")
-
-        if use_bm25:
-            self._bm25 = BM25Store()
-            self._bm25.build_index(self._contextualized_chunks)
-            logger.info("bm25_index_built")
-
-        self._attach_retriever()
-
     def _attach_retriever(self) -> None:
         """Wire a retriever over the current indexes."""
         self._retriever = Retriever(
@@ -857,49 +588,3 @@ class Project:
             semantic_weight=self._config.fusion_weight_semantic,
             lexical_weight=self._config.fusion_weight_lexical,
         )
-
-    def _load_indexes(self, project_dir: Path) -> None:
-        """Attach whichever indexes exist on disk and are enabled in config.
-
-        A pickled index counts as present so load() can refuse it by name,
-        rather than the project opening quietly without one.
-        """
-        if (project_dir / FAISS_INDEX_FILENAME).exists() and self._config.enable_faiss:
-            self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            self._faiss.load(project_dir)
-
-        if self._config.enable_bm25 and (
-            (project_dir / BM25_INDEX_FILENAME).exists()
-            or (project_dir / LEGACY_BM25_INDEX_FILENAME).exists()
-        ):
-            self._bm25 = BM25Store()
-            # Passed as a callable: reading the chunks here would defeat the
-            # deferred parse.
-            self._bm25.load(project_dir, lambda: self._contextualized_chunks)
-
-    def _portable_config(self) -> dict[str, Any]:
-        """Serialize the config with absolute paths made relative where possible.
-
-        An absolute storage_path would pin the project to the machine that wrote
-        it, so it is stored relative to the project's parent directory and
-        rebased by open().
-        """
-        data = self._config.model_dump(mode="json")
-
-        storage_path = Path(data["storage_path"])
-        if storage_path.is_absolute():
-            try:
-                data["storage_path"] = str(storage_path.relative_to(self.project_dir.parent))
-            except ValueError:
-                data["storage_path"] = "."
-
-        prompt_path = data.get("context_prompt_path")
-        if prompt_path and Path(prompt_path).is_absolute():
-            try:
-                data["context_prompt_path"] = str(
-                    Path(prompt_path).relative_to(self.project_dir)
-                )
-            except ValueError:
-                pass  # Prompt lives outside the project; keep it absolute.
-
-        return data

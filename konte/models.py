@@ -10,6 +10,26 @@ RetrievalMode = Literal["hybrid", "semantic", "lexical"]
 SuggestedAction = Literal["deliver", "query_more", "refine_query"]
 SegmentKey = tuple[str, int]
 
+_SEGMENT_KEY_SEPARATOR = "|"
+
+
+def encode_segment_key(key: SegmentKey) -> str:
+    """Flatten a (source, segment index) key into a JSON-safe string."""
+    source, index = key
+    return f"{source}{_SEGMENT_KEY_SEPARATOR}{index}"
+
+
+def decode_segment_key(raw: str) -> SegmentKey:
+    """Parse a stored segment key.
+
+    Keys with no separator were written by an older format that recorded only
+    the segment index, so their source document is unrecoverable.
+    """
+    source, separator, index = raw.rpartition(_SEGMENT_KEY_SEPARATOR)
+    if not separator:
+        return ("unknown", int(raw))
+    return (source, int(index))
+
 
 class Chunk(BaseModel):
     """A chunk of text from a document."""

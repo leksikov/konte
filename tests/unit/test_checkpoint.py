@@ -250,7 +250,7 @@ class TestBuildResume:
         with project._checkpoint.appending() as appender:
             appender.append("doc.pdf|0", [{"chunk": chunk.model_dump(), "context": "old context"}])
 
-        with patch("konte.project.generate_contexts_batch") as mock_gen:
+        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
             from konte.context import ContextBatch
             from konte.models import ContextualizedChunk
 
@@ -288,7 +288,7 @@ class TestBuildResume:
         with project._checkpoint.appending() as appender:
             appender.append("doc.pdf|0", [{"chunk": chunk1.model_dump(), "context": "ctx1"}])
 
-        with patch("konte.project.generate_contexts_batch") as mock_gen:
+        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
             from konte.context import ContextBatch
             from konte.models import ContextualizedChunk
 
@@ -314,7 +314,7 @@ class TestBuildResume:
         project._chunks = [chunk]
         project._segments = {("doc.pdf", 0): "Segment text"}
 
-        with patch("konte.project.generate_contexts_batch") as mock_gen:
+        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
             from konte.context import ContextBatch
 
             mock_gen.return_value = ContextBatch(
@@ -361,7 +361,7 @@ class TestContextCoverage:
                 0,
             )
 
-        return patch("konte.project.generate_contexts_batch", side_effect=batch)
+        return patch("konte.project.builder.generate_contexts_batch", side_effect=batch)
 
     async def test_losing_most_contexts_fails_the_build(self, tmp_path):
         """Test a corpus mostly without context is reported, not indexed."""
