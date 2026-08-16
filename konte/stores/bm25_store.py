@@ -1,6 +1,5 @@
 """BM25 lexical search store."""
 
-import pickle
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
@@ -13,7 +12,7 @@ import structlog
 from rank_bm25 import BM25Okapi
 
 from konte.config import settings
-from konte.integrity import sign, verify
+from konte.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.models import ContextualizedChunk, MetadataFilter
 from konte.storage import atomic_writer
 from konte.stores.base import matches_filter_value
@@ -23,10 +22,15 @@ logger = structlog.get_logger()
 # Returns the chunks an index was built over, in index order.
 Corpus = Callable[[], Sequence[ContextualizedChunk]]
 
-LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
+INDEX_FILENAME = "bm25.npz"
 
-# What this store writes, and what its signatures cover.
-SIGNED_FILENAMES = ("bm25.pkl",)
+LEGACY_CHUNKS_FILENAME = "bm25_chunks.json"
+LEGACY_INDEX_FILENAME = "bm25.pkl"
+
+SIGNED_FILENAMES = (INDEX_FILENAME,)
+
+# Bump on any change to the arrays save() writes.
+_FORMAT_VERSION = 1
 
 # A stale index stops matching silently, not loudly. Bump on any _tokenize change.
 _TOKENIZER_VERSION = 2
@@ -278,20 +282,49 @@ def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
     return top[np.argsort(-scores[top], kind="stable")]
 
 
-class _Postings(NamedTuple):
-    """Which documents hold each term, as spans of two corpus-wide arrays."""
-
-    documents: np.ndarray  # document positions, grouped by term
-    frequencies: np.ndarray  # term counts, aligned with documents
-    spans: dict[str, tuple[int, int]]  # term -> half-open span into both
+_NO_DOCUMENTS = np.empty(0, dtype=np.int32)
 
 
-def _invert(index: BM25Okapi) -> _Postings:
-    """Group the per-document term frequencies by term.
+class _Model(NamedTuple):
+    """The ranking state, in the form the index file stores it.
 
-    BM25Okapi.get_scores walks the whole corpus once per query token, and
-    bigrams make a CJK query several times longer.
+    Postings are term-major: a term's id spans `documents` and `frequencies`
+    between consecutive `offsets`, ascending by document. BM25Okapi instead
+    walks the whole corpus once per query token, and bigrams make a CJK query
+    several times longer.
     """
+
+    terms: dict[str, int]  # term -> its id, an index into idf and offsets
+    offsets: np.ndarray
+    documents: np.ndarray
+    frequencies: np.ndarray
+    idf: np.ndarray
+    doc_len: np.ndarray
+    avgdl: float
+    k1: float
+    b: float
+
+    @property
+    def size(self) -> int:
+        """int: How many documents the model ranks."""
+        return int(self.doc_len.size)
+
+    def documents_for(self, term: str) -> np.ndarray:
+        """Return the documents holding a term, ascending, empty when unindexed."""
+        term_id = self.terms.get(term)
+        if term_id is None:
+            return _NO_DOCUMENTS
+        return self.documents[self.offsets[term_id] : self.offsets[term_id + 1]]
+
+
+def _holds(documents: np.ndarray, position: int) -> bool:
+    """Test one document against a term's ascending span."""
+    found = int(np.searchsorted(documents, position))
+    return found < documents.size and int(documents[found]) == position
+
+
+def _invert(index: BM25Okapi) -> _Model:
+    """Regroup a freshly built index's per-document frequencies by term."""
     grouped: dict[str, tuple[list[int], list[int]]] = {}
     for position, frequencies in enumerate(index.doc_freqs):
         for term, count in frequencies.items():
@@ -304,39 +337,71 @@ def _invert(index: BM25Okapi) -> _Postings:
     total = sum(len(documents) for documents, _ in grouped.values())
     documents = np.empty(total, dtype=np.int32)
     counts = np.empty(total, dtype=np.float32)
-    spans = {}
+    offsets = np.empty(len(grouped) + 1, dtype=np.int64)
+    idf = np.empty(len(grouped), dtype=np.float64)
+    terms: dict[str, int] = {}
 
     start = 0
-    for term, (term_documents, term_counts) in grouped.items():
+    for term_id, (term, (term_documents, term_counts)) in enumerate(grouped.items()):
         stop = start + len(term_documents)
         documents[start:stop] = term_documents
         counts[start:stop] = term_counts
-        spans[term] = (start, stop)
+        offsets[term_id] = start
+        idf[term_id] = index.idf.get(term, 0.0)
+        terms[term] = term_id
         start = stop
+    offsets[len(grouped)] = start
 
-    return _Postings(documents, counts, spans)
+    return _Model(
+        terms=terms,
+        offsets=offsets,
+        documents=documents,
+        frequencies=counts,
+        idf=idf,
+        doc_len=np.array(index.doc_len, dtype=np.int32),
+        avgdl=float(index.avgdl),
+        k1=float(index.k1),
+        b=float(index.b),
+    )
 
 
-def _score(
-    index: BM25Okapi,
-    postings: _Postings,
-    tokens: Sequence[str],
-    length_norm: np.ndarray,
-) -> np.ndarray:
+def _encode_terms(terms: dict[str, int]) -> np.ndarray:
+    """Pack the vocabulary into one array, in term id order.
+
+    Newline separates the terms; no token _tokenize emits can contain one.
+    """
+    ordered = [""] * len(terms)
+    for term, term_id in terms.items():
+        ordered[term_id] = term
+    return np.frombuffer("\n".join(ordered).encode("utf-8"), dtype=np.uint8)
+
+
+def _decode_terms(vocabulary: np.ndarray) -> dict[str, int]:
+    """Unpack the vocabulary written by _encode_terms()."""
+    blob = vocabulary.tobytes().decode("utf-8")
+    if not blob:
+        return {}
+    return {term: term_id for term_id, term in enumerate(blob.split("\n"))}
+
+
+def _score(model: _Model, tokens: Sequence[str], length_norm: np.ndarray) -> np.ndarray:
     """Score every document against the query terms.
 
     Scores identical to BM25Okapi.get_scores; keep them that way.
     """
-    scores = np.zeros(len(index.doc_freqs))
-    saturation = index.k1 + 1
+    scores = np.zeros(model.size)
+    saturation = model.k1 + 1
 
     for token, count in Counter(tokens).items():
-        idf = index.idf.get(token)
-        span = postings.spans.get(token)
-        if not idf or span is None:  # unindexed, or floored to zero weight
+        term_id = model.terms.get(token)
+        if term_id is None:
             continue
-        documents = postings.documents[span[0] : span[1]]
-        matched = postings.frequencies[span[0] : span[1]].astype(np.float64)
+        idf = float(model.idf[term_id])
+        if not idf:  # floored to zero weight
+            continue
+        start, stop = model.offsets[term_id], model.offsets[term_id + 1]
+        documents = model.documents[start:stop]
+        matched = model.frequencies[start:stop].astype(np.float64)
         scores[documents] += (count * idf) * (
             matched * saturation / (matched + length_norm[documents])
         )
@@ -344,18 +409,21 @@ def _score(
     return scores
 
 
-def _term_weights(index: BM25Okapi, tokens: Sequence[str], unseen: float) -> dict[str, float]:
+def _term_weights(model: _Model, tokens: Sequence[str], unseen: float) -> dict[str, float]:
     """Weight each distinct query term by how much it narrows the corpus.
 
     An unindexed term weighs as much as the rarest indexed one, so naming
     something absent cannot read as a full match. Negative IDF — a term in
     most documents, or any term of a corpus too small to separate — clamps away.
     """
-    idf = index.idf
-    return {token: max(idf.get(token, unseen), 0.0) for token in dict.fromkeys(tokens)}
+    terms = model.terms
+    return {
+        token: max(float(model.idf[terms[token]]) if token in terms else unseen, 0.0)
+        for token in dict.fromkeys(tokens)
+    }
 
 
-def _coverage(index: BM25Okapi, weights: dict[str, float], positions: Sequence[int]) -> list[float]:
+def _coverage(model: _Model, weights: dict[str, float], positions: Sequence[int]) -> list[float]:
     """Score how much of the weighted query each of the given documents carries."""
     if not weights:
         return [0.0] * len(positions)
@@ -365,9 +433,9 @@ def _coverage(index: BM25Okapi, weights: dict[str, float], positions: Sequence[i
         weights = dict.fromkeys(weights, 1.0)
         total = float(len(weights))
 
-    frequencies = index.doc_freqs
+    carried = [(weight, model.documents_for(term)) for term, weight in weights.items()]
     return [
-        sum(weight for term, weight in weights.items() if term in frequencies[position]) / total
+        sum(weight for weight, documents in carried if _holds(documents, position)) / total
         for position in positions
     ]
 
@@ -377,27 +445,24 @@ class BM25Store:
 
     def __init__(self):
         """Initialize BM25 store."""
-        self._index: BM25Okapi | None = None
+        self._model: _Model | None = None
         self._corpus: Corpus = list  # nothing indexed yet
         self._unseen_idf = 0.0
         self._length_norm = np.zeros(0)
-        self._postings: _Postings | None = None
         self._filters: _FilterIndex | None = None
 
-    def _attach(self, index: BM25Okapi, corpus: Corpus) -> None:
+    def _attach(self, model: _Model, corpus: Corpus) -> None:
         """Bind a ranking model to the chunks it was built over.
 
         The rarest term's IDF and the length normalization are derived here
         rather than per query: both scan a structure the size of the corpus.
-        Postings wait for the first query, where the corpus is read too.
         """
-        self._index = index
+        self._model = model
         self._corpus = corpus
-        self._unseen_idf = max(index.idf.values(), default=0.0)
-        self._postings = None
+        self._unseen_idf = float(model.idf.max()) if model.idf.size else 0.0
         self._filters = None
-        doc_len = np.array(index.doc_len, dtype=np.float64)
-        self._length_norm = index.k1 * (1 - index.b + index.b * doc_len / index.avgdl)
+        doc_len = model.doc_len.astype(np.float64)
+        self._length_norm = model.k1 * (1 - model.b + model.b * doc_len / model.avgdl)
 
     def build_index(self, chunks: list[ContextualizedChunk]) -> None:
         """Build BM25 index from contextualized chunks.
@@ -410,17 +475,16 @@ class BM25Store:
             return
 
         index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
-        self._attach(index, lambda: chunks)
+        self._attach(_invert(index), lambda: chunks)
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
     def save(self, directory: Path) -> None:
         """Save the BM25 ranking model to disk.
 
-        The model is pickled because rank_bm25 exposes no serialization format
-        of its own. The tokenized corpus is not stored — BM25Okapi scores from
-        the per-document term frequencies it already holds. The pickle is signed
-        as it is written, since load() will only read one it can authenticate.
+        Plain arrays rather than a pickled rank_bm25 model: reading a pickle
+        runs whatever it holds. The corpus is not stored — ranking reads the
+        term frequencies alone.
 
         Args:
             directory: Directory to save index files.
@@ -428,17 +492,34 @@ class BM25Store:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
 
-        if self._index is None:
+        model = self._model
+        if model is None:
             logger.warning("bm25_save_no_index")
             return
 
-        with atomic_writer(directory / "bm25.pkl") as handle:
-            pickle.dump({"index": self._index, "tokenizer": _TOKENIZER_VERSION}, handle)
+        with atomic_writer(directory / INDEX_FILENAME) as handle:
+            np.savez(
+                handle,
+                format=np.array([_FORMAT_VERSION]),
+                tokenizer=np.array([_TOKENIZER_VERSION]),
+                vocabulary=_encode_terms(model.terms),
+                offsets=model.offsets,
+                documents=model.documents,
+                frequencies=model.frequencies,
+                idf=model.idf,
+                doc_len=model.doc_len,
+                params=np.array([model.avgdl, model.k1, model.b]),
+            )
 
         sign(directory, SIGNED_FILENAMES)
 
-        # An earlier version kept a second copy of the corpus here.
-        (directory / LEGACY_CHUNKS_FILENAME).unlink(missing_ok=True)
+        # Earlier versions kept a second copy of the corpus, then a pickle.
+        for stale in (
+            LEGACY_CHUNKS_FILENAME,
+            LEGACY_INDEX_FILENAME,
+            f"{LEGACY_INDEX_FILENAME}{SIGNATURE_SUFFIX}",
+        ):
+            (directory / stale).unlink(missing_ok=True)
 
         logger.info("bm25_index_saved", directory=str(directory))
 
@@ -452,32 +533,62 @@ class BM25Store:
 
         Raises:
             FileNotFoundError: If the index file is missing.
-            IntegrityError: If the index is not the one this installation signed.
-            ValueError: If the index was built by a different tokenizer.
+            IntegrityError: If the index does not match what was recorded for it.
+            ValueError: If the index was written by a different format or
+                tokenizer version.
         """
         directory = Path(directory)
-        index_path = directory / "bm25.pkl"
+        index_path = directory / INDEX_FILENAME
 
         if not index_path.exists():
+            if (directory / LEGACY_INDEX_FILENAME).exists():
+                raise ValueError(
+                    f"{directory / LEGACY_INDEX_FILENAME} holds a pickled model, and "
+                    f"reading a pickle runs whatever it holds, so it is never loaded. "
+                    f"Rebuild the project to write {INDEX_FILENAME} instead."
+                )
             raise FileNotFoundError(f"BM25 index not found: {index_path}")
 
-        # Unpickling executes whatever the file holds, so it is authenticated first.
         verify(directory, SIGNED_FILENAMES)
 
-        with index_path.open("rb") as f:
-            data = pickle.load(f)
+        # allow_pickle stays off: an array claiming to hold objects would be
+        # executed on the way in.
+        with np.load(index_path, allow_pickle=False) as data:
+            self._reject_stale(index_path, data)
+            avgdl, k1, b = (float(value) for value in data["params"])
+            model = _Model(
+                terms=_decode_terms(data["vocabulary"]),
+                offsets=data["offsets"],
+                documents=data["documents"],
+                frequencies=data["frequencies"],
+                idf=data["idf"],
+                doc_len=data["doc_len"],
+                avgdl=avgdl,
+                k1=k1,
+                b=b,
+            )
 
-        written_by = data.get("tokenizer", 1)
-        if written_by != _TOKENIZER_VERSION:
+        self._attach(model, cache(corpus))
+
+        logger.info("bm25_index_loaded", directory=str(directory))
+
+    @staticmethod
+    def _reject_stale(index_path: Path, data: Any) -> None:
+        """Refuse an index this version would read as something it is not."""
+        written_by = int(data["format"][0])
+        if written_by != _FORMAT_VERSION:
             raise ValueError(
-                f"BM25 index at {index_path} was built by tokenizer v{written_by}, "
+                f"BM25 index at {index_path} is format v{written_by}, but this version "
+                f"reads v{_FORMAT_VERSION}. Rebuild the project to rewrite it."
+            )
+
+        tokenized_by = int(data["tokenizer"][0])
+        if tokenized_by != _TOKENIZER_VERSION:
+            raise ValueError(
+                f"BM25 index at {index_path} was built by tokenizer v{tokenized_by}, "
                 f"but this version indexes v{_TOKENIZER_VERSION} terms. "
                 "Rebuild the project to reindex it."
             )
-
-        self._attach(data["index"], cache(corpus))
-
-        logger.info("bm25_index_loaded", directory=str(directory))
 
     def query(
         self,
@@ -526,7 +637,8 @@ class BM25Store:
             LexicalResults pairing the ranked chunks with their coverage.
         """
         chunks = self._corpus()
-        if self._index is None or not chunks:
+        model = self._model
+        if model is None or not chunks:
             logger.warning("bm25_query_empty_index")
             return LexicalResults([], {})
 
@@ -534,13 +646,10 @@ class BM25Store:
         if candidates is not None and not candidates.size:
             return LexicalResults([], {})
 
-        if self._postings is None:
-            self._postings = _invert(self._index)
-
         # IDF is computed over the whole corpus, so scoring cannot be restricted
         # to the candidates; only the ranking that follows is.
         tokens = _tokenize(query)
-        scores = _score(self._index, self._postings, tokens, self._length_norm)
+        scores = _score(model, tokens, self._length_norm)
         if candidates is not None:
             scores = scores[candidates]
 
@@ -556,13 +665,13 @@ class BM25Store:
             (chunks[position], score)
             for position, score in zip(positions, normalized.tolist(), strict=True)
         ]
-        weights = _term_weights(self._index, tokens, self._unseen_idf)
+        weights = _term_weights(model, tokens, self._unseen_idf)
         return LexicalResults(
             results,
             {
                 chunk.chunk.chunk_id: matched
                 for (chunk, _), matched in zip(
-                    results, _coverage(self._index, weights, positions), strict=True
+                    results, _coverage(model, weights, positions), strict=True
                 )
             },
         )
@@ -591,4 +700,4 @@ class BM25Store:
         Answered from the ranking model alone: counting the corpus here would
         defeat deferring it.
         """
-        return self._index is None
+        return self._model is None

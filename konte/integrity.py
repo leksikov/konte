@@ -1,52 +1,52 @@
-"""Signatures over the index files a project deserializes when it opens.
+"""Integrity records over the index files a project reads when it opens.
 
-Loading an index unpickles it, and unpickling runs whatever the file asks for.
-So every index file is signed when it is written and checked before it is read:
-an index that arrived from somewhere else — a shared volume, a download, another
-machine — carries no signature this installation can verify, and is refused
-instead of executed.
+INDEX_MANIFEST picks the anchor. Unset, files are signed with an HMAC key kept
+in the storage root, so a record means "written by this installation" and every
+other machine has to adopt what it did not build. Set, files are pinned by
+SHA-256 in a manifest meant to be committed alongside them, so every checkout
+verifies the same record with no secret to distribute.
 
-The key lives outside the directory it signs, in the storage root, because a key
-shipped alongside the files it vouches for vouches for nothing. Deployments
-whose storage root is itself shared can set INDEX_SIGNING_KEY and keep the key
-off the volume entirely.
+INDEX_INTEGRITY turns the check down to a warning, or off.
 """
 
 import hmac
+import json
 import os
 import secrets
 from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import structlog
 
 from konte.config import settings
-from konte.storage import read_json, write_json
+from konte.storage import atomic_writer, read_json, write_json
 
 logger = structlog.get_logger()
 
 SIGNATURE_SUFFIX = ".sig"
+MANIFEST_VERSION = 1
 
-_ALGORITHM = "hmac-sha256"
+_HMAC_ALGORITHM = "hmac-sha256"
+_DIGEST_ALGORITHM = "sha256"
 _KEY_FILENAME = ".signing-key"
 _KEY_SIZE = 32
 _CHUNK_SIZE = 1 << 20
 
 
 class IntegrityError(Exception):
-    """An index file is unsigned, or no longer matches the signature it carries."""
+    """An index file is unrecorded, or no longer matches what was recorded."""
+
+
+def _manifest_path() -> Path | None:
+    """Return the manifest that anchors trust, or None when the key file does."""
+    configured = settings.INDEX_MANIFEST
+    return Path(configured).expanduser() if configured else None
 
 
 def _create_key(path: Path) -> bytes:
-    """Write a fresh key readable only by its owner, or read the one that won.
-
-    Args:
-        path: Key file to create.
-
-    Returns:
-        The key now on disk, this call's or a concurrent one's.
-    """
+    """Write a fresh key readable only by its owner, or read the one that won."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -63,14 +63,7 @@ def _create_key(path: Path) -> bytes:
 
 
 def _key_for(directory: Path) -> bytes:
-    """Return the key that signs the given index directory.
-
-    Args:
-        directory: Project directory holding the index files.
-
-    Returns:
-        The configured key, or the storage root's local key, created on first use.
-    """
+    """Return the configured key, or the storage root's own, created on first use."""
     if settings.INDEX_SIGNING_KEY:
         return settings.INDEX_SIGNING_KEY.encode("utf-8")
 
@@ -81,11 +74,11 @@ def _key_for(directory: Path) -> bytes:
         return _create_key(path)
 
 
-def _digest(key: bytes, path: Path) -> str:
-    """Authenticate a file's name and contents under the key.
+def _mac(key: bytes, path: Path) -> str:
+    """Authenticate a file under the key.
 
-    The name is part of the message so a signature cannot be transplanted onto
-    a different file.
+    The name is part of the message, so a signature cannot be transplanted
+    onto a different file.
     """
     mac = hmac.new(key, digestmod=sha256)
     mac.update(path.name.encode("utf-8") + b"\0")
@@ -97,55 +90,160 @@ def _digest(key: bytes, path: Path) -> str:
     return mac.hexdigest()
 
 
-def sign(directory: Path, filenames: Iterable[str]) -> None:
-    """Sign index files, so a later load can tell they are this installation's.
+def _hash(path: Path) -> str:
+    """Digest a file's contents, so `shasum -a 256` reproduces a pinned entry."""
+    digest = sha256()
 
-    Args:
-        directory: Project directory holding the files.
-        filenames: Names of the files to sign, relative to the directory.
-    """
+    with path.open("rb") as handle:
+        while block := handle.read(_CHUNK_SIZE):
+            digest.update(block)
+
+    return digest.hexdigest()
+
+
+def _read_json_or_empty(path: Path) -> dict[str, Any]:
+    """Read a JSON object, treating an absent or unusable file as an empty one."""
+    try:
+        data = read_json(path)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pinned(manifest: Path, project: str) -> dict[str, Any]:
+    """Return the digests pinned for one project, or an empty mapping."""
+    projects = _read_json_or_empty(manifest).get("projects")
+    if not isinstance(projects, dict):
+        return {}
+    entry = projects.get(project)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _pin(manifest: Path, project: str, digests: dict[str, str]) -> None:
+    """Record one project's digests, leaving the entries around it alone."""
+    projects = _read_json_or_empty(manifest).get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+    projects[project] = dict(sorted(digests.items()))
+
+    payload = {
+        "version": MANIFEST_VERSION,
+        "algorithm": _DIGEST_ALGORITHM,
+        "projects": dict(sorted(projects.items())),
+    }
+    # Sorted, indented and newline-terminated: this file is read in review diffs.
+    with atomic_writer(manifest, encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
+def _manifest_failure(manifest: Path, directory: Path, filenames: Iterable[str]) -> str | None:
+    """Check files against the digests pinned in the manifest."""
+    pinned = _pinned(manifest, directory.name)
+
+    for name in filenames:
+        path = directory / name
+        expected = pinned.get(name)
+
+        if not isinstance(expected, str):
+            return (
+                f"{path} is not pinned in {manifest}. An index is only read once the "
+                f"digest it should have is recorded somewhere the index itself cannot "
+                f"reach. Rebuild the project, or pin what is already there with "
+                f"`konte trust {directory.name}` and commit the manifest."
+            )
+
+        if not hmac.compare_digest(expected, _hash(path)):
+            return (
+                f"{path} does not match the digest pinned in {manifest}. It was replaced "
+                f"or edited after it was pinned; nothing was loaded. Rebuild the project, "
+                f"or re-pin it with `konte trust {directory.name}` if the change was yours."
+            )
+
+    return None
+
+
+def _signature_failure(directory: Path, filenames: Iterable[str]) -> str | None:
+    """Check files against the HMAC signatures written beside them."""
     key = _key_for(directory)
 
     for name in filenames:
-        digest = _digest(key, directory / name)
+        path = directory / name
+        signature = _read_json_or_empty(path.with_name(f"{name}{SIGNATURE_SUFFIX}"))
+
+        if not signature:
+            return (
+                f"{path} is not signed by this installation, so where it came from "
+                f"cannot be told. Rebuild the project, sign what is already there with "
+                f"`konte trust {directory.name}` if you trust its source, or set "
+                f"INDEX_MANIFEST to verify against digests shared between machines."
+            )
+
+        expected = signature.get("digest") if signature.get("alg") == _HMAC_ALGORITHM else None
+        if not isinstance(expected, str) or not hmac.compare_digest(expected, _mac(key, path)):
+            return (
+                f"{path} does not match its signature. It was written by a different "
+                f"installation, or changed after it was signed; nothing was loaded. "
+                f"Rebuild the project, or sign it with `konte trust {directory.name}` "
+                f"if you trust where it came from."
+            )
+
+    return None
+
+
+def sign(directory: Path, filenames: Iterable[str]) -> None:
+    """Record index files, so a later load can tell they are the ones written.
+
+    Args:
+        directory: Project directory holding the files.
+        filenames: Names of the files to record, relative to the directory.
+    """
+    if settings.INDEX_INTEGRITY == "off":
+        return
+
+    directory = Path(directory)
+    names = list(filenames)
+    manifest = _manifest_path()
+
+    if manifest is not None:
+        _pin(manifest, directory.name, {name: _hash(directory / name) for name in names})
+        return
+
+    key = _key_for(directory)
+    for name in names:
         write_json(
             directory / f"{name}{SIGNATURE_SUFFIX}",
-            {"alg": _ALGORITHM, "digest": digest},
+            {"alg": _HMAC_ALGORITHM, "digest": _mac(key, directory / name)},
         )
 
 
 def verify(directory: Path, filenames: Iterable[str]) -> None:
-    """Check index files against their signatures before anything reads them.
+    """Check index files against their record before anything reads them.
 
     Args:
         directory: Project directory holding the files.
         filenames: Names of the files to check, relative to the directory.
 
     Raises:
-        IntegrityError: If a file is unsigned, signed by another key, or was
-            changed after it was signed.
+        IntegrityError: If a file is unrecorded or no longer matches, and
+            INDEX_INTEGRITY is "enforce".
     """
-    key = _key_for(directory)
+    if settings.INDEX_INTEGRITY == "off":
+        return
 
-    for name in filenames:
-        path = directory / name
-        signature = read_json(path.with_name(f"{name}{SIGNATURE_SUFFIX}"))
+    directory = Path(directory)
+    manifest = _manifest_path()
+    failure = (
+        _manifest_failure(manifest, directory, filenames)
+        if manifest is not None
+        else _signature_failure(directory, filenames)
+    )
 
-        if signature is None:
-            raise IntegrityError(
-                f"{path} is not signed. Loading an index deserializes it, which runs "
-                f"whatever it contains, so an unsigned one is never read. Rebuild the "
-                f"project, or sign what is already there with "
-                f"`konte trust {directory.name}` if you trust where it came from."
-            )
+    if failure is None:
+        return
 
-        expected = signature.get("digest") if signature.get("alg") == _ALGORITHM else None
-        if not isinstance(expected, str) or not hmac.compare_digest(
-            expected, _digest(key, path)
-        ):
-            raise IntegrityError(
-                f"{path} does not match its signature. It was written by a different "
-                f"installation, or changed after it was signed; nothing was loaded. "
-                f"Rebuild the project, or sign it with `konte trust {directory.name}` "
-                f"if you trust where it came from."
-            )
+    if settings.INDEX_INTEGRITY == "warn":
+        logger.warning("index_integrity_failed", directory=str(directory), reason=failure)
+        return
+
+    raise IntegrityError(failure)

@@ -10,20 +10,29 @@ from typing import Any
 import faiss
 import numpy as np
 import structlog
+from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
 from konte.config import settings
-from konte.integrity import sign, verify
+from konte.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.models import Chunk, ContextualizedChunk, MetadataFilter
+from konte.storage import read_json, write_json
 from konte.stores.base import matches_filter_value
 
 logger = structlog.get_logger()
 
-# What LangChain's save_local writes under index_name="faiss", and what this
-# store's signatures cover. The docstore half is a pickle.
-SIGNED_FILENAMES = ("faiss.faiss", "faiss.pkl")
+INDEX_FILENAME = "faiss.faiss"
+DOCSTORE_FILENAME = "faiss_docstore.json"
+
+# Where LangChain's save_local pickled the docstore.
+LEGACY_DOCSTORE_FILENAME = "faiss.pkl"
+
+SIGNED_FILENAMES = (INDEX_FILENAME, DOCSTORE_FILENAME)
+
+# Bump on any change to the payload save() writes.
+_DOCSTORE_VERSION = 1
 
 _RESERVED_METADATA_FIELDS = frozenset(
     {
@@ -146,6 +155,59 @@ def _lookup_document(vectorstore: FAISS, docstore_id: str) -> Document | None:
     """
     doc = vectorstore.docstore.search(docstore_id)
     return doc if isinstance(doc, Document) else None
+
+
+def _docstore_payload(vectorstore: FAISS) -> dict[str, Any]:
+    """Flatten the docstore into the JSON written beside the vector index.
+
+    FAISS addresses vectors by an integer id of its own, so the mapping from
+    those to the documents is written out with them.
+    """
+    stored = {}
+    for docstore_id in vectorstore.index_to_docstore_id.values():
+        doc = _lookup_document(vectorstore, docstore_id)
+        if doc is not None:
+            stored[docstore_id] = {"content": doc.page_content, "metadata": doc.metadata}
+
+    return {
+        "version": _DOCSTORE_VERSION,
+        "index_to_id": {
+            str(faiss_id): docstore_id
+            for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
+        },
+        "documents": stored,
+    }
+
+
+def _read_docstore(path: Path) -> tuple[dict[str, Document], dict[int, str]]:
+    """Rebuild what _docstore_payload() wrote.
+
+    Returns:
+        Tuple of (documents by docstore id, docstore id by FAISS id).
+
+    Raises:
+        ValueError: If the payload is not a version this reads.
+    """
+    payload = read_json(path)
+
+    if not isinstance(payload, dict) or payload.get("version") != _DOCSTORE_VERSION:
+        raise ValueError(
+            f"FAISS docstore at {path} is not version {_DOCSTORE_VERSION}. "
+            "Rebuild the project to rewrite it."
+        )
+
+    documents = {
+        docstore_id: Document(
+            page_content=stored.get("content", ""),
+            metadata=stored.get("metadata", {}),
+        )
+        for docstore_id, stored in payload.get("documents", {}).items()
+    }
+    index_to_docstore_id = {
+        int(faiss_id): docstore_id
+        for faiss_id, docstore_id in payload.get("index_to_id", {}).items()
+    }
+    return documents, index_to_docstore_id
 
 
 def _document_passes(
@@ -392,19 +454,27 @@ class FAISSStore:
     def save(self, directory: Path) -> None:
         """Save FAISS index to disk.
 
+        The docstore goes out as JSON rather than through LangChain's
+        save_local, which pickles it: reading a pickle runs whatever it holds.
+
         Args:
             directory: Directory to save index files.
         """
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
 
-        if self._vectorstore is None:
+        vectorstore = self._vectorstore
+        if vectorstore is None:
             logger.warning("faiss_save_no_index")
             return
 
-        # LangChain FAISS save_local saves both index and docstore
-        self._vectorstore.save_local(str(directory), index_name="faiss")
+        faiss.write_index(vectorstore.index, str(directory / INDEX_FILENAME))
+        write_json(directory / DOCSTORE_FILENAME, _docstore_payload(vectorstore))
+
         sign(directory, SIGNED_FILENAMES)
+
+        for stale in (LEGACY_DOCSTORE_FILENAME, f"{LEGACY_DOCSTORE_FILENAME}{SIGNATURE_SUFFIX}"):
+            (directory / stale).unlink(missing_ok=True)
 
         logger.info("faiss_index_saved", directory=str(directory))
 
@@ -419,23 +489,34 @@ class FAISSStore:
 
         Raises:
             FileNotFoundError: If index files don't exist.
-            IntegrityError: If the index is not the one this installation signed.
+            IntegrityError: If the index does not match what was recorded for it.
+            ValueError: If the docstore is not a version this reads.
         """
         directory = Path(directory)
 
-        index_path = directory / "faiss.faiss"
+        index_path = directory / INDEX_FILENAME
+        docstore_path = directory / DOCSTORE_FILENAME
+
         if not index_path.exists():
             raise FileNotFoundError(f"FAISS index not found: {index_path}")
 
-        # The docstore is a pickle, and reading one runs what it holds, so both
-        # files are authenticated before LangChain is pointed at them.
+        if not docstore_path.exists():
+            if (directory / LEGACY_DOCSTORE_FILENAME).exists():
+                raise ValueError(
+                    f"{directory / LEGACY_DOCSTORE_FILENAME} holds a pickled docstore, "
+                    f"and reading a pickle runs whatever it holds, so it is never "
+                    f"loaded. Rebuild the project to write {DOCSTORE_FILENAME} instead."
+                )
+            raise FileNotFoundError(f"FAISS docstore not found: {docstore_path}")
+
         verify(directory, SIGNED_FILENAMES)
 
-        self._vectorstore = FAISS.load_local(
-            str(directory),
-            embeddings=self._embeddings,
-            index_name="faiss",
-            allow_dangerous_deserialization=True,
+        documents, index_to_docstore_id = _read_docstore(docstore_path)
+        self._vectorstore = FAISS(
+            embedding_function=self._embeddings,
+            index=faiss.read_index(str(index_path)),
+            docstore=InMemoryDocstore(documents),
+            index_to_docstore_id=index_to_docstore_id,
         )
         self._filter_index = None
 

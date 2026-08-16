@@ -218,11 +218,10 @@ def trust(
         help="Skip confirmation",
     ),
 ) -> None:
-    """Sign the indexes a project already has, so this installation will load them.
+    """Record the indexes a project already has, so they will be loaded.
 
-    Loading an index deserializes it, which runs whatever it holds, so only
-    indexes signed here are read. Sign an index you did not build only when you
-    know where it came from; otherwise build the project again.
+    Only indexes with a matching record are read. Record one you did not build
+    yourself only when you know where it came from; otherwise build again.
     """
     path = _resolve_storage(storage_path)
     _require_project(name, path)
@@ -232,13 +231,17 @@ def trust(
         raise typer.Exit(0)
 
     with _reporting_errors():
-        signed = trust_project(name, storage_path=path)
+        recorded = trust_project(name, storage_path=path)
 
-        if not signed:
-            console.print(f"[yellow]No index files to sign in[/yellow] {path / name}")
+        if not recorded:
+            console.print(f"[yellow]No index files to record in[/yellow] {path / name}")
             return
 
-        console.print(f"[green]Signed {len(signed)} index file(s):[/green] {', '.join(signed)}")
+        anchor = settings.INDEX_MANIFEST or "this installation's signing key"
+        console.print(
+            f"[green]Recorded {len(recorded)} index file(s) against {anchor}:[/green] "
+            f"{', '.join(recorded)}"
+        )
 
 
 @app.command("add")

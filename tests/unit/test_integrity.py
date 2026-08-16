@@ -1,5 +1,6 @@
-"""Unit tests for the signatures that guard deserializing an index."""
+"""Unit tests for the records that guard reading an index."""
 
+import json
 import pickle
 import stat
 from pathlib import Path
@@ -11,7 +12,7 @@ from konte.integrity import IntegrityError, verify
 from konte.manager import trust_project
 from konte.models import Chunk, ContextualizedChunk
 from konte.stores import BM25Store
-from konte.stores.bm25_store import SIGNED_FILENAMES
+from konte.stores.bm25_store import INDEX_FILENAME, LEGACY_INDEX_FILENAME, SIGNED_FILENAMES
 
 
 def _record_execution(marker: str) -> None:
@@ -62,16 +63,30 @@ def project_dir(tmp_path):
     return directory
 
 
+@pytest.fixture
+def manifest(tmp_path, monkeypatch):
+    """A manifest path, standing in for one committed to a source repository."""
+    path = tmp_path / "repo" / "konte-index.lock"
+    monkeypatch.setattr(settings, "INDEX_MANIFEST", path)
+    return path
+
+
 def _saved_index(chunks, directory: Path) -> None:
-    """Build and save a signed index in the directory."""
+    """Build and save a recorded index in the directory."""
     store = BM25Store()
     store.build_index(chunks)
     store.save(directory)
 
 
+def _tamper(directory: Path) -> None:
+    """Replace the index with a file of the same shape but different contents."""
+    path = directory / INDEX_FILENAME
+    path.write_bytes(path.read_bytes() + b"\0")
+
+
 @pytest.mark.unit
 class TestIndexSignatures:
-    """Test that only an index this installation signed is deserialized."""
+    """Test that only an index this installation recorded is read."""
 
     def test_a_signed_index_loads(self, chunks, project_dir):
         """Test that the signature written on save is the one load accepts."""
@@ -82,30 +97,31 @@ class TestIndexSignatures:
 
         assert not store.is_empty
 
-    def test_a_swapped_index_never_runs(self, chunks, project_dir, tmp_path):
-        """Test that a replaced pickle is refused before it is deserialized."""
-        marker = tmp_path / "executed.txt"
+    def test_a_swapped_index_is_refused(self, chunks, project_dir):
+        """Test that a replaced index is refused before it is read."""
         _saved_index(chunks, project_dir)
-
-        with (project_dir / "bm25.pkl").open("wb") as handle:
-            pickle.dump({"index": _Payload(marker), "tokenizer": 2}, handle)
+        _tamper(project_dir)
 
         with pytest.raises(IntegrityError, match="does not match its signature"):
             BM25Store().load(project_dir, lambda: chunks)
 
-        assert not marker.exists()
-
     def test_an_unsigned_index_is_refused(self, chunks, project_dir):
         """Test that an index without a signature is not read on faith."""
         _saved_index(chunks, project_dir)
-        (project_dir / "bm25.pkl.sig").unlink()
+        (project_dir / f"{INDEX_FILENAME}.sig").unlink()
 
         with pytest.raises(IntegrityError, match="is not signed"):
             BM25Store().load(project_dir, lambda: chunks)
 
-    def test_an_index_from_another_installation_is_refused(
-        self, chunks, project_dir, monkeypatch
-    ):
+    def test_a_corrupt_signature_is_refused_as_a_signature(self, chunks, project_dir):
+        """Test that an unparseable signature file fails the check, not the parser."""
+        _saved_index(chunks, project_dir)
+        (project_dir / f"{INDEX_FILENAME}.sig").write_text("{not json", encoding="utf-8")
+
+        with pytest.raises(IntegrityError):
+            BM25Store().load(project_dir, lambda: chunks)
+
+    def test_an_index_from_another_installation_is_refused(self, chunks, project_dir, monkeypatch):
         """Test that a directory signed elsewhere does not verify here."""
         monkeypatch.setattr(settings, "INDEX_SIGNING_KEY", "the-key-that-signed-it")
         _saved_index(chunks, project_dir)
@@ -118,13 +134,13 @@ class TestIndexSignatures:
         """Test that a signature cannot be transplanted onto a different file."""
         _saved_index(chunks, project_dir)
 
-        (project_dir / "other.pkl").write_bytes((project_dir / "bm25.pkl").read_bytes())
-        (project_dir / "other.pkl.sig").write_bytes(
-            (project_dir / "bm25.pkl.sig").read_bytes()
+        (project_dir / "other.npz").write_bytes((project_dir / INDEX_FILENAME).read_bytes())
+        (project_dir / "other.npz.sig").write_bytes(
+            (project_dir / f"{INDEX_FILENAME}.sig").read_bytes()
         )
 
         with pytest.raises(IntegrityError):
-            verify(project_dir, ["other.pkl"])
+            verify(project_dir, ["other.npz"])
 
     def test_the_key_stays_outside_the_directory_it_signs(self, chunks, project_dir):
         """Test that a copied project directory carries no key to verify itself with."""
@@ -140,21 +156,17 @@ class TestIndexSignatures:
         mode = (project_dir.parent / ".signing-key").stat().st_mode
         assert stat.S_IMODE(mode) == 0o600
 
-    def test_an_unsigned_faiss_docstore_never_runs(self, project_dir, tmp_path, monkeypatch):
-        """Test that the docstore pickle is refused before LangChain unpickles it."""
+    def test_an_unsigned_faiss_docstore_is_refused(self, project_dir, monkeypatch):
+        """Test that the docstore is refused before the vector store is built from it."""
         from konte.stores import FAISSStore
 
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
-        marker = tmp_path / "faiss_executed.txt"
 
         (project_dir / "faiss.faiss").write_bytes(b"not an index")
-        with (project_dir / "faiss.pkl").open("wb") as handle:
-            pickle.dump(_Payload(marker), handle)
+        (project_dir / "faiss_docstore.json").write_text("{}", encoding="utf-8")
 
         with pytest.raises(IntegrityError, match="is not signed"):
             FAISSStore().load(project_dir)
-
-        assert not marker.exists()
 
     def test_a_configured_key_leaves_no_key_file(self, chunks, project_dir, monkeypatch):
         """Test that INDEX_SIGNING_KEY keeps the secret off the storage root."""
@@ -167,24 +179,202 @@ class TestIndexSignatures:
 
 
 @pytest.mark.unit
-class TestTrustProject:
-    """Test adopting index files that were written before they were signed."""
+class TestIntegrityMode:
+    """Test turning the check down to a warning, or off."""
 
-    def test_trust_signs_what_is_on_disk(self, chunks, project_dir):
-        """Test that a legacy index loads again once it is signed."""
+    def test_off_skips_the_check(self, chunks, project_dir, monkeypatch):
+        """Test that an index enforce refuses loads once the check is turned off."""
         _saved_index(chunks, project_dir)
-        (project_dir / "bm25.pkl.sig").unlink()
+        (project_dir / f"{INDEX_FILENAME}.sig").unlink()
 
-        signed = trust_project("proj", storage_path=project_dir.parent)
+        with pytest.raises(IntegrityError):
+            BM25Store().load(project_dir, lambda: chunks)
 
-        assert signed == list(SIGNED_FILENAMES)
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "off")
+        store = BM25Store()
+        store.load(project_dir, lambda: chunks)
+
+        assert not store.is_empty
+
+    def test_off_writes_no_record(self, chunks, project_dir, monkeypatch):
+        """Test that saving with the check off leaves no signature behind."""
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "off")
+
+        _saved_index(chunks, project_dir)
+
+        assert not (project_dir / f"{INDEX_FILENAME}.sig").exists()
+        BM25Store().load(project_dir, lambda: chunks)
+
+    def test_warn_loads_an_unrecorded_index(self, chunks, project_dir, monkeypatch):
+        """Test that an unsigned index loads under warn, where enforce refuses it."""
+        _saved_index(chunks, project_dir)
+        (project_dir / f"{INDEX_FILENAME}.sig").unlink()
+
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "warn")
+        store = BM25Store()
+        store.load(project_dir, lambda: chunks)
+
+        assert not store.is_empty
+
+    def test_warn_still_records_what_it_writes(self, chunks, project_dir, monkeypatch):
+        """Test that a project built under warn verifies under enforce."""
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "warn")
+        _saved_index(chunks, project_dir)
+
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
+        BM25Store().load(project_dir, lambda: chunks)
+
+
+@pytest.mark.unit
+class TestIndexManifest:
+    """Test the digest manifest that travels with the indexes it covers."""
+
+    def test_a_pinned_index_loads(self, chunks, project_dir, manifest):
+        """Test that the digest written on save is the one load accepts."""
+        _saved_index(chunks, project_dir)
+
+        store = BM25Store()
+        store.load(project_dir, lambda: chunks)
+
+        assert not store.is_empty
+        assert manifest.exists()
+
+    def test_the_manifest_holds_the_files_own_digest(self, chunks, project_dir, manifest):
+        """Test that a pinned digest is the plain SHA-256 of the file's contents."""
+        import hashlib
+
+        _saved_index(chunks, project_dir)
+
+        pinned = json.loads(manifest.read_text(encoding="utf-8"))["projects"]["proj"]
+        expected = hashlib.sha256((project_dir / INDEX_FILENAME).read_bytes()).hexdigest()
+        assert pinned[INDEX_FILENAME] == expected
+
+    def test_a_swapped_index_is_refused(self, chunks, project_dir, manifest):
+        """Test that an index edited after it was pinned does not load."""
+        _saved_index(chunks, project_dir)
+        _tamper(project_dir)
+
+        with pytest.raises(IntegrityError, match="does not match the digest pinned"):
+            BM25Store().load(project_dir, lambda: chunks)
+
+    def test_an_unpinned_index_is_refused(self, chunks, project_dir, manifest, monkeypatch):
+        """Test that an index the manifest never recorded is not read on faith."""
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "off")
+        _saved_index(chunks, project_dir)
+
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
+        with pytest.raises(IntegrityError, match="is not pinned"):
+            BM25Store().load(project_dir, lambda: chunks)
+
+    def test_a_pinned_index_needs_no_local_key(self, chunks, project_dir, manifest):
+        """Test that verifying against the manifest generates no signing key."""
+        _saved_index(chunks, project_dir)
+        BM25Store().load(project_dir, lambda: chunks)
+
+        assert not (project_dir.parent / ".signing-key").exists()
+        assert not (project_dir / f"{INDEX_FILENAME}.sig").exists()
+
+    def test_another_machine_verifies_the_same_manifest(self, chunks, project_dir, manifest):
+        """Test that a checkout with no local state loads what the manifest pins."""
+        _saved_index(chunks, project_dir)
+        (project_dir.parent / ".signing-key").unlink(missing_ok=True)
+
+        elsewhere = project_dir.parent.parent / "checkout" / "proj"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / INDEX_FILENAME).write_bytes((project_dir / INDEX_FILENAME).read_bytes())
+
+        store = BM25Store()
+        store.load(elsewhere, lambda: chunks)
+
+        assert not store.is_empty
+
+    def test_pinning_one_project_leaves_the_others(self, chunks, project_dir, manifest):
+        """Test that rebuilding a project does not drop its neighbours' digests."""
+        sibling = project_dir.parent / "other"
+        sibling.mkdir()
+        (sibling / "config.json").write_text("{}", encoding="utf-8")
+
+        _saved_index(chunks, sibling)
+        _saved_index(chunks, project_dir)
+
+        pinned = json.loads(manifest.read_text(encoding="utf-8"))["projects"]
+        assert set(pinned) == {"other", "proj"}
+
+    def test_a_corrupt_manifest_refuses_rather_than_raises(self, chunks, project_dir, manifest):
+        """Test that an unparseable manifest fails the check, not the parser."""
+        _saved_index(chunks, project_dir)
+        manifest.write_text("{not json", encoding="utf-8")
+
+        with pytest.raises(IntegrityError, match="is not pinned"):
+            BM25Store().load(project_dir, lambda: chunks)
+
+
+@pytest.mark.unit
+class TestPickleRefusal:
+    """Test that an index a previous version pickled is never read."""
+
+    def test_a_pickled_bm25_index_is_refused_by_name(self, chunks, project_dir):
+        """Test that the legacy index file is reported rather than deserialized."""
+        marker = project_dir / "executed.txt"
+
+        with (project_dir / LEGACY_INDEX_FILENAME).open("wb") as handle:
+            pickle.dump({"index": _Payload(marker), "tokenizer": 2}, handle)
+
+        with pytest.raises(ValueError, match="pickled model"):
+            BM25Store().load(project_dir, lambda: chunks)
+
+        assert not marker.exists()
+
+    def test_a_pickled_faiss_docstore_is_refused_by_name(self, project_dir, monkeypatch):
+        """Test that the legacy docstore is reported rather than deserialized."""
+        from konte.stores import FAISSStore
+
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+
+        (project_dir / "faiss.faiss").write_bytes(b"not an index")
+        (project_dir / "faiss.pkl").write_bytes(b"not read either")
+
+        with pytest.raises(ValueError, match="pickled docstore"):
+            FAISSStore().load(project_dir)
+
+    def test_rebuilding_clears_the_legacy_index(self, chunks, project_dir):
+        """Test that a saved project leaves no pickle behind for anything to find."""
+        (project_dir / LEGACY_INDEX_FILENAME).write_bytes(b"stale")
+
+        _saved_index(chunks, project_dir)
+
+        assert not (project_dir / LEGACY_INDEX_FILENAME).exists()
+
+
+@pytest.mark.unit
+class TestTrustProject:
+    """Test adopting index files that were written before they were recorded."""
+
+    def test_trust_records_what_is_on_disk(self, chunks, project_dir):
+        """Test that an unrecorded index loads again once it is trusted."""
+        _saved_index(chunks, project_dir)
+        (project_dir / f"{INDEX_FILENAME}.sig").unlink()
+
+        recorded = trust_project("proj", storage_path=project_dir.parent)
+
+        assert recorded == list(SIGNED_FILENAMES)
+        BM25Store().load(project_dir, lambda: chunks)
+
+    def test_trust_pins_into_the_manifest(self, chunks, project_dir, manifest, monkeypatch):
+        """Test that trusting writes the digest when a manifest anchors the record."""
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "off")
+        _saved_index(chunks, project_dir)
+
+        monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
+        trust_project("proj", storage_path=project_dir.parent)
+
         BM25Store().load(project_dir, lambda: chunks)
 
     def test_trust_reports_an_index_free_project(self, project_dir):
-        """Test that a project with nothing to sign says so instead of failing."""
+        """Test that a project with nothing to record says so instead of failing."""
         assert trust_project("proj", storage_path=project_dir.parent) == []
 
     def test_trust_requires_the_project(self, tmp_path):
-        """Test that signing a project that does not exist is an error."""
+        """Test that recording a project that does not exist is an error."""
         with pytest.raises(FileNotFoundError):
             trust_project("missing", storage_path=tmp_path)

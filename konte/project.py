@@ -26,6 +26,9 @@ from konte.models import (
 )
 from konte.storage import read_json, write_json
 from konte.stores import BM25Store, FAISSStore, Retriever
+from konte.stores.bm25_store import INDEX_FILENAME as BM25_INDEX_FILENAME
+from konte.stores.bm25_store import LEGACY_INDEX_FILENAME as LEGACY_BM25_INDEX_FILENAME
+from konte.stores.faiss_store import INDEX_FILENAME as FAISS_INDEX_FILENAME
 
 logger = structlog.get_logger()
 
@@ -851,12 +854,19 @@ class Project:
         )
 
     def _load_indexes(self, project_dir: Path) -> None:
-        """Attach whichever indexes exist on disk and are enabled in config."""
-        if (project_dir / "faiss.faiss").exists() and self._config.enable_faiss:
+        """Attach whichever indexes exist on disk and are enabled in config.
+
+        A pickled index counts as present so load() can refuse it by name,
+        rather than the project opening quietly without one.
+        """
+        if (project_dir / FAISS_INDEX_FILENAME).exists() and self._config.enable_faiss:
             self._faiss = FAISSStore(embedding_model=self._config.embedding_model)
             self._faiss.load(project_dir)
 
-        if (project_dir / "bm25.pkl").exists() and self._config.enable_bm25:
+        if self._config.enable_bm25 and (
+            (project_dir / BM25_INDEX_FILENAME).exists()
+            or (project_dir / LEGACY_BM25_INDEX_FILENAME).exists()
+        ):
             self._bm25 = BM25Store()
             # Passed as a callable: reading the chunks here would defeat the
             # deferred parse.

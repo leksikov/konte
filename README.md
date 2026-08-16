@@ -585,6 +585,8 @@ Set via environment variables or `.env` file (see [.env.example](https://github.
 ```bash
 OPENAI_API_KEY=sk-...          # Required for embeddings (FAISS, the default)
 STORAGE_PATH=~/.konte          # Project storage location (a trust boundary, see Storage trust)
+INDEX_INTEGRITY=enforce        # enforce | warn | off
+INDEX_MANIFEST=                # Optional: pin index digests here, for indexes shared between machines
 INDEX_SIGNING_KEY=             # Optional: sign indexes with this instead of a key file
 EMBEDDING_MODEL=text-embedding-3-small
 CONTEXT_MODEL=gpt-4.1-mini     # Model for context/answer generation
@@ -606,24 +608,61 @@ RERANKER_MODEL=your-reranker-model
 
 ## Storage trust
 
-`STORAGE_PATH` is a trust boundary. Opening a project deserializes the indexes in its directory — FAISS keeps its docstore as a pickle, and BM25 has no format but one — and deserializing runs whatever the file holds. Anyone who can write into that directory can therefore run code as the process that opens the project.
+Konte stores no pickles. The FAISS docstore is JSON and the BM25 model is an array file, so opening a project parses data instead of executing it — nothing an index file can say makes the process that reads it run code. That is the guarantee the rest of this section builds on rather than replaces.
 
-Konte signs every index file it writes (HMAC-SHA256) and refuses to load one it cannot authenticate, so an index copied in from elsewhere is rejected rather than executed:
+What a writable `STORAGE_PATH` still buys an attacker is the answers: an index swapped underneath you returns text you did not write, to a model that will repeat it. So every index file is recorded when written and checked before it is read, and one that does not match is refused:
 
 ```bash
 konte query myproject "..."
-# Error: ~/.konte/myproject/bm25.pkl does not match its signature. ...
+# Error: ~/.konte/myproject/bm25.npz does not match its signature. ...
 ```
 
-The key is generated on first use and kept in the storage root as `.signing-key`, mode `0600` — outside the project directories it signs, so a directory that arrives from somewhere else carries no signature that verifies. Where the storage root itself is shared, set `INDEX_SIGNING_KEY` instead and the key never lands on the volume.
+### Which record: a key, or a manifest
 
-Indexes built before signing existed load only once you adopt them:
+By default the record is an HMAC beside each index, made with a key generated on first use and kept in the storage root as `.signing-key`, mode `0600` — outside the project directories it covers, so a directory copied in from elsewhere carries no signature that verifies. It says *this installation wrote it*, which is exactly what no other machine can confirm. Set `INDEX_SIGNING_KEY` to supply that key from the environment instead, for a storage root that is itself shared.
+
+Where indexes are shared — committed to the repository, pulled through LFS, built once in CI — set `INDEX_MANIFEST` to a path inside that repository:
 
 ```bash
-konte trust myproject   # sign the index files already on disk
+INDEX_MANIFEST=konte-index.lock
 ```
 
-`trust_project("myproject")` does the same from Python. That says the files are trusted as they are. Where that is in doubt, run `konte build` again instead.
+Konte then pins the plain SHA-256 of each index file there and verifies against it. Commit the manifest with the indexes, and every checkout on every machine verifies the same record with no secret to distribute and nothing to adopt per machine. The digests are the file's own, so `shasum -a 256` reproduces them, and a rebuild shows up in review as a readable line rather than a binary blob:
+
+```json
+{
+  "version": 1,
+  "algorithm": "sha256",
+  "projects": {
+    "myproject": {
+      "bm25.npz": "3f2a...",
+      "faiss.faiss": "9c41...",
+      "faiss_docstore.json": "be07..."
+    }
+  }
+}
+```
+
+Building a project rewrites its entry, the way installing rewrites a lockfile; what makes the pin meaningful is that the change is reviewed before it is merged.
+
+### Adopting and turning it off
+
+An index with no record — one you did not build here — loads only once you adopt it:
+
+```bash
+konte trust myproject   # record the index files already on disk
+```
+
+`trust_project("myproject")` does the same from Python. It says the files are trusted as they are. Where that is in doubt, run `konte build` again instead.
+
+`INDEX_INTEGRITY` sets what happens when the check fails: `enforce` (default) refuses the index, `warn` logs and loads it anyway, `off` skips the check and writes no record.
+
+| | Anchor | Travels between machines | Secret to distribute |
+|---|---|---|---|
+| default | HMAC + local key | no, adopt per machine | none |
+| `INDEX_SIGNING_KEY` | HMAC + shared key | yes | the key |
+| `INDEX_MANIFEST` | SHA-256 pinned in your repo | yes | none |
+| `INDEX_INTEGRITY=off` | — | yes | none |
 
 ## Examples
 

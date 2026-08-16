@@ -215,19 +215,20 @@ class TestBM25Tokenization:
     def test_scoring_matches_the_reference_implementation(self, sample_chunks):
         """Test skipping unindexed terms and scaling repeats leaves scores unchanged."""
         import numpy as np
+        from rank_bm25 import BM25Okapi
 
         from konte.stores import BM25Store
-        from konte.stores.bm25_store import _invert, _score, _tokenize
+        from konte.stores.bm25_store import _score, _tokenize
 
         store = BM25Store()
         store.build_index(sample_chunks)
-        postings = _invert(store._index)
+        reference = BM25Okapi([_tokenize(c.contextualized_content) for c in sample_chunks])
 
         for query in ("duty duty rate", "zirconium", "customs valuation 8542.31", ""):
             tokens = _tokenize(query)
             assert np.allclose(
-                _score(store._index, postings, tokens, store._length_norm),
-                store._index.get_scores(tokens),
+                _score(store._model, tokens, store._length_norm),
+                reference.get_scores(tokens),
             )
 
 
@@ -365,21 +366,24 @@ class TestBM25StorePersistence:
 
     def test_load_rejects_an_index_from_another_tokenizer(self, sample_chunks, tmp_path):
         """Test a stale index is refused rather than silently matching nothing."""
-        import pickle
+        import numpy as np
 
         from konte.integrity import sign
         from konte.stores import BM25Store
-        from konte.stores.bm25_store import _TOKENIZER_VERSION, SIGNED_FILENAMES
+        from konte.stores.bm25_store import (
+            _TOKENIZER_VERSION,
+            INDEX_FILENAME,
+            SIGNED_FILENAMES,
+        )
 
         store = BM25Store()
         store.build_index(sample_chunks)
         store.save(tmp_path)
 
-        with (tmp_path / "bm25.pkl").open("rb") as handle:
-            data = pickle.load(handle)
-        data["tokenizer"] = _TOKENIZER_VERSION - 1
-        with (tmp_path / "bm25.pkl").open("wb") as handle:
-            pickle.dump(data, handle)
+        with np.load(tmp_path / INDEX_FILENAME) as data:
+            arrays = dict(data.items())
+        arrays["tokenizer"] = np.array([_TOKENIZER_VERSION - 1])
+        np.savez(tmp_path / INDEX_FILENAME, **arrays)
         sign(tmp_path, SIGNED_FILENAMES)  # the tokenizer check, not the signature
 
         with pytest.raises(ValueError, match="tokenizer"):
@@ -393,7 +397,17 @@ class TestBM25StorePersistence:
         store.build_index(sample_chunks)
         store.save(tmp_path)
 
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["bm25.pkl", "bm25.pkl.sig"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["bm25.npz", "bm25.npz.sig"]
+
+    def test_save_stores_no_pickle(self, sample_chunks, tmp_path):
+        """Test that nothing the index writes is read back through pickle."""
+        from konte.stores import BM25Store
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        store.save(tmp_path)
+
+        assert not list(tmp_path.glob("*.pkl"))
 
     def test_save_removes_a_legacy_chunk_payload(self, sample_chunks, tmp_path):
         """Test that rebuilding drops the copy an earlier version left behind."""

@@ -1,6 +1,7 @@
 """Settings module - Single Source of Truth for configuration."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,8 +32,16 @@ class Settings(BaseSettings):
     # Storage
     STORAGE_PATH: Path = Path("~/.konte")
 
-    # Key the index signatures are made with. Unset keeps it in the storage
-    # root; set it where that root is shared and the key should not live there.
+    # What happens to an index whose record is missing or stale.
+    INDEX_INTEGRITY: Literal["enforce", "warn", "off"] = "enforce"
+
+    # Manifest of index digests, for committing alongside the indexes it
+    # covers: every checkout then verifies one record instead of adopting the
+    # files once per machine.
+    INDEX_MANIFEST: Path | None = None
+
+    # Key the signatures are made with when no manifest anchors them. Unset
+    # keeps it in the storage root; set it where that root is shared.
     INDEX_SIGNING_KEY: str | None = None
 
     # Models

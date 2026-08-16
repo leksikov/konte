@@ -118,19 +118,18 @@ def trust_project(
     name: str,
     storage_path: Path | None = None,
 ) -> list[str]:
-    """Sign the index files a project already has on disk.
+    """Record the index files a project already has on disk as trusted.
 
-    Indexes written before this installation existed cannot be authenticated,
-    so they are refused rather than deserialized. Signing them says they are
-    trusted as they stand — which trusts anything that reached the directory
-    unnoticed as well. Rebuilding is the answer wherever that is in doubt.
+    Recording says the files are trusted as they stand, which trusts anything
+    that reached the directory unnoticed as well. Rebuilding is the answer
+    wherever that is in doubt.
 
     Args:
         name: Project name.
         storage_path: Base storage path. Defaults to settings.STORAGE_PATH.
 
     Returns:
-        The names of the files signed.
+        The names of the files recorded.
 
     Raises:
         FileNotFoundError: If project doesn't exist.
