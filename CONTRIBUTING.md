@@ -46,12 +46,18 @@ On macOS, if FAISS crashes with an OpenMP error, set `KMP_DUPLICATE_LIB_OK=TRUE`
 Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
 
 ```
-type(scope): Description
+type(scope): description
+
+Explain what changed and why, wrapped at 72 characters
+(we recommend 65 per line) and kept to three lines.
 ```
 
 - `feat` (minor), `fix`/`perf` (patch); `!` after the type/scope for major (breaking change)
 - Non-bumping types: `chore`, `refactor`, `build`, `test`, `ci`, `docs`, `style`
-- Subject only — no body: imperative mood, capitalized, under 50 chars, no trailing period
+- Subject: imperative mood, lowercase, under 50 chars, no trailing period
+- Body: describe the change in three lines or fewer — five at most when
+  the change genuinely needs it — with each line under 72 characters
+  (65 recommended)
 
 ## Pull Requests
 
