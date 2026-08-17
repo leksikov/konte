@@ -152,8 +152,7 @@ class ProjectRepository:
 
         Args:
             config: The project's configuration.
-            corpus: Read only if the lexical index needs its payload, so an
-                unread corpus stays unparsed.
+            corpus: Read on the first query that needs a chunk rather than a rank.
 
         Returns:
             The bundle a query goes through.

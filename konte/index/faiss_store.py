@@ -1,22 +1,19 @@
-"""FAISS vector store for semantic search using LangChain."""
+"""FAISS vector store for semantic search."""
 
 import asyncio
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import faiss
 import numpy as np
 import structlog
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
-from konte.domain.models import Chunk, ContextualizedChunk, MetadataFilter
+from konte.domain.models import ContextualizedChunk, MetadataFilter
+from konte.index.chunks import ChunkSource
 from konte.index.embeddings import query_vector
-from konte.index.filter_index import FilterIndex, matches_filter_value
 from konte.persistence.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.persistence.storage import read_json, write_json
 from konte.runtime.settings import settings
@@ -32,114 +29,17 @@ LEGACY_DOCSTORE_FILENAME = "faiss.pkl"
 SIGNED_FILENAMES = (INDEX_FILENAME, DOCSTORE_FILENAME)
 
 # Bump on any change to the payload save() writes.
-_DOCSTORE_VERSION = 1
+_DOCSTORE_VERSION = 2
 
-_RESERVED_METADATA_FIELDS = frozenset(
-    {
-        "chunk_id",
-        "source",
-        "segment_idx",
-        "chunk_idx",
-        "context_length",
-        "context",
-        "original_content",
-    }
-)
-
-# Chunk payload, not filter keys: posting them would hash every chunk's full text.
-_UNPOSTED_METADATA_FIELDS = frozenset({"context_length", "context", "original_content"})
+# Older payloads carry a document per vector; only their count is read.
+_LEGACY_DOCSTORE_VERSION = 1
 
 # Documents per embedding request, kept well under the OpenAI embedding API's
 # 300K-token request limit.
 _EMBED_BATCH_SIZE = 100
 
-
-def _matches_faiss_filter(metadata: dict[str, Any], metadata_filter: MetadataFilter) -> bool:
-    """Check if document metadata matches the filter (AND logic).
-
-    Values can be a single value (equality) or a list (match any).
-    """
-    return all(
-        matches_filter_value(metadata.get(key), value) for key, value in metadata_filter.items()
-    )
-
-
-def _to_document(chunk: ContextualizedChunk) -> Document:
-    """Flatten a chunk into the LangChain Document the index embeds and stores.
-
-    The context's length rides along so the chunk can be rebuilt from the index
-    alone, without a side-car file and without a second copy of its text.
-    """
-    return Document(
-        page_content=chunk.contextualized_content,
-        metadata={
-            "chunk_id": chunk.chunk.chunk_id,
-            "source": chunk.chunk.source,
-            "segment_idx": chunk.chunk.segment_idx,
-            "chunk_idx": chunk.chunk.chunk_idx,
-            "context_length": len(chunk.context),
-            **chunk.chunk.metadata,
-        },
-    )
-
-
-def _split_content(doc: Document) -> tuple[str, str]:
-    """Recover a stored document's (context, original content).
-
-    ContextualizedChunk joins the two with a single space, so the context's
-    length locates the cut. An older index carries both halves outright.
-    """
-    metadata = doc.metadata
-
-    context = metadata.get("context")
-    if context is not None:
-        return context, metadata.get("original_content", "")
-
-    length = metadata.get("context_length")
-    if not isinstance(length, int) or length <= 0:
-        return "", doc.page_content
-    return doc.page_content[:length], doc.page_content[length + 1 :]
-
-
-def _from_document(doc: Document) -> ContextualizedChunk:
-    """Rebuild a chunk from the flattened metadata written by _to_document()."""
-    metadata = doc.metadata
-    context, content = _split_content(doc)
-    return ContextualizedChunk(
-        chunk=Chunk(
-            chunk_id=metadata.get("chunk_id", ""),
-            content=content,
-            source=metadata.get("source", ""),
-            segment_idx=metadata.get("segment_idx", 0),
-            chunk_idx=metadata.get("chunk_idx", 0),
-            metadata={
-                key: value
-                for key, value in metadata.items()
-                if key not in _RESERVED_METADATA_FIELDS
-            },
-        ),
-        context=context,
-    )
-
-
-def _document_batches(
-    chunks: Sequence[ContextualizedChunk],
-    batch_size: int,
-) -> list[list[Document]]:
-    """Split the corpus into the units that go out as one embedding request."""
-    documents = [_to_document(chunk) for chunk in chunks]
-    return [
-        documents[start : start + batch_size] for start in range(0, len(documents), batch_size)
-    ]
-
-
-def _page_contents(documents: Sequence[Document]) -> list[str]:
-    """Return the text an embedding request carries for one batch."""
-    return [document.page_content for document in documents]
-
-
 # One embedding request that has been sent but not yet folded into the index.
-_PendingBatches = deque[tuple[int, list[Document], "asyncio.Future[list[list[float]]]"]]
+_PendingBatches = deque[tuple[int, "asyncio.Future[list[list[float]]]"]]
 
 
 def _to_similarity(distance: float) -> float:
@@ -147,107 +47,53 @@ def _to_similarity(distance: float) -> float:
     return float(1.0 / (1.0 + distance))
 
 
-def _lookup_document(vectorstore: FAISS, docstore_id: str) -> Document | None:
-    """Fetch a stored Document by docstore id.
+def _batch_spans(total: int, batch_size: int) -> list[tuple[int, int]]:
+    """Split a corpus into the half-open position ranges one request covers."""
+    return [(start, min(start + batch_size, total)) for start in range(0, total, batch_size)]
 
-    LangChain's docstore returns an error *string* instead of raising when an id
-    is missing, so the result has to be type-checked before it is used.
+
+def _texts(chunks: Sequence[ContextualizedChunk], span: tuple[int, int]) -> list[str]:
+    """Return the text one embedding request carries.
+
+    Joined per request: joining the whole corpus at once doubles its memory.
     """
-    doc = vectorstore.docstore.search(docstore_id)
-    return doc if isinstance(doc, Document) else None
+    start, stop = span
+    return [chunks[position].contextualized_content for position in range(start, stop)]
 
 
-def _docstore_payload(vectorstore: FAISS) -> dict[str, Any]:
-    """Flatten the docstore into the JSON written beside the vector index.
-
-    FAISS addresses vectors by an integer id of its own, so the mapping from
-    those to the documents is written out with them.
-    """
-    stored = {}
-    for docstore_id in vectorstore.index_to_docstore_id.values():
-        doc = _lookup_document(vectorstore, docstore_id)
-        if doc is not None:
-            stored[docstore_id] = {"content": doc.page_content, "metadata": doc.metadata}
-
-    return {
-        "version": _DOCSTORE_VERSION,
-        "index_to_id": {
-            str(faiss_id): docstore_id
-            for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
-        },
-        "documents": stored,
-    }
-
-
-def _read_docstore(path: Path) -> tuple[dict[str, Document], dict[int, str]]:
-    """Rebuild what _docstore_payload() wrote.
+def _read_vector_count(path: Path) -> int | None:
+    """Read how many vectors the stored payload accounts for.
 
     Returns:
-        Tuple of (documents by docstore id, docstore id by FAISS id).
+        The recorded count, or None where the payload does not carry one.
 
     Raises:
         ValueError: If the payload is not a version this reads.
     """
     payload = read_json(path)
 
-    if not isinstance(payload, dict) or payload.get("version") != _DOCSTORE_VERSION:
-        raise ValueError(
-            f"FAISS docstore at {path} is not version {_DOCSTORE_VERSION}. "
-            "Rebuild the project to rewrite it."
-        )
+    if isinstance(payload, dict):
+        version = payload.get("version")
+        if version == _DOCSTORE_VERSION:
+            count = payload.get("count")
+            return count if isinstance(count, int) else None
+        if version == _LEGACY_DOCSTORE_VERSION:
+            # Saving the project rewrites this as a payload of just the count.
+            logger.warning("faiss_docstore_legacy_payload", path=str(path))
+            return len(payload.get("index_to_id", {}))
 
-    documents = {
-        docstore_id: Document(
-            page_content=stored.get("content", ""),
-            metadata=stored.get("metadata", {}),
-        )
-        for docstore_id, stored in payload.get("documents", {}).items()
-    }
-    index_to_docstore_id = {
-        int(faiss_id): docstore_id
-        for faiss_id, docstore_id in payload.get("index_to_id", {}).items()
-    }
-    return documents, index_to_docstore_id
-
-
-def _document_passes(
-    doc: Document,
-    metadata_filter: MetadataFilter | None,
-    source_filter: str | None,
-) -> bool:
-    """Check a stored Document against both filter forms."""
-    if metadata_filter and not _matches_faiss_filter(doc.metadata, metadata_filter):
-        return False
-    return not source_filter or source_filter in doc.metadata.get("source", "")
-
-
-def _select_matching_ids(
-    vectorstore: FAISS,
-    metadata_filter: MetadataFilter | None,
-    source_filter: str | None,
-) -> np.ndarray:
-    """Return the FAISS internal ids whose documents satisfy the filters."""
-    return np.fromiter(
-        (
-            faiss_id
-            for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
-            if (doc := _lookup_document(vectorstore, docstore_id)) is not None
-            and _document_passes(doc, metadata_filter, source_filter)
-        ),
-        dtype=np.intp,
+    raise ValueError(
+        f"FAISS docstore at {path} is not version {_DOCSTORE_VERSION}. "
+        "Rebuild the project to rewrite it."
     )
 
 
-def _filter_entries(vectorstore: FAISS) -> Iterator[tuple[int, Any]]:
-    """Yield each stored document's FAISS id and the metadata to post it on."""
-    for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items():
-        doc = _lookup_document(vectorstore, docstore_id)
-        if doc is not None:
-            yield faiss_id, doc.metadata.items()
-
-
 class FAISSStore:
-    """FAISS vector store for semantic search on contextualized chunks."""
+    """FAISS vector store for semantic search on contextualized chunks.
+
+    Vectors only: FAISS numbers them in insertion order, so a hit is the chunk
+    at that position in the corpus the index was built over.
+    """
 
     def __init__(
         self,
@@ -264,8 +110,8 @@ class FAISSStore:
         if settings.OPENAI_API_KEY:
             kwargs["api_key"] = settings.OPENAI_API_KEY
         self._embeddings = OpenAIEmbeddings(**kwargs)
-        self._vectorstore: FAISS | None = None
-        self._filter_index: FilterIndex | None = None
+        self._index: faiss.Index | None = None
+        self._chunks = ChunkSource.holding()
 
     def build_index(
         self,
@@ -280,15 +126,16 @@ class FAISSStore:
             chunks: List of contextualized chunks to index.
             batch_size: Number of documents to embed per request.
         """
-        batches = _document_batches(chunks, batch_size)
-        if not batches:
+        spans = _batch_spans(len(chunks), batch_size)
+        if not spans:
             logger.warning("faiss_build_empty_chunks")
             return
 
         self._reset()
-        for number, batch in enumerate(batches, start=1):
-            vectors = self._embeddings.embed_documents(_page_contents(batch))
-            self._absorb(number, len(batches), batch, vectors)
+        for number, span in enumerate(spans, start=1):
+            vectors = self._embeddings.embed_documents(_texts(chunks, span))
+            self._absorb(number, len(spans), vectors)
+        self._chunks = ChunkSource.holding(chunks)
 
         logger.info("faiss_index_built", num_chunks=len(chunks))
 
@@ -310,8 +157,8 @@ class FAISSStore:
             max_concurrency: Requests in flight. Defaults to
                 settings.MAX_CONCURRENT_CALLS.
         """
-        batches = _document_batches(chunks, batch_size)
-        if not batches:
+        spans = _batch_spans(len(chunks), batch_size)
+        if not spans:
             logger.warning("faiss_build_empty_chunks")
             return
 
@@ -323,59 +170,53 @@ class FAISSStore:
         pending: _PendingBatches = deque()
 
         try:
-            for number, batch in enumerate(batches, start=1):
+            for number, span in enumerate(spans, start=1):
                 if len(pending) == window:
-                    await self._absorb_oldest(pending, len(batches))
-                request = self._embeddings.aembed_documents(_page_contents(batch))
-                pending.append((number, batch, asyncio.ensure_future(request)))
+                    await self._absorb_oldest(pending, len(spans))
+                request = self._embeddings.aembed_documents(_texts(chunks, span))
+                pending.append((number, asyncio.ensure_future(request)))
             while pending:
-                await self._absorb_oldest(pending, len(batches))
+                await self._absorb_oldest(pending, len(spans))
         except BaseException:
-            for _, _, task in pending:
+            for _, task in pending:
                 task.cancel()
-            await asyncio.gather(*(task for _, _, task in pending), return_exceptions=True)
+            await asyncio.gather(*(task for _, task in pending), return_exceptions=True)
             raise
+
+        self._chunks = ChunkSource.holding(chunks)
 
         logger.info("faiss_index_built", num_chunks=len(chunks))
 
     async def _absorb_oldest(self, pending: "_PendingBatches", total_batches: int) -> None:
         """Wait for the longest-outstanding request and fold it into the index."""
-        number, batch, task = pending.popleft()
-        self._absorb(number, total_batches, batch, await task)
+        number, task = pending.popleft()
+        self._absorb(number, total_batches, await task)
 
     def _absorb(
         self,
         number: int,
         total_batches: int,
-        documents: list[Document],
         vectors: list[list[float]],
     ) -> None:
-        """Add one embedded batch, creating the vectorstore on the first."""
+        """Add one embedded batch, creating the index on the first."""
         if total_batches > 1:
             logger.info("faiss_building_batch", batch=number, total_batches=total_batches)
 
-        pairs = zip((document.page_content for document in documents), vectors, strict=True)
-        metadatas = [document.metadata for document in documents]
-
-        if self._vectorstore is None:
-            self._vectorstore = FAISS.from_embeddings(
-                text_embeddings=pairs,
-                embedding=self._embeddings,
-                metadatas=metadatas,
-            )
-        else:
-            self._vectorstore.add_embeddings(pairs, metadatas=metadatas)
+        rows = np.asarray(vectors, dtype=np.float32)
+        if self._index is None:
+            self._index = faiss.IndexFlatL2(rows.shape[1])
+        self._index.add(rows)
 
     def _reset(self) -> None:
         """Drop whatever this store held, so a rebuild starts from nothing."""
-        self._vectorstore = None
-        self._filter_index = None
+        self._index = None
+        self._chunks = ChunkSource.holding()
 
     def save(self, directory: Path) -> None:
         """Save FAISS index to disk.
 
-        The docstore goes out as JSON rather than through LangChain's
-        save_local, which pickles it: reading a pickle runs whatever it holds.
+        The payload beside the index is JSON rather than LangChain's pickled
+        docstore: reading a pickle runs whatever it holds.
 
         Args:
             directory: Directory to save index files.
@@ -383,13 +224,16 @@ class FAISSStore:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
 
-        vectorstore = self._vectorstore
-        if vectorstore is None:
+        index = self._index
+        if index is None:
             logger.warning("faiss_save_no_index")
             return
 
-        faiss.write_index(vectorstore.index, str(directory / INDEX_FILENAME))
-        write_json(directory / DOCSTORE_FILENAME, _docstore_payload(vectorstore))
+        faiss.write_index(index, str(directory / INDEX_FILENAME))
+        write_json(
+            directory / DOCSTORE_FILENAME,
+            {"version": _DOCSTORE_VERSION, "count": int(index.ntotal)},
+        )
 
         sign(directory, SIGNED_FILENAMES)
 
@@ -398,19 +242,19 @@ class FAISSStore:
 
         logger.info("faiss_index_saved", directory=str(directory))
 
-    def load(self, directory: Path) -> None:
-        """Load FAISS index from disk.
-
-        Only the index and its docstore are read; queries rebuild the chunks
-        they return from the documents they matched.
+    def load(self, directory: Path, chunks: ChunkSource) -> None:
+        """Load FAISS index from disk and bind it to the corpus it was built over.
 
         Args:
             directory: Directory containing index files.
+            chunks: The chunks the index was built over, in index order. Read
+                on the first query, not here.
 
         Raises:
             FileNotFoundError: If index files don't exist.
             IntegrityError: If the index does not match what was recorded for it.
-            ValueError: If the docstore is not a version this reads.
+            ValueError: If the docstore is not a version this reads, or accounts
+                for a different number of vectors than the index holds.
         """
         directory = Path(directory)
 
@@ -431,19 +275,21 @@ class FAISSStore:
 
         verify(directory, SIGNED_FILENAMES)
 
-        documents, index_to_docstore_id = _read_docstore(docstore_path)
-        self._vectorstore = FAISS(
-            embedding_function=self._embeddings,
-            index=faiss.read_index(str(index_path)),
-            docstore=InMemoryDocstore(documents),
-            index_to_docstore_id=index_to_docstore_id,
-        )
-        self._filter_index = None
+        count = _read_vector_count(docstore_path)
+        index = faiss.read_index(str(index_path))
+        if count is not None and index.ntotal != count:
+            raise ValueError(
+                f"{index_path} holds {index.ntotal} vectors, but {docstore_path} "
+                f"accounts for {count}. Rebuild the project to rewrite them."
+            )
+
+        self._index = index
+        self._chunks = chunks
 
         logger.info(
             "faiss_index_loaded",
             directory=str(directory),
-            num_chunks=self._vectorstore.index.ntotal,
+            num_chunks=index.ntotal,
         )
 
     def query(
@@ -469,35 +315,34 @@ class FAISSStore:
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
         """
-        vectorstore = self._vectorstore
-        if vectorstore is None:
+        index = self._index
+        if index is None:
             logger.warning("faiss_query_empty_index")
             return []
 
         k = top_k or settings.DEFAULT_TOP_K
 
-        if not metadata_filter and not source_filter:
-            return self._search(vectorstore, query, k)
-
         # Filtered before the search rather than after it, so a restrictive
         # filter still yields k results instead of whatever survives a global top-k.
-        valid_ids = self._matching_ids(vectorstore, metadata_filter, source_filter)
-        if not valid_ids.size:
+        selected = self._chunks.select(metadata_filter, source_filter)
+        if selected is None:
+            return self._search(index, query, k)
+        if not selected.size:
             return []
 
         # Both bound to names: the selector reads the buffer during the search.
-        selected = valid_ids.astype(np.int64)
-        selector = faiss.IDSelectorArray(selected)
+        positions = selected.astype(np.int64)
+        selector = faiss.IDSelectorArray(positions)
         return self._search(
-            vectorstore,
+            index,
             query,
-            min(k, selected.size),
+            min(k, positions.size),
             faiss.SearchParametersIVF(sel=selector),
         )
 
     def _search(
         self,
-        vectorstore: FAISS,
+        index: faiss.Index,
         query: str,
         k: int,
         params: faiss.SearchParameters | None = None,
@@ -508,41 +353,42 @@ class FAISSStore:
         similarity_search_with_score, which embeds the string itself and so
         reaches the endpoint around the cache.
         """
-        distances, indices = vectorstore.index.search(
+        chunks = self._ranked_over(index)
+        if not chunks:
+            logger.warning("faiss_query_no_corpus")
+            return []
+
+        distances, positions = index.search(
             query_vector(self._embeddings, self._embedding_model, query),
             k,
             params=params,
         )
 
-        results = []
-        for distance, faiss_idx in zip(distances[0], indices[0], strict=True):
-            if faiss_idx == -1:  # FAISS pads unfilled result slots with -1
-                continue
-            docstore_id = vectorstore.index_to_docstore_id.get(faiss_idx)
-            doc = _lookup_document(vectorstore, docstore_id) if docstore_id else None
-            if doc is not None:
-                results.append((_from_document(doc), _to_similarity(distance)))
-        return results
+        return [
+            (chunks[position], _to_similarity(distance))
+            for distance, position in zip(distances[0], positions[0], strict=True)
+            if position != -1  # FAISS pads unfilled result slots with -1
+        ]
 
-    def _matching_ids(
-        self,
-        vectorstore: FAISS,
-        metadata_filter: MetadataFilter | None,
-        source_filter: str | None,
-    ) -> np.ndarray:
-        """Resolve the filters to FAISS ids, indexing the docstore on first use."""
-        if self._filter_index is None:
-            self._filter_index = FilterIndex(
-                _filter_entries(vectorstore), _UNPOSTED_METADATA_FIELDS
+    def _ranked_over(self, index: faiss.Index) -> Sequence[ContextualizedChunk]:
+        """The corpus this index numbers, refused where it does not line up.
+
+        An absent corpus reads as empty, like every other artifact a project
+        directory may be missing.
+
+        Raises:
+            ValueError: If the corpus is not the length the index was built over.
+        """
+        chunks = self._chunks.chunks
+        if chunks and len(chunks) != index.ntotal:
+            raise ValueError(
+                f"The FAISS index holds {index.ntotal} vectors, but the corpus it "
+                f"ranks over has {len(chunks)} chunks, so a vector no longer names "
+                "the chunk it was built from. Rebuild the project."
             )
-        selected = self._filter_index.select(metadata_filter, source_filter)
-        if selected is None:
-            return _select_matching_ids(vectorstore, metadata_filter, source_filter)
-        return selected
+        return chunks
 
     @property
     def is_empty(self) -> bool:
         """Check if the index is empty."""
-        if self._vectorstore is None:
-            return True
-        return self._vectorstore.index.ntotal == 0
+        return self._index is None or self._index.ntotal == 0

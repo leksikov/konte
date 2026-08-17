@@ -11,6 +11,7 @@ from konte.domain.models import ContextualizedChunk, RetrievalRequest, Retrieval
 from konte.index.bm25_store import INDEX_FILENAME as BM25_INDEX_FILENAME
 from konte.index.bm25_store import LEGACY_INDEX_FILENAME as LEGACY_BM25_INDEX_FILENAME
 from konte.index.bm25_store import BM25Store
+from konte.index.chunks import ChunkSource
 from konte.index.faiss_store import INDEX_FILENAME as FAISS_INDEX_FILENAME
 from konte.index.faiss_store import FAISSStore
 from konte.retrieval.retriever import Retriever
@@ -128,25 +129,26 @@ class IndexBundle:
         Args:
             directory: Directory the project's artifacts live in.
             config: The project's configuration.
-            corpus: Read only if the lexical index needs its payload, and only
-                on the first query, so an unread corpus stays unparsed.
+            corpus: Read on the first query that needs a chunk rather than a
+                rank. Both indexes bind to one reading of it.
 
         Returns:
             A bundle holding what was on disk.
         """
         faiss: FAISSStore | None = None
         bm25: BM25Store | None = None
+        chunks = ChunkSource(lambda: corpus.contextualized_chunks)
 
         if config.enable_faiss and (directory / FAISS_INDEX_FILENAME).exists():
             faiss = FAISSStore(embedding_model=config.embedding_model)
-            faiss.load(directory)
+            faiss.load(directory, chunks)
 
         if config.enable_bm25 and (
             (directory / BM25_INDEX_FILENAME).exists()
             or (directory / LEGACY_BM25_INDEX_FILENAME).exists()
         ):
             bm25 = BM25Store()
-            bm25.load(directory, lambda: corpus.contextualized_chunks)
+            bm25.load(directory, chunks)
 
         return cls(config, faiss, bm25)
 

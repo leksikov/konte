@@ -2,8 +2,7 @@
 
 import re
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
-from functools import cache
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -12,15 +11,12 @@ import structlog
 from rank_bm25 import BM25Okapi
 
 from konte.domain.models import ContextualizedChunk, MetadataFilter
-from konte.index.filter_index import FilterIndex, matches_filter_value
+from konte.index.chunks import ChunkSource
 from konte.persistence.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.persistence.storage import atomic_writer
 from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
-
-# Returns the chunks an index was built over, in index order.
-Corpus = Callable[[], Sequence[ContextualizedChunk]]
 
 INDEX_FILENAME = "bm25.npz"
 
@@ -92,85 +88,12 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
-# Read off the chunk, never from metadata of the same name.
-_CHUNK_COLUMNS = frozenset({"source", "segment_idx", "chunk_idx"})
-
-
-def _chunk_field(chunk: ContextualizedChunk, key: str) -> Any:
-    """Read a filterable field, preferring the chunk's own columns over metadata."""
-    if key == "source":
-        return chunk.chunk.source
-    if key == "segment_idx":
-        return chunk.chunk.segment_idx
-    if key == "chunk_idx":
-        return chunk.chunk.chunk_idx
-    return chunk.chunk.metadata.get(key)
-
-
-def _matches_filter(chunk: ContextualizedChunk, metadata_filter: MetadataFilter) -> bool:
-    """Check if a chunk matches the metadata filter (AND logic).
-
-    Values can be a single value (equality) or a list (match any).
-
-    Args:
-        chunk: The chunk to check.
-        metadata_filter: Filter with key-value pairs.
-
-    Returns:
-        True if all filter conditions match.
-    """
-    return all(
-        matches_filter_value(_chunk_field(chunk, key), value)
-        for key, value in metadata_filter.items()
-    )
-
-
 def _normalize(scores: np.ndarray, minimum: float, maximum: float) -> np.ndarray:
     """Rescale raw BM25 scores into 0-1 against the filtered candidate set."""
     value_range = maximum - minimum
     if value_range <= 0:
         return np.zeros_like(scores)
     return np.clip((scores - minimum) / value_range, 0.0, 1.0)
-
-
-def _filter_indices(
-    chunks: Sequence[ContextualizedChunk],
-    metadata_filter: MetadataFilter | None,
-    source_filter: str | None,
-) -> np.ndarray | None:
-    """Return corpus positions satisfying both filters, or None for no filter.
-
-    Filtering runs before ranking, so a restrictive filter still yields top_k
-    results instead of however many survive a global top-k.
-    """
-    if not metadata_filter and not source_filter:
-        return None
-
-    matched = enumerate(chunks)
-    if metadata_filter:
-        matched = ((i, c) for i, c in matched if _matches_filter(c, metadata_filter))
-    if source_filter:
-        matched = ((i, c) for i, c in matched if source_filter in c.chunk.source)
-    return np.fromiter((i for i, _ in matched), dtype=np.intp)
-
-
-def _filter_fields(chunk: ContextualizedChunk) -> Iterator[tuple[str, Any]]:
-    """Yield the fields one chunk is filtered on, its own columns first.
-
-    Metadata of a column's name is left out: _chunk_field reads the column, so
-    posting the metadata would filter on something no scan agrees with.
-    """
-    yield "source", chunk.chunk.source
-    yield "segment_idx", chunk.chunk.segment_idx
-    yield "chunk_idx", chunk.chunk.chunk_idx
-    for key, value in chunk.chunk.metadata.items():
-        if key not in _CHUNK_COLUMNS:
-            yield key, value
-
-
-def _filter_entries(chunks: Sequence[ContextualizedChunk]) -> Iterator[tuple[int, Any]]:
-    """Yield each chunk's corpus position and the fields to post it on."""
-    return ((position, _filter_fields(chunk)) for position, chunk in enumerate(chunks))
 
 
 def _rank_top_k(scores: np.ndarray, k: int) -> np.ndarray:
@@ -351,21 +274,19 @@ class BM25Store:
     def __init__(self):
         """Initialize BM25 store."""
         self._model: _Model | None = None
-        self._corpus: Corpus = list  # nothing indexed yet
+        self._chunks = ChunkSource.holding()  # nothing indexed yet
         self._unseen_idf = 0.0
         self._length_norm = np.zeros(0)
-        self._filters: FilterIndex | None = None
 
-    def _attach(self, model: _Model, corpus: Corpus) -> None:
+    def _attach(self, model: _Model, chunks: ChunkSource) -> None:
         """Bind a ranking model to the chunks it was built over.
 
         The rarest term's IDF and the length normalization are derived here
         rather than per query: both scan a structure the size of the corpus.
         """
         self._model = model
-        self._corpus = corpus
+        self._chunks = chunks
         self._unseen_idf = float(model.idf.max()) if model.idf.size else 0.0
-        self._filters = None
         doc_len = model.doc_len.astype(np.float64)
         self._length_norm = model.k1 * (1 - model.b + model.b * doc_len / model.avgdl)
 
@@ -380,7 +301,7 @@ class BM25Store:
             return
 
         index = BM25Okapi([_tokenize(c.contextualized_content) for c in chunks])
-        self._attach(_invert(index), lambda: chunks)
+        self._attach(_invert(index), ChunkSource.holding(chunks))
 
         logger.info("bm25_index_built", num_chunks=len(chunks))
 
@@ -428,13 +349,13 @@ class BM25Store:
 
         logger.info("bm25_index_saved", directory=str(directory))
 
-    def load(self, directory: Path, corpus: Corpus) -> None:
+    def load(self, directory: Path, chunks: ChunkSource) -> None:
         """Load the BM25 ranking model from disk and bind it to a corpus.
 
         Args:
             directory: Directory containing index files.
-            corpus: Returns the chunks the index was built over, in index
-                order. Called on the first query, not here.
+            chunks: The chunks the index was built over, in index order. Read
+                on the first query, not here.
 
         Raises:
             FileNotFoundError: If the index file is missing.
@@ -473,7 +394,7 @@ class BM25Store:
                 b=b,
             )
 
-        self._attach(model, cache(corpus))
+        self._attach(model, chunks)
 
         logger.info("bm25_index_loaded", directory=str(directory))
 
@@ -541,13 +462,17 @@ class BM25Store:
         Returns:
             LexicalResults pairing the ranked chunks with their coverage.
         """
-        chunks = self._corpus()
         model = self._model
-        if model is None or not chunks:
+        if model is None:
             logger.warning("bm25_query_empty_index")
             return LexicalResults([], {})
 
-        candidates = self._candidates(chunks, metadata_filter, source_filter)
+        chunks = self._ranked_over(model)
+        if not chunks:
+            logger.warning("bm25_query_no_corpus")
+            return LexicalResults([], {})
+
+        candidates = self._chunks.select(metadata_filter, source_filter)
         if candidates is not None and not candidates.size:
             return LexicalResults([], {})
 
@@ -581,22 +506,23 @@ class BM25Store:
             },
         )
 
-    def _candidates(
-        self,
-        chunks: Sequence[ContextualizedChunk],
-        metadata_filter: MetadataFilter | None,
-        source_filter: str | None,
-    ) -> np.ndarray | None:
-        """Resolve the filters to corpus positions, indexing the corpus on first use."""
-        if not metadata_filter and not source_filter:
-            return None
+    def _ranked_over(self, model: _Model) -> Sequence[ContextualizedChunk]:
+        """The corpus this model scores, refused where it does not line up.
 
-        if self._filters is None:
-            self._filters = FilterIndex(_filter_entries(chunks))
-        selected = self._filters.select(metadata_filter, source_filter)
-        if selected is None:
-            return _filter_indices(chunks, metadata_filter, source_filter)
-        return selected
+        An absent corpus reads as empty, like every other artifact a project
+        directory may be missing.
+
+        Raises:
+            ValueError: If the corpus is not the length the model was built over.
+        """
+        chunks = self._chunks.chunks
+        if chunks and len(chunks) != model.size:
+            raise ValueError(
+                f"The BM25 index ranks {model.size} documents, but the corpus it "
+                f"ranks over has {len(chunks)} chunks, so a document no longer "
+                "names the chunk it was built from. Rebuild the project."
+            )
+        return chunks
 
     @property
     def is_empty(self) -> bool:

@@ -3,6 +3,7 @@
 import pytest
 
 from konte.domain import Chunk, ContextualizedChunk
+from konte.index import ChunkSource
 
 
 @pytest.fixture
@@ -313,7 +314,7 @@ class TestBM25StoreCoverage:
         store.save(tmp_path)
 
         reloaded = BM25Store()
-        reloaded.load(tmp_path, lambda: sample_chunks)
+        reloaded.load(tmp_path, ChunkSource(lambda: sample_chunks))
 
         for query in ("tariff code 8542.31", "8542.31 zirconium", "xyz123"):
             assert reloaded.query_with_coverage(query, top_k=3).coverage == pytest.approx(
@@ -348,7 +349,7 @@ class TestBM25StorePersistence:
 
         # Load into new store
         store2 = BM25Store()
-        store2.load(tmp_path, lambda: sample_chunks)
+        store2.load(tmp_path, ChunkSource(lambda: sample_chunks))
 
         assert not store2.is_empty
 
@@ -387,7 +388,7 @@ class TestBM25StorePersistence:
         sign(tmp_path, SIGNED_FILENAMES)  # the tokenizer check, not the signature
 
         with pytest.raises(ValueError, match="tokenizer"):
-            BM25Store().load(tmp_path, lambda: sample_chunks)
+            BM25Store().load(tmp_path, ChunkSource(lambda: sample_chunks))
 
     def test_save_writes_no_chunk_payload(self, sample_chunks, tmp_path):
         """Test that the lexical index stores no second copy of the corpus."""
@@ -437,7 +438,7 @@ class TestBM25StorePersistence:
             return sample_chunks
 
         store2 = BM25Store()
-        store2.load(tmp_path, corpus)
+        store2.load(tmp_path, ChunkSource(corpus))
         assert reads == []
 
         store2.query("import duty rate", top_k=1)
@@ -453,7 +454,7 @@ class TestBM25StorePersistence:
         store1.save(tmp_path)
 
         store2 = BM25Store()
-        store2.load(tmp_path, lambda: sample_chunks)
+        store2.load(tmp_path, ChunkSource(lambda: sample_chunks))
 
         results = store2.query("test", top_k=1)
         chunk = results[0][0]
@@ -475,7 +476,7 @@ class TestBM25StorePersistence:
         store1.save(tmp_path)
 
         store2 = BM25Store()
-        store2.load(tmp_path, lambda: sample_chunks)
+        store2.load(tmp_path, ChunkSource(lambda: sample_chunks))
 
         # Query after load
         results2 = store2.query("electronic integrated circuits", top_k=3)
@@ -484,6 +485,20 @@ class TestBM25StorePersistence:
         ids1 = [r[0].chunk.chunk_id for r in results1]
         ids2 = [r[0].chunk.chunk_id for r in results2]
         assert ids1 == ids2
+
+    def test_a_corpus_of_another_length_is_refused(self, sample_chunks, tmp_path):
+        """Test a document never names whatever chunk happens to sit at its position."""
+        from konte.index import BM25Store
+
+        store = BM25Store()
+        store.build_index(sample_chunks)
+        store.save(tmp_path)
+
+        reloaded = BM25Store()
+        reloaded.load(tmp_path, ChunkSource.holding(sample_chunks[:-1]))
+
+        with pytest.raises(ValueError, match="Rebuild the project"):
+            reloaded.query("import duty rate", top_k=3)
 
 
 @pytest.fixture
@@ -658,7 +673,7 @@ class TestBM25StoreFilterIndex:
 
     def test_posted_filters_select_what_a_scan_selects(self, filter_edge_chunks):
         """Test every filter shape resolves to the same positions, in the same order."""
-        from konte.index.bm25_store import _filter_entries, _filter_indices
+        from konte.index.chunks import _filter_entries, _filter_indices
         from konte.index.filter_index import FilterIndex
 
         index = FilterIndex(_filter_entries(filter_edge_chunks))
@@ -673,7 +688,7 @@ class TestBM25StoreFilterIndex:
     def test_a_query_returns_what_a_scan_would_have(self, filter_edge_chunks):
         """Test the store reaches the same chunks through the index it reached before."""
         from konte.index import BM25Store
-        from konte.index.bm25_store import _filter_indices
+        from konte.index.chunks import _filter_indices
 
         store = BM25Store()
         store.build_index(filter_edge_chunks)

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from konte.domain import Chunk, ContextualizedChunk
-from konte.index import BM25Store
+from konte.index import BM25Store, ChunkSource
 from konte.index.bm25_store import INDEX_FILENAME, LEGACY_INDEX_FILENAME, SIGNED_FILENAMES
 from konte.manager import trust_project
 from konte.persistence.integrity import IntegrityError, verify
@@ -93,7 +93,7 @@ class TestIndexSignatures:
         _saved_index(chunks, project_dir)
 
         store = BM25Store()
-        store.load(project_dir, lambda: chunks)
+        store.load(project_dir, ChunkSource(lambda: chunks))
 
         assert not store.is_empty
 
@@ -103,7 +103,7 @@ class TestIndexSignatures:
         _tamper(project_dir)
 
         with pytest.raises(IntegrityError, match="does not match its signature"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_an_unsigned_index_is_refused(self, chunks, project_dir):
         """Test that an index without a signature is not read on faith."""
@@ -111,7 +111,7 @@ class TestIndexSignatures:
         (project_dir / f"{INDEX_FILENAME}.sig").unlink()
 
         with pytest.raises(IntegrityError, match="is not signed"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_a_corrupt_signature_is_refused_as_a_signature(self, chunks, project_dir):
         """Test that an unparseable signature file fails the check, not the parser."""
@@ -119,7 +119,7 @@ class TestIndexSignatures:
         (project_dir / f"{INDEX_FILENAME}.sig").write_text("{not json", encoding="utf-8")
 
         with pytest.raises(IntegrityError):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_an_index_from_another_installation_is_refused(self, chunks, project_dir, monkeypatch):
         """Test that a directory signed elsewhere does not verify here."""
@@ -128,7 +128,7 @@ class TestIndexSignatures:
 
         monkeypatch.setattr(settings, "INDEX_SIGNING_KEY", "this-installation")
         with pytest.raises(IntegrityError, match="does not match its signature"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_a_signature_does_not_carry_to_another_name(self, chunks, project_dir):
         """Test that a signature cannot be transplanted onto a different file."""
@@ -166,14 +166,14 @@ class TestIndexSignatures:
         (project_dir / "faiss_docstore.json").write_text("{}", encoding="utf-8")
 
         with pytest.raises(IntegrityError, match="is not signed"):
-            FAISSStore().load(project_dir)
+            FAISSStore().load(project_dir, ChunkSource.holding())
 
     def test_a_configured_key_leaves_no_key_file(self, chunks, project_dir, monkeypatch):
         """Test that INDEX_SIGNING_KEY keeps the secret off the storage root."""
         monkeypatch.setattr(settings, "INDEX_SIGNING_KEY", "from-the-environment")
 
         _saved_index(chunks, project_dir)
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
         assert not (project_dir.parent / ".signing-key").exists()
 
@@ -188,11 +188,11 @@ class TestIntegrityMode:
         (project_dir / f"{INDEX_FILENAME}.sig").unlink()
 
         with pytest.raises(IntegrityError):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
         monkeypatch.setattr(settings, "INDEX_INTEGRITY", "off")
         store = BM25Store()
-        store.load(project_dir, lambda: chunks)
+        store.load(project_dir, ChunkSource(lambda: chunks))
 
         assert not store.is_empty
 
@@ -203,7 +203,7 @@ class TestIntegrityMode:
         _saved_index(chunks, project_dir)
 
         assert not (project_dir / f"{INDEX_FILENAME}.sig").exists()
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_warn_loads_an_unrecorded_index(self, chunks, project_dir, monkeypatch):
         """Test that an unsigned index loads under warn, where enforce refuses it."""
@@ -212,7 +212,7 @@ class TestIntegrityMode:
 
         monkeypatch.setattr(settings, "INDEX_INTEGRITY", "warn")
         store = BM25Store()
-        store.load(project_dir, lambda: chunks)
+        store.load(project_dir, ChunkSource(lambda: chunks))
 
         assert not store.is_empty
 
@@ -222,7 +222,7 @@ class TestIntegrityMode:
         _saved_index(chunks, project_dir)
 
         monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
 
 @pytest.mark.unit
@@ -234,7 +234,7 @@ class TestIndexManifest:
         _saved_index(chunks, project_dir)
 
         store = BM25Store()
-        store.load(project_dir, lambda: chunks)
+        store.load(project_dir, ChunkSource(lambda: chunks))
 
         assert not store.is_empty
         assert manifest.exists()
@@ -255,7 +255,7 @@ class TestIndexManifest:
         _tamper(project_dir)
 
         with pytest.raises(IntegrityError, match="does not match the digest pinned"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_an_unpinned_index_is_refused(self, chunks, project_dir, manifest, monkeypatch):
         """Test that an index the manifest never recorded is not read on faith."""
@@ -264,12 +264,12 @@ class TestIndexManifest:
 
         monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
         with pytest.raises(IntegrityError, match="is not pinned"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_a_pinned_index_needs_no_local_key(self, chunks, project_dir, manifest):
         """Test that verifying against the manifest generates no signing key."""
         _saved_index(chunks, project_dir)
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
         assert not (project_dir.parent / ".signing-key").exists()
         assert not (project_dir / f"{INDEX_FILENAME}.sig").exists()
@@ -306,7 +306,7 @@ class TestIndexManifest:
         manifest.write_text("{not json", encoding="utf-8")
 
         with pytest.raises(IntegrityError, match="is not pinned"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
 
 @pytest.mark.unit
@@ -321,7 +321,7 @@ class TestPickleRefusal:
             pickle.dump({"index": _Payload(marker), "tokenizer": 2}, handle)
 
         with pytest.raises(ValueError, match="pickled model"):
-            BM25Store().load(project_dir, lambda: chunks)
+            BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
         assert not marker.exists()
 
@@ -335,7 +335,7 @@ class TestPickleRefusal:
         (project_dir / "faiss.pkl").write_bytes(b"not read either")
 
         with pytest.raises(ValueError, match="pickled docstore"):
-            FAISSStore().load(project_dir)
+            FAISSStore().load(project_dir, ChunkSource.holding())
 
     def test_rebuilding_clears_the_legacy_index(self, chunks, project_dir):
         """Test that a saved project leaves no pickle behind for anything to find."""
@@ -358,7 +358,7 @@ class TestTrustProject:
         recorded = trust_project("proj", storage_path=project_dir.parent)
 
         assert recorded == list(SIGNED_FILENAMES)
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_trust_pins_into_the_manifest(self, chunks, project_dir, manifest, monkeypatch):
         """Test that trusting writes the digest when a manifest anchors the record."""
@@ -368,7 +368,7 @@ class TestTrustProject:
         monkeypatch.setattr(settings, "INDEX_INTEGRITY", "enforce")
         trust_project("proj", storage_path=project_dir.parent)
 
-        BM25Store().load(project_dir, lambda: chunks)
+        BM25Store().load(project_dir, ChunkSource(lambda: chunks))
 
     def test_trust_reports_an_index_free_project(self, project_dir):
         """Test that a project with nothing to record says so instead of failing."""

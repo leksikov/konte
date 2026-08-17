@@ -94,9 +94,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corpus the project directory went from 4.97x to 2.94x the size of the text in
   it, a 41% cut, and neither copy was ever read back. Indexes written before this
   still load, both halves of their payload included
-- `BM25Store.load()` takes the corpus its index was built over; it no longer owns
-  a file of its own to read one from. `Store` no longer declares `load()` at all,
-  since the two stores legitimately need different things to come back
+- The vector index no longer holds the corpus a second time. Its docstore kept a
+  document per vector — the chunk and its context joined, and the metadata to
+  filter on — beside the very chunks the lexical index already ranked over, so a
+  hybrid project carried its text twice in memory and twice on disk. FAISS numbers
+  its vectors in the order they were added, which is the order of the corpus, so a
+  hit is now resolved by position against the one list both indexes read, and
+  `faiss_docstore.json` records the shape of the index and nothing else: 30MB → 30
+  bytes on a 20k-chunk project, and what such a project retains for its corpus
+  falls ~40%. Resolving a query's hits no longer rebuilds a chunk per result
+  (0.056ms → 0.0003ms for 40 hits), and opening the project no longer parses that
+  payload (37ms → 0.02ms). Nothing about the ranking moves: the index file is
+  byte-identical, and every result, score and returned chunk is the same. A
+  docstore written by the previous version still loads, so no project is
+  re-embedded; saving it rewrites the small payload
+- Both indexes resolve a filter through one inverted index over one reading of the
+  corpus, rather than each building its own over its own copy of it. A filter now
+  means the same thing in both: the vector index used to read its filter fields
+  off the flattened document, where metadata of a column's name shadowed the
+  column the lexical index reads. It also posted `chunk_id` and `context_length`,
+  which the lexical index never has, so filtering on either of those now selects
+  nothing — it never selected anything in `lexical` or `hybrid` mode
+- An index whose corpus has since changed length is refused by name rather than
+  answering with whatever chunk now sits at a matched position. A build that
+  skipped one of the two indexes used to leave that one silently misaligned with
+  the corpus saved beside it
+- `BM25Store.load()` and `FAISSStore.load()` take the corpus their index was built
+  over, as one `ChunkSource` the two stores share; neither owns a file of its own
+  to read one from, and neither reads the corpus until a query needs a chunk
+  rather than a rank. `Store` still does not declare `load()`, since a store may
+  need more than a directory to come back
 - Context generation runs its segments concurrently instead of one after another,
   against a single ceiling on requests in flight. `MAX_CONCURRENT_CALLS` is what
   sets that ceiling — the setting existed but nothing read it, so a build was

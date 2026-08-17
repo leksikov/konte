@@ -5,6 +5,7 @@ import os
 import pytest
 
 from konte.domain import Chunk, ContextualizedChunk
+from konte.index import ChunkSource
 
 # Skip all tests if OPENAI_API_KEY is not set
 pytestmark = pytest.mark.skipif(
@@ -131,7 +132,7 @@ class TestFAISSStorePersistence:
 
         # Load into new store
         store2 = FAISSStore()
-        store2.load(tmp_path)
+        store2.load(tmp_path, ChunkSource.holding(sample_chunks))
 
         assert not store2.is_empty
 
@@ -145,7 +146,7 @@ class TestFAISSStorePersistence:
 
         store = FAISSStore()
         with pytest.raises(FileNotFoundError):
-            store.load(tmp_path / "nonexistent")
+            store.load(tmp_path / "nonexistent", ChunkSource.holding())
 
     def test_saved_chunks_preserved(self, sample_chunks, tmp_path):
         """Test that chunk data is preserved after save/load."""
@@ -156,7 +157,7 @@ class TestFAISSStorePersistence:
         store1.save(tmp_path)
 
         store2 = FAISSStore()
-        store2.load(tmp_path)
+        store2.load(tmp_path, ChunkSource.holding(sample_chunks))
 
         results = store2.query("test", top_k=1)
         chunk = results[0][0]

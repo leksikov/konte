@@ -4,7 +4,7 @@ import pytest
 from langchain_core.embeddings import Embeddings
 
 from konte.domain import Chunk, ContextualizedChunk
-from konte.index import FAISSStore
+from konte.index import ChunkSource, FAISSStore
 from konte.index.faiss_store import DOCSTORE_FILENAME, INDEX_FILENAME
 
 _DIMENSIONS = 8
@@ -80,10 +80,10 @@ class TestFAISSStorePersistence:
         store.save(tmp_path)
 
         reloaded = FAISSStore()
-        reloaded.load(tmp_path)
+        reloaded.load(tmp_path, ChunkSource.holding(chunks))
 
         assert not reloaded.is_empty
-        assert reloaded._vectorstore.index.ntotal == len(chunks)
+        assert reloaded._index.ntotal == len(chunks)
 
     def test_save_writes_no_pickle(self, store, chunks, tmp_path):
         """Test that nothing the index writes is read back through pickle."""
@@ -95,12 +95,12 @@ class TestFAISSStorePersistence:
         assert (tmp_path / DOCSTORE_FILENAME).exists()
 
     def test_chunks_survive_a_reload(self, store, chunks, tmp_path):
-        """Test that a reloaded document rebuilds the chunk it was flattened from."""
+        """Test that a reloaded index still resolves a hit to the chunk behind it."""
         store.build_index(chunks)
         store.save(tmp_path)
 
         reloaded = FAISSStore()
-        reloaded.load(tmp_path)
+        reloaded.load(tmp_path, ChunkSource.holding(chunks))
         found = reloaded.query("Adobe revenue", top_k=3)
 
         rebuilt = {chunk.chunk.chunk_id: chunk for chunk, _ in found}
@@ -119,7 +119,7 @@ class TestFAISSStorePersistence:
 
         store.save(tmp_path)
         reloaded = FAISSStore()
-        reloaded.load(tmp_path)
+        reloaded.load(tmp_path, ChunkSource.holding(chunks))
         after = reloaded.query("Adobe cloud segment", top_k=3)
 
         assert [c.chunk.chunk_id for c, _ in after] == [c.chunk.chunk_id for c, _ in before]
@@ -131,7 +131,7 @@ class TestFAISSStorePersistence:
         store.save(tmp_path)
 
         reloaded = FAISSStore()
-        reloaded.load(tmp_path)
+        reloaded.load(tmp_path, ChunkSource.holding(chunks))
         found = reloaded.query("results", top_k=10, metadata_filter={"company": "ADOBE"})
 
         assert {chunk.chunk.source for chunk, _ in found} == {
@@ -146,7 +146,7 @@ class TestFAISSStorePersistence:
         (tmp_path / DOCSTORE_FILENAME).unlink()
 
         with pytest.raises(FileNotFoundError, match="docstore"):
-            FAISSStore().load(tmp_path)
+            FAISSStore().load(tmp_path, ChunkSource.holding(chunks))
 
     def test_load_rejects_a_docstore_of_another_version(self, store, chunks, tmp_path):
         """Test that a payload this version does not read is refused."""
@@ -164,7 +164,157 @@ class TestFAISSStorePersistence:
         sign(tmp_path, SIGNED_FILENAMES)  # the version check, not the record
 
         with pytest.raises(ValueError, match="version"):
-            FAISSStore().load(tmp_path)
+            FAISSStore().load(tmp_path, ChunkSource.holding(chunks))
+
+
+@pytest.mark.unit
+class TestFAISSStoreKeepsNoCorpus:
+    """Test that the index carries vectors and the corpus carries the text."""
+
+    def test_the_saved_payload_holds_no_chunk_text(self, store, chunks, tmp_path):
+        """Test that nothing beside the vectors repeats what a chunk says."""
+        import json
+
+        from konte.index.faiss_store import _DOCSTORE_VERSION
+
+        store.build_index(chunks)
+        store.save(tmp_path)
+
+        payload = json.loads((tmp_path / DOCSTORE_FILENAME).read_text(encoding="utf-8"))
+
+        assert payload == {"version": _DOCSTORE_VERSION, "count": len(chunks)}
+
+    def test_load_defers_reading_the_corpus(self, store, chunks, tmp_path):
+        """Test that loading an index does not pull its chunks in with it."""
+        store.build_index(chunks)
+        store.save(tmp_path)
+
+        reads = []
+
+        def corpus():
+            reads.append(1)
+            return chunks
+
+        reloaded = FAISSStore()
+        reloaded.load(tmp_path, ChunkSource(corpus))
+        assert reads == []
+
+        reloaded.query("Adobe revenue", top_k=2)
+        reloaded.query("Adobe cloud", top_k=2)
+        assert reads == [1]
+
+    def test_two_stores_share_one_reading_of_the_corpus(self, store, chunks, tmp_path):
+        """Test a hybrid project parses its chunks once, not once per index."""
+        from konte.index import BM25Store
+
+        store.build_index(chunks)
+        store.save(tmp_path)
+        built = BM25Store()
+        built.build_index(chunks)
+        built.save(tmp_path)
+
+        reads = []
+
+        def corpus():
+            reads.append(1)
+            return chunks
+
+        shared = ChunkSource(corpus)
+        semantic = FAISSStore()
+        semantic.load(tmp_path, shared)
+        lexical = BM25Store()
+        lexical.load(tmp_path, shared)
+
+        semantic.query("Adobe revenue", top_k=2)
+        lexical.query("Adobe revenue", top_k=2)
+
+        assert reads == [1]
+
+    def test_a_bundle_binds_both_indexes_to_one_corpus(self, store, chunks, tmp_path):
+        """Test the wiring a project opens through reads the corpus once."""
+        from konte.domain.config import ProjectConfig
+        from konte.domain.corpus import Corpus
+        from konte.domain.models import RetrievalRequest
+        from konte.index import BM25Store
+        from konte.retrieval.bundle import IndexBundle
+
+        store.build_index(chunks)
+        store.save(tmp_path)
+        lexical = BM25Store()
+        lexical.build_index(chunks)
+        lexical.save(tmp_path)
+
+        reads = []
+
+        def read():
+            reads.append(1)
+            return chunks
+
+        corpus = Corpus.deferred(chunks=list, segments=dict, contextualized_chunks=read)
+        bundle = IndexBundle.load(
+            tmp_path,
+            ProjectConfig(name="bundled", storage_path=tmp_path),
+            corpus,
+        )
+        found = bundle.retrieve(
+            RetrievalRequest(query="Adobe revenue", mode="hybrid", top_k=2, source_filter="ADOBE")
+        )
+
+        assert found.total_found > 0
+        assert reads == [1]
+
+    def test_a_corpus_of_another_length_is_refused(self, store, chunks, tmp_path):
+        """Test a vector never names whatever chunk happens to sit at its position."""
+        store.build_index(chunks)
+        store.save(tmp_path)
+
+        reloaded = FAISSStore()
+        reloaded.load(tmp_path, ChunkSource.holding(chunks[:-1]))
+
+        with pytest.raises(ValueError, match="Rebuild the project"):
+            reloaded.query("Adobe revenue", top_k=2)
+
+    def test_an_absent_corpus_answers_empty(self, store, chunks, tmp_path):
+        """Test a directory missing its chunks opens, the way the others do."""
+        store.build_index(chunks)
+        store.save(tmp_path)
+
+        reloaded = FAISSStore()
+        reloaded.load(tmp_path, ChunkSource.holding())
+
+        assert reloaded.query("Adobe revenue", top_k=2) == []
+
+    def test_a_docstore_of_the_previous_version_still_loads(self, store, chunks, tmp_path):
+        """Test an index written before this stops repeating the corpus is not re-embedded."""
+        import json
+
+        from konte.index.faiss_store import SIGNED_FILENAMES
+        from konte.persistence.integrity import sign
+
+        store.build_index(chunks)
+        store.save(tmp_path)
+
+        legacy = {
+            "version": 1,
+            "index_to_id": {str(position): f"id{position}" for position in range(len(chunks))},
+            "documents": {
+                f"id{position}": {
+                    "content": f"{chunk.context} {chunk.chunk.content}",
+                    "metadata": {"chunk_id": chunk.chunk.chunk_id},
+                }
+                for position, chunk in enumerate(chunks)
+            },
+        }
+        (tmp_path / DOCSTORE_FILENAME).write_text(json.dumps(legacy), encoding="utf-8")
+        sign(tmp_path, SIGNED_FILENAMES)
+
+        reloaded = FAISSStore()
+        reloaded.load(tmp_path, ChunkSource.holding(chunks))
+        found = reloaded.query("Adobe revenue", top_k=3)
+
+        assert {chunk.chunk.chunk_id for chunk, _ in found} == {
+            chunk.chunk.chunk_id for chunk in chunks
+        }
 
 
 @pytest.mark.unit
