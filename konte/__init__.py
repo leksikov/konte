@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from konte.answer import GeneratedAnswer, generate_answer
-from konte.domain.config import ProjectConfig
+from konte.domain.config import ContextStrategy, ProjectConfig
 from konte.domain.corpus import Corpus
 from konte.domain.models import (
     Chunk,
@@ -49,6 +49,7 @@ __all__ = [
     # Models
     "BuildCheckpoint",
     "Chunk",
+    "ContextStrategy",
     "ContextualizedChunk",
     "Corpus",
     "MetadataFilter",

@@ -33,9 +33,10 @@ from benchmarks.build import build_project
 from benchmarks.corpus import document_excerpt, projects_dir, synthetic_document
 from benchmarks.harness import Context, assert_live_endpoint, point_llm_at, stub_embeddings
 from benchmarks.stub_endpoint import MODEL_NAME, stub_endpoint
+from konte.runtime.settings import settings
 
 CHUNKS_PER_SEGMENT = 10
-RETRY_SEGMENTS = 2
+RETRY_SEGMENTS = 5
 OVERLAP_SEGMENTS = 12
 INDEX_CHUNKS = 800
 ROUND_TRIP = 0.25
@@ -79,9 +80,9 @@ def _measure_retry(ctx: Context) -> dict:
         "rate_limit_responses": state.rate_limited,
         "total_requests": state.requests,
         "distinct_prompts": state.distinct_prompts,
-        # One request per chunk is the floor. Everything above that, minus the
-        # refusals themselves, is answers that were fetched more than once.
-        "requests_resent": state.requests - chunks - state.rate_limited,
+        # One request per prompt the build had to make is the floor; above it,
+        # minus the refusals, is answers that were fetched a second time.
+        "requests_resent": state.requests - state.distinct_prompts - state.rate_limited,
     }
 
 
@@ -100,6 +101,9 @@ def _measure_context(ctx: Context) -> dict:
     chunks = len(getattr(project, "_contextualized_chunks", []) or [])
     return {
         "chunks": chunks,
+        # A baseline revision predating the setting asked per chunk.
+        "context_strategy": getattr(project._config, "context_strategy", None)
+        or getattr(settings, "CONTEXT_STRATEGY", "per_chunk"),
         "requests": state.requests,
         "round_trip_seconds": ROUND_TRIP,
         "build_seconds": seconds,

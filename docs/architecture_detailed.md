@@ -50,8 +50,8 @@ flowchart TB
         Z -->|Yes| AA[Empty context]
         Z -->|No| AB[Load prompt template<br/>from konte/contextualize/prompts/]
         AB --> AC[For each segment's chunks]
-        AC --> AD[Build prompt:<br/>1. Segment text ~8000 tokens<br/>2. Chunk text ~800 tokens]
-        AD --> AE[Parallel abatch<br/>per-segment concurrency]
+        AC --> AD[Build prompt:<br/>segment text ~8000 tokens,<br/>marked where each chunk begins]
+        AD --> AE[One request per segment<br/>contexts read back by marker]
         AE --> AF[Call context LLM<br/>gpt-4.1-mini default]
         AF --> AG{Rate limited?}
         AG -->|Yes| AH[Exponential backoff<br/>retry]

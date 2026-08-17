@@ -275,7 +275,7 @@ await project.build(skip_context=True)
 
 ## Custom Context Prompts
 
-The context-generation prompt is a plain text template with two placeholders: `{segment}` (the ~8000-token surrounding segment) and `{chunk}` (the chunk to contextualize). The default prompt (`konte/contextualize/prompts/context_prompt.txt`) is domain-neutral and responds in the document's language.
+The context-generation prompt is a plain text template, and its placeholders say which protocol it is written for. `{segment}` and `{count}` describe a whole marked-up segment in one request (`context_prompt_segment.txt`, the default); `{segment}` and `{chunk}` describe one chunk per request (`context_prompt.txt`). Both packaged defaults live in `konte/contextualize/prompts/`, are domain-neutral, and respond in the document's language. A prompt carrying `{chunk}` puts the project on `per_chunk` whatever `CONTEXT_STRATEGY` says.
 
 Domain-specific prompts substantially improve retrieval for specialized corpora. Override per project:
 
@@ -512,36 +512,47 @@ See [examples/parallel_multi_project_retrieval.py](https://github.com/leksikov/k
 
 ## Performance Optimizations
 
-### vLLM/OpenAI Prefix Caching
+### One Request Per Segment
 
-Context generation is optimized for KV cache prefix caching:
-
-```
-Prompt structure: [SEGMENT ~8000 tokens] + [CHUNK ~800 tokens]
-```
-
-**How it works:**
-1. All chunks within a segment share the same prefix (segment text)
-2. Chunks are sent in parallel via `abatch(max_concurrency=len(chunks))`
-3. First request computes and caches the segment prefix KV states
-4. Subsequent chunk requests hit the cache - only compute the unique chunk suffix
-5. Segments are processed sequentially to maximize cache efficiency
+Every chunk of a segment needs that same segment in front of it. Asking per
+chunk prefills ~8000 tokens eleven times over for the ~800 tokens that differ,
+so a build asks for a whole segment's contexts in one request instead:
 
 ```
-Segment A (10 chunks):
-  Request 1: segment_A + chunk_1  → compute prefix, cache it
-  Request 2: segment_A + chunk_2  → cache hit, compute only chunk_2
-  Request 3: segment_A + chunk_3  → cache hit, compute only chunk_3
-  ...
-Then Segment B, etc.
+Prompt: [SEGMENT ~8000 tokens, with [[n]] marking where chunk n begins]
+Reply:  [[1]] context for chunk 1 ... [[11]] context for chunk 11
 ```
 
-Request order within a segment doesn't matter - whichever arrives first triggers caching.
+The chunks are already inside the segment, so marking where each one starts
+costs a few tokens where sending them alongside it would cost a second copy of
+the segment. On the same corpus, at the default 8000/800 sizes:
+
+| Strategy | Requests | Input tokens |
+| --- | --- | --- |
+| `per_chunk` | ~1,530 | ~13.7M |
+| `per_segment` (default) | ~139 | ~1.2M |
+
+(A 1M-token corpus: 139 segments of ~11 chunks. Both the request count and the
+wall-clock fall by the same factor, and none of it depends on the endpoint
+caching anything.)
+
+Whatever a reply leaves out - a chunk it skipped, a context the token ceiling
+cut off, a model that ignored the format - is asked for on its own under the
+same prompt. A batch that comes back short costs those chunks a retry, not the
+segment its contexts.
+
+`CONTEXT_STRATEGY=per_chunk`, or `context_strategy="per_chunk"` on one project,
+sends a request per chunk instead. A custom prompt carrying `{chunk}` selects
+that on its own: a project's own prompt is never dropped to save requests.
+
+Under `per_chunk`, all chunks of a segment share the segment as a prompt prefix,
+so an endpoint with prefix caching computes it once - if it finished one of that
+segment's requests before the next arrived. `benchmarks/prefix_cache_probe.py`
+measures whether a given endpoint rewards that arrival pattern.
 
 ### Other Optimizations
 
 - **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
-- **Batch Processing**: Uses LangChain's `abatch()` for parallel LLM calls within segment
 - **Build Checkpointing**: Each finished segment appends one line to a checkpoint
   log, so an interrupted build resumes at a segment boundary and the log costs
   one write per segment rather than one rewrite of everything so far
@@ -696,7 +707,7 @@ Chunker (800-token chunks, 10% overlap)
             |
             v
 LLM context generation (100-200 tokens per chunk,
-sees the full segment; optional via skip_context)
+one request per segment; optional via skip_context)
             |
             v
 Contextualized chunks (context + content)

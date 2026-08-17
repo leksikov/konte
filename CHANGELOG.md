@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PROJECT_CACHE_SIZE` (default 4) and `PRELOAD_PROJECTS` settings, bounding how
   many projects a server holds and which ones it opens at startup
 - `FAISSStore.abuild_index()`, the concurrent counterpart to `build_index()`
+- `CONTEXT_STRATEGY` and the per-project `context_strategy`, choosing between
+  one context request per segment (`per_segment`, the default) and one per chunk
+  (`per_chunk`). `konte info` reports which one a project is on
+- `resolve_prompt()` and `ContextPrompt`, which pick a build's prompt and read
+  the protocol back off its placeholders, and a `strategy` argument on
+  `load_prompt_template()` and `generate_contexts_batch()`
+- `konte/contextualize/prompts/context_prompt_segment.txt`, the packaged prompt
+  for the per-segment protocol
 
 ### Changed
 
@@ -100,6 +108,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back on the wire together, so one 429 among twenty chunks resent nineteen
   answers that had already arrived — and a segment that exhausted its retries
   lost the context for every chunk in it, not just the one that failed
+- A segment's contexts are generated in one request rather than one per chunk.
+  Every chunk of a segment needs the same ~8000-token segment in front of it, so
+  asking per chunk prefilled it once per chunk for the ~800 tokens that differed:
+  a 1M-token corpus cost ~1,530 requests and ~13.7M input tokens. The segment is
+  now sent once with a `[[n]]` marker where each chunk begins — the chunk text is
+  already in the segment, so marking it costs a few tokens where sending the
+  chunks alongside it would cost a second copy of the segment — and every context
+  is read back out of the one reply, for ~139 requests and ~1.2M input tokens on
+  the same corpus. The wall-clock falls by the same factor, and none of it
+  depends on the endpoint caching prefixes. Whatever a reply leaves out — a chunk
+  it skipped, a context the token ceiling cut off, a model that ignored the
+  format — is asked for on its own under the same prompt, so the per-chunk retry
+  isolation survives; a build can be put back on the old protocol with
+  `CONTEXT_STRATEGY=per_chunk`, and a custom prompt carrying `{chunk}` selects it
+  on its own rather than being dropped in favour of the cheaper request
 - Building the FAISS index embeds batches concurrently under the same ceiling,
   keeping requests on the wire in a sliding window instead of sending the next
   one only after the last came back. Batches are folded into the index in the

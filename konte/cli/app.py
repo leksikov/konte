@@ -509,6 +509,7 @@ def info(
         table.add_row("Chunk Size", f"{config.chunk_size} tokens")
         table.add_row("Embedding Model", config.embedding_model)
         table.add_row("Context Model", config.context_model)
+        table.add_row("Context Strategy", config.context_strategy or settings.CONTEXT_STRATEGY)
         table.add_row("FAISS Enabled", str(config.enable_faiss))
         table.add_row("BM25 Enabled", str(config.enable_bm25))
 

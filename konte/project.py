@@ -381,6 +381,7 @@ class Project:
             "chunk_overlap": settings.CHUNK_OVERLAP,
             "embedding_model": settings.EMBEDDING_MODEL,
             "context_model": settings.CONTEXT_MODEL,
+            "context_strategy": settings.CONTEXT_STRATEGY,
         }
         defaults.update(kwargs)
         return cls(ProjectConfig(name=name, **defaults))

@@ -1,8 +1,13 @@
 """How one project is configured, independent of where it is stored."""
 
 from pathlib import Path, PurePath
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: How a segment's chunks are asked for: one request per segment, or one per
+#: chunk at the cost of prefilling the segment again each time.
+ContextStrategy = Literal["per_segment", "per_chunk"]
 
 
 def validate_project_name(name: str) -> str:
@@ -39,6 +44,7 @@ class ProjectConfig(BaseModel):
 
     # Context
     context_prompt_path: Path | None = None  # Per-project prompt override
+    context_strategy: ContextStrategy | None = None  # Defaults to settings.CONTEXT_STRATEGY
 
     # Models
     embedding_model: str = "text-embedding-3-small"

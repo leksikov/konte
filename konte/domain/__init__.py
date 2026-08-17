@@ -1,6 +1,6 @@
 """The objects the rest of the library is written in terms of."""
 
-from konte.domain.config import ProjectConfig, validate_project_name
+from konte.domain.config import ContextStrategy, ProjectConfig, validate_project_name
 from konte.domain.corpus import Corpus
 from konte.domain.models import (
     Chunk,
@@ -18,6 +18,7 @@ from konte.domain.models import (
 
 __all__ = [
     "Chunk",
+    "ContextStrategy",
     "ContextualizedChunk",
     "Corpus",
     "MetadataFilter",

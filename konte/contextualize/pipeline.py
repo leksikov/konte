@@ -9,8 +9,9 @@ import structlog
 
 from konte.contextualize.generator import (
     ContextBatch,
+    ContextPrompt,
     generate_contexts_batch,
-    load_prompt_template,
+    resolve_prompt,
 )
 from konte.domain.config import ProjectConfig
 from konte.domain.corpus import Corpus
@@ -82,14 +83,17 @@ class BuildPipeline:
         """
         chunks_by_segment = _group_by_segment(corpus.chunks)
         completed = self._restore_checkpoint(resume, len(chunks_by_segment))
-        prompt_template = (
+        prompt = (
             None
             if skip_context
-            else load_prompt_template(prompt_path or self._config.context_prompt_path)
+            else resolve_prompt(
+                prompt_path or self._config.context_prompt_path,
+                self._config.context_strategy or settings.CONTEXT_STRATEGY,
+            )
         )
 
         tally = await self._generate_contexts(
-            chunks_by_segment, corpus.segments, completed, prompt_template, skip_context
+            chunks_by_segment, corpus.segments, completed, prompt, skip_context
         )
         # Before the caller indexes anything: a rejected corpus should cost no
         # embedding calls.
@@ -130,7 +134,7 @@ class BuildPipeline:
         chunks_by_segment: dict[SegmentKey, list[Chunk]],
         segments: dict[SegmentKey, str],
         completed: set[str],
-        prompt_template: str | None,
+        prompt: ContextPrompt | None,
         skip_context: bool,
     ) -> _ContextTally:
         """Contextualize every not-yet-processed segment, concurrently.
@@ -148,6 +152,7 @@ class BuildPipeline:
             "context_generation_started",
             total_segments=total_segments,
             skip_context=skip_context,
+            strategy=None if prompt is None else prompt.strategy,
         )
 
         pending: list[tuple[SegmentKey, str]] = []
@@ -177,7 +182,7 @@ class BuildPipeline:
                     segment=segments.get(seg_key, ""),
                     chunks=segment_chunks,
                     model=self._config.context_model,
-                    prompt_template=prompt_template,
+                    prompt_template=None if prompt is None else prompt.template,
                     skip_context=skip_context,
                 )
 

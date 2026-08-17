@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from konte.domain.config import ContextStrategy
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -79,6 +81,9 @@ class Settings(BaseSettings):
 
     # Prompt path — None means resolve at usage time via importlib.resources or __file__ fallback
     PROMPT_PATH: Path | None = None
+
+    # See ContextStrategy for the trade-off between the two.
+    CONTEXT_STRATEGY: ContextStrategy = "per_segment"
 
     @property
     def use_custom_llm(self) -> bool:

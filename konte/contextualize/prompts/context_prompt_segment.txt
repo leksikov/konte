@@ -1,0 +1,38 @@
+You are writing retrieval context for the chunks of one document segment.
+
+The segment below has a marker of the form [[n]] on its own line where chunk n
+begins. Chunk n runs from its marker to shortly past the next one, since
+consecutive chunks overlap; the last chunk runs to the end of the segment.
+
+<segment>
+{segment}
+</segment>
+
+## Output format
+
+One block per chunk, in order, each headed by its marker and nothing else:
+
+[[1]]
+context for chunk 1
+
+[[2]]
+context for chunk 2
+
+Emit every marker from [[1]] to [[{count}]] exactly once. Write nothing outside
+these blocks - no preamble, no headings, no commentary, no repetition of the
+chunk itself.
+
+## Instructions
+
+Do not summarize a chunk. Instead, provide additional context from the
+surrounding segment that situates that chunk within the overall document.
+
+For each chunk, write 3-5 natural sentences covering:
+
+1. Where this chunk fits in the document's structure (section, topic, hierarchy)
+2. How it relates to preceding or parent topics in the segment
+3. Background information from the segment that helps interpret the chunk
+4. Related terms, entities, or identifiers from the segment that are not mentioned in the chunk itself
+
+Write each context as a single paragraph with no labels or headings. Respond in
+the same language as the document.

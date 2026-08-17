@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -124,6 +125,26 @@ def _payload_for(schema: dict, keywords: tuple[str, ...]) -> str:
     return json.dumps(payload)
 
 
+_MARKER = re.compile(r"\[\[(\d+)\]\]")
+
+
+def _marked_contexts(request: dict) -> str | None:
+    """Answer a marked-up segment in the protocol it was asked in, if it was.
+
+    Prose would send the build down its per-chunk fallback, leaving the stub
+    measuring the path that runs when the protocol fails.
+    """
+    text = "".join(
+        message["content"]
+        for message in request.get("messages", [])
+        if isinstance(message.get("content"), str)
+    )
+    positions = sorted({int(marker.group(1)) for marker in _MARKER.finditer(text)})
+    if not positions:
+        return None
+    return "\n\n".join(f"[[{n}]]\nGenerated context for chunk {n}." for n in positions)
+
+
 def _structured_schema(request: dict) -> dict | None:
     """Return the JSON schema a request asks to be answered in, if any.
 
@@ -197,6 +218,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         schema = _structured_schema(request)
         body = _payload_for(schema, self.state.keywords) if schema is not None else None
+        if body is None:
+            body = _marked_contexts(request)
 
         if body is not None and request.get("tools"):
             message = {
