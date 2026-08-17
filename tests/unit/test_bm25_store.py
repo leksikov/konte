@@ -2,7 +2,7 @@
 
 import pytest
 
-from konte.models import Chunk, ContextualizedChunk
+from konte.domain import Chunk, ContextualizedChunk
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ class TestBM25StoreBuild:
 
     def test_build_index_creates_index(self, sample_chunks):
         """Test that build_index creates a searchable index."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -48,7 +48,7 @@ class TestBM25StoreBuild:
 
     def test_build_empty_chunks(self):
         """Test building index with empty chunks list."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index([])
@@ -62,7 +62,7 @@ class TestBM25StoreQuery:
 
     def test_query_returns_results(self, sample_chunks):
         """Test that query returns relevant results."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -75,7 +75,7 @@ class TestBM25StoreQuery:
 
     def test_query_scores_in_range(self, sample_chunks):
         """Test that query scores are between 0 and 1."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -87,7 +87,7 @@ class TestBM25StoreQuery:
 
     def test_query_exact_match_scores_high(self, sample_chunks):
         """Test that exact keyword matches score higher."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -100,7 +100,7 @@ class TestBM25StoreQuery:
 
     def test_query_empty_index(self):
         """Test querying empty index returns empty list."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         results = store.query("test query")
@@ -109,7 +109,7 @@ class TestBM25StoreQuery:
 
     def test_query_no_matches(self, sample_chunks):
         """Test query with no matching terms still returns results (ranked by BM25)."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -127,7 +127,7 @@ class TestBM25Tokenization:
 
     @staticmethod
     def _store(contents):
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(
@@ -149,7 +149,7 @@ class TestBM25Tokenization:
 
     def test_punctuation_does_not_hide_a_term(self):
         """Test a term ending a clause is the same term as one that does not."""
-        from konte.stores.bm25_store import _tokenize
+        from konte.index.bm25_store import _tokenize
 
         assert _tokenize("Revenue grew 12% in FY2022, driven by cloud.") == [
             "revenue",
@@ -164,7 +164,7 @@ class TestBM25Tokenization:
 
     def test_codes_and_contractions_stay_whole(self):
         """Test punctuation between two alphanumerics is kept, so codes survive."""
-        from konte.stores.bm25_store import _tokenize
+        from konte.index.bm25_store import _tokenize
 
         assert _tokenize("Heading 8542.31 (circuits), $27.5 billion, don't") == [
             "heading",
@@ -177,7 +177,7 @@ class TestBM25Tokenization:
 
     def test_korean_is_indexed_below_the_particle(self):
         """Test the noun's terms are a subset of the terms it carries a particle in."""
-        from konte.stores.bm25_store import _tokenize
+        from konte.index.bm25_store import _tokenize
 
         assert set(_tokenize("탈수기는")) == {"탈수", "수기", "기는"}
         assert set(_tokenize("탈수기")) < set(_tokenize("탈수기는"))
@@ -217,8 +217,8 @@ class TestBM25Tokenization:
         import numpy as np
         from rank_bm25 import BM25Okapi
 
-        from konte.stores import BM25Store
-        from konte.stores.bm25_store import _score, _tokenize
+        from konte.index import BM25Store
+        from konte.index.bm25_store import _score, _tokenize
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -238,7 +238,7 @@ class TestBM25StoreCoverage:
 
     def test_ranking_score_saturates_where_coverage_does_not(self, sample_chunks):
         """Test the top chunk always ranks 1.0 while coverage tracks the match."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -252,7 +252,7 @@ class TestBM25StoreCoverage:
 
     def test_absent_query_term_lowers_coverage(self, sample_chunks):
         """Test naming something the corpus never indexed cannot read as a full match."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -265,7 +265,7 @@ class TestBM25StoreCoverage:
 
     def test_unmatched_query_covers_nothing(self, sample_chunks):
         """Test a query the corpus cannot answer reads 0.0, not 1.0."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -277,7 +277,7 @@ class TestBM25StoreCoverage:
 
     def test_empty_query_covers_nothing(self, sample_chunks):
         """Test an empty query is not treated as fully matched."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -288,7 +288,7 @@ class TestBM25StoreCoverage:
 
     def test_corpus_too_small_for_idf_counts_terms(self):
         """Test a corpus whose IDF is negative throughout still separates matches."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         chunk = Chunk(
             chunk_id="only",
@@ -306,7 +306,7 @@ class TestBM25StoreCoverage:
 
     def test_coverage_survives_a_reload(self, sample_chunks, tmp_path):
         """Test the reading is the same after the index round-trips through disk."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -322,7 +322,7 @@ class TestBM25StoreCoverage:
 
     def test_coverage_is_reported_for_filtered_candidates(self, sample_chunks):
         """Test filtering does not misalign coverage with the chunks it describes."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -339,7 +339,7 @@ class TestBM25StorePersistence:
 
     def test_save_and_load(self, sample_chunks, tmp_path):
         """Test that saved index can be loaded and queried."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         # Build and save
         store1 = BM25Store()
@@ -358,7 +358,7 @@ class TestBM25StorePersistence:
 
     def test_load_nonexistent_raises(self, tmp_path):
         """Test that loading from nonexistent path raises error."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         with pytest.raises(FileNotFoundError):
@@ -368,13 +368,13 @@ class TestBM25StorePersistence:
         """Test a stale index is refused rather than silently matching nothing."""
         import numpy as np
 
-        from konte.integrity import sign
-        from konte.stores import BM25Store
-        from konte.stores.bm25_store import (
+        from konte.index import BM25Store
+        from konte.index.bm25_store import (
             _TOKENIZER_VERSION,
             INDEX_FILENAME,
             SIGNED_FILENAMES,
         )
+        from konte.persistence.integrity import sign
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -391,7 +391,7 @@ class TestBM25StorePersistence:
 
     def test_save_writes_no_chunk_payload(self, sample_chunks, tmp_path):
         """Test that the lexical index stores no second copy of the corpus."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -401,7 +401,7 @@ class TestBM25StorePersistence:
 
     def test_save_stores_no_pickle(self, sample_chunks, tmp_path):
         """Test that nothing the index writes is read back through pickle."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(sample_chunks)
@@ -411,8 +411,8 @@ class TestBM25StorePersistence:
 
     def test_save_removes_a_legacy_chunk_payload(self, sample_chunks, tmp_path):
         """Test that rebuilding drops the copy an earlier version left behind."""
-        from konte.stores import BM25Store
-        from konte.stores.bm25_store import LEGACY_CHUNKS_FILENAME
+        from konte.index import BM25Store
+        from konte.index.bm25_store import LEGACY_CHUNKS_FILENAME
 
         (tmp_path / LEGACY_CHUNKS_FILENAME).write_text("[]", encoding="utf-8")
 
@@ -424,7 +424,7 @@ class TestBM25StorePersistence:
 
     def test_load_defers_reading_the_corpus(self, sample_chunks, tmp_path):
         """Test that loading an index does not pull its chunks in with it."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store1 = BM25Store()
         store1.build_index(sample_chunks)
@@ -446,7 +446,7 @@ class TestBM25StorePersistence:
 
     def test_saved_chunks_preserved(self, sample_chunks, tmp_path):
         """Test that chunk data is preserved after save/load."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store1 = BM25Store()
         store1.build_index(sample_chunks)
@@ -464,7 +464,7 @@ class TestBM25StorePersistence:
 
     def test_query_results_same_after_reload(self, sample_chunks, tmp_path):
         """Test that query results are consistent before and after reload."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store1 = BM25Store()
         store1.build_index(sample_chunks)
@@ -539,7 +539,7 @@ class TestBM25StoreSourceFilter:
 
     def test_source_filter_substring_match(self, multi_source_chunks):
         """Test that source_filter returns only matching sources."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(multi_source_chunks)
@@ -552,7 +552,7 @@ class TestBM25StoreSourceFilter:
 
     def test_source_filter_multi_word(self, multi_source_chunks):
         """Test source_filter with multi-word company name."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(multi_source_chunks)
@@ -565,7 +565,7 @@ class TestBM25StoreSourceFilter:
 
     def test_source_filter_no_match(self, multi_source_chunks):
         """Test source_filter with no matching source."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(multi_source_chunks)
@@ -576,7 +576,7 @@ class TestBM25StoreSourceFilter:
 
     def test_source_filter_combined_with_metadata_filter(self, multi_source_chunks):
         """Test source_filter works alongside metadata_filter."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(multi_source_chunks)
@@ -658,9 +658,10 @@ class TestBM25StoreFilterIndex:
 
     def test_posted_filters_select_what_a_scan_selects(self, filter_edge_chunks):
         """Test every filter shape resolves to the same positions, in the same order."""
-        from konte.stores.bm25_store import _filter_indices, _FilterIndex
+        from konte.index.bm25_store import _filter_entries, _filter_indices
+        from konte.index.filter_index import FilterIndex
 
-        index = _FilterIndex(filter_edge_chunks)
+        index = FilterIndex(_filter_entries(filter_edge_chunks))
 
         for metadata_filter, source_filter in FILTER_CASES:
             scanned = _filter_indices(filter_edge_chunks, metadata_filter, source_filter)
@@ -671,8 +672,8 @@ class TestBM25StoreFilterIndex:
 
     def test_a_query_returns_what_a_scan_would_have(self, filter_edge_chunks):
         """Test the store reaches the same chunks through the index it reached before."""
-        from konte.stores import BM25Store
-        from konte.stores.bm25_store import _filter_indices
+        from konte.index import BM25Store
+        from konte.index.bm25_store import _filter_indices
 
         store = BM25Store()
         store.build_index(filter_edge_chunks)
@@ -695,7 +696,7 @@ class TestBM25StoreFilterIndex:
 
     def test_an_unpostable_value_is_scanned_rather_than_dropped(self, filter_edge_chunks):
         """Test a field one chunk holds a list in still filters the rest of the corpus."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(filter_edge_chunks)
@@ -706,7 +707,7 @@ class TestBM25StoreFilterIndex:
 
     def test_metadata_cannot_shadow_the_chunk_it_belongs_to(self, filter_edge_chunks):
         """Test a source filter reads the chunk's own source, not metadata named alike."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(filter_edge_chunks)
@@ -716,7 +717,7 @@ class TestBM25StoreFilterIndex:
 
     def test_a_rebuild_rereads_the_corpus(self, filter_edge_chunks, sample_chunks):
         """Test the positions posted for one corpus never answer for the next."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(filter_edge_chunks)
@@ -734,7 +735,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_list_values(self, metadata_chunks):
         """Test filtering with list values returns chunks matching any value."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)
@@ -751,7 +752,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_list_single_item(self, metadata_chunks):
         """Test list with single item behaves same as scalar."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)
@@ -773,7 +774,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_mixed_list_and_scalar(self, metadata_chunks):
         """Test combining list and scalar filters (AND logic)."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)

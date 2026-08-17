@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from konte.chunker import (
+from konte.ingest.chunker import (
     chunk_segment,
     count_tokens,
     create_chunks,

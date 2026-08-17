@@ -1,4 +1,4 @@
-"""The build pipeline: contextualize a project's chunks, then index them."""
+"""The build's first half: a generated context for every chunk of a corpus."""
 
 import asyncio
 from collections import defaultdict
@@ -7,17 +7,16 @@ from typing import NamedTuple
 
 import structlog
 
-from konte.checkpoint import CheckpointLog
-from konte.config import settings
-from konte.context import ContextBatch, generate_contexts_batch, load_prompt_template
-from konte.models import (
-    Chunk,
-    ContextualizedChunk,
-    ProjectConfig,
-    SegmentKey,
-    encode_segment_key,
+from konte.contextualize.generator import (
+    ContextBatch,
+    generate_contexts_batch,
+    load_prompt_template,
 )
-from konte.stores import BM25Store, FAISSStore
+from konte.domain.config import ProjectConfig
+from konte.domain.corpus import Corpus
+from konte.domain.models import Chunk, ContextualizedChunk, SegmentKey, encode_segment_key
+from konte.persistence.checkpoint import CheckpointLog
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 
@@ -29,13 +28,6 @@ class _ContextTally(NamedTuple):
     truncated: int
 
 
-class BuiltIndexes(NamedTuple):
-    """The indexes one build produced; None where it was asked to skip one."""
-
-    faiss: FAISSStore | None
-    bm25: BM25Store | None
-
-
 def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
     """Group chunks by the segment they were cut from, preserving order."""
     grouped: defaultdict[SegmentKey, list[Chunk]] = defaultdict(list)
@@ -44,8 +36,8 @@ def _group_by_segment(chunks: list[Chunk]) -> dict[SegmentKey, list[Chunk]]:
     return dict(grouped)
 
 
-class ProjectBuilder:
-    """One build: a context for every chunk, then the indexes over them.
+class BuildPipeline:
+    """One build's contextualization pass, checkpointed segment by segment.
 
     What it contextualized stays readable as `chunks` after the run raises, so
     a caller can keep the work a rejected build had already paid for.
@@ -53,58 +45,42 @@ class ProjectBuilder:
     Args:
         config: The project's configuration.
         checkpoint: Log this build resumes from and appends to.
-        enable_faiss: Build the semantic index. None follows the config.
-        enable_bm25: Build the lexical index. None follows the config.
-
-    Raises:
-        ValueError: If both indexes are disabled.
     """
 
-    __slots__ = ("_checkpoint", "_config", "_use_bm25", "_use_faiss", "chunks")
+    __slots__ = ("_checkpoint", "_config", "chunks")
 
-    def __init__(
-        self,
-        config: ProjectConfig,
-        checkpoint: CheckpointLog,
-        *,
-        enable_faiss: bool | None = None,
-        enable_bm25: bool | None = None,
-    ) -> None:
+    def __init__(self, config: ProjectConfig, checkpoint: CheckpointLog) -> None:
         self._config = config
         self._checkpoint = checkpoint
-        self._use_faiss = enable_faiss if enable_faiss is not None else config.enable_faiss
-        self._use_bm25 = enable_bm25 if enable_bm25 is not None else config.enable_bm25
-
-        if not self._use_faiss and not self._use_bm25:
-            raise ValueError("At least one index (FAISS or BM25) must be enabled")
-
         self.chunks: list[ContextualizedChunk] = []
 
     async def run(
         self,
-        chunks: list[Chunk],
-        segments: dict[SegmentKey, str],
+        corpus: Corpus,
         *,
         skip_context: bool = False,
         resume: bool = True,
         prompt_path: Path | None = None,
-    ) -> BuiltIndexes:
-        """Contextualize the corpus and index it.
+    ) -> list[ContextualizedChunk]:
+        """Contextualize a corpus, resuming from whatever an earlier run finished.
 
         Args:
-            chunks: The raw corpus to build from.
-            segments: Segment texts each chunk's context is written against.
+            corpus: The chunks to contextualize and the segments to write their
+                contexts against.
             skip_context: If True, skip LLM context generation (standard RAG).
             resume: If True, resume from checkpoint if exists.
             prompt_path: Custom context prompt. Priority: this argument >
                 config.context_prompt_path > settings.PROMPT_PATH.
 
+        Returns:
+            The contextualized corpus, in segment order.
+
         Raises:
             RuntimeError: If more than settings.CONTEXT_FAILURE_THRESHOLD of the
-                corpus lost its context. Nothing is indexed; re-running retries
-                only the segments that failed.
+                corpus lost its context. Re-running retries only the segments
+                that failed.
         """
-        chunks_by_segment = _group_by_segment(chunks)
+        chunks_by_segment = _group_by_segment(corpus.chunks)
         completed = self._restore_checkpoint(resume, len(chunks_by_segment))
         prompt_template = (
             None
@@ -113,11 +89,12 @@ class ProjectBuilder:
         )
 
         tally = await self._generate_contexts(
-            chunks_by_segment, segments, completed, prompt_template, skip_context
+            chunks_by_segment, corpus.segments, completed, prompt_template, skip_context
         )
-        # Before the indexes: a rejected corpus should cost no embedding calls.
+        # Before the caller indexes anything: a rejected corpus should cost no
+        # embedding calls.
         self._require_context_coverage(tally)
-        return await self._build_indexes()
+        return self.chunks
 
     def _restore_checkpoint(self, resume: bool, total_segments: int) -> set[str]:
         """Pick up an interrupted build, or start a fresh one.
@@ -292,20 +269,3 @@ class ProjectBuilder:
             "the segments that failed, or raise CONTEXT_FAILURE_THRESHOLD to "
             "accept the loss."
         )
-
-    async def _build_indexes(self) -> BuiltIndexes:
-        """Build the enabled indexes over what was contextualized."""
-        faiss: FAISSStore | None = None
-        bm25: BM25Store | None = None
-
-        if self._use_faiss:
-            faiss = FAISSStore(embedding_model=self._config.embedding_model)
-            await faiss.abuild_index(self.chunks)
-            logger.info("faiss_index_built")
-
-        if self._use_bm25:
-            bm25 = BM25Store()
-            bm25.build_index(self.chunks)
-            logger.info("bm25_index_built")
-
-        return BuiltIndexes(faiss, bm25)

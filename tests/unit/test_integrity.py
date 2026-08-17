@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from konte.config import settings
-from konte.integrity import IntegrityError, verify
+from konte.domain import Chunk, ContextualizedChunk
+from konte.index import BM25Store
+from konte.index.bm25_store import INDEX_FILENAME, LEGACY_INDEX_FILENAME, SIGNED_FILENAMES
 from konte.manager import trust_project
-from konte.models import Chunk, ContextualizedChunk
-from konte.stores import BM25Store
-from konte.stores.bm25_store import INDEX_FILENAME, LEGACY_INDEX_FILENAME, SIGNED_FILENAMES
+from konte.persistence.integrity import IntegrityError, verify
+from konte.runtime import settings
 
 
 def _record_execution(marker: str) -> None:
@@ -158,7 +158,7 @@ class TestIndexSignatures:
 
     def test_an_unsigned_faiss_docstore_is_refused(self, project_dir, monkeypatch):
         """Test that the docstore is refused before the vector store is built from it."""
-        from konte.stores import FAISSStore
+        from konte.index import FAISSStore
 
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
 
@@ -327,7 +327,7 @@ class TestPickleRefusal:
 
     def test_a_pickled_faiss_docstore_is_refused_by_name(self, project_dir, monkeypatch):
         """Test that the legacy docstore is reported rather than deserialized."""
-        from konte.stores import FAISSStore
+        from konte.index import FAISSStore
 
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
 

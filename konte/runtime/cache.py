@@ -8,9 +8,9 @@ from typing import NamedTuple
 
 import structlog
 
-from konte.config import settings
-from konte.models import validate_project_name
+from konte.domain.config import validate_project_name
 from konte.project import Project
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

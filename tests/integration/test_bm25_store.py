@@ -2,7 +2,7 @@
 
 import pytest
 
-from konte.models import Chunk, ContextualizedChunk
+from konte.domain import Chunk, ContextualizedChunk
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_list_values(self, metadata_chunks):
         """Test filtering with list returns chunks matching any value."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)
@@ -52,7 +52,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_list_single_item(self, metadata_chunks):
         """Test list with single item behaves same as scalar."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)
@@ -74,7 +74,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_mixed_list_and_scalar(self, metadata_chunks):
         """Test combining list and scalar filters (AND logic)."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)
@@ -92,7 +92,7 @@ class TestBM25StoreListValueFilter:
 
     def test_metadata_filter_list_no_match(self, metadata_chunks):
         """Test list filter with no matching values returns empty."""
-        from konte.stores import BM25Store
+        from konte.index import BM25Store
 
         store = BM25Store()
         store.build_index(metadata_chunks)

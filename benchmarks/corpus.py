@@ -241,10 +241,10 @@ def _reindex_lexical(project_dir: Path) -> None:
 
     Imports konte, so it runs under whichever revision the case is running.
     """
-    import importlib
+    from benchmarks.harness import konte_module
 
-    models = importlib.import_module("konte.models")
-    bm25_module = importlib.import_module("konte.stores.bm25_store")
+    models = konte_module("models")
+    bm25_module = konte_module("bm25_store")
 
     chunks_path = project_dir / "chunks.json"
     if not chunks_path.exists():

@@ -43,7 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request bodies, and the `konte query`/`konte ask` CLI. Unset
   follows the new `BM25_KEYWORD_EXTRACTION` setting, so BM25 keyword extraction
   can be turned off per call or per deployment instead of being unconditional
-- `Retriever.retrieve_async()`, the non-blocking counterpart to `retrieve()`
+- `Retriever.aretrieve()`, the non-blocking counterpart to `retrieve()`
+- `RetrievalRequest`, one object carrying everything a retrieval is asked for,
+  with `Project.retrieve()` and `Project.aretrieve()` taking it directly
+- `Project.corpus`, the chunks and segments a project holds
 - `clear_keyword_cache()` and `extract_search_keywords_async()` are now exported
 - `max_retries` on `get_llm()`, for callers that cannot afford a retry storm
 - `get_shared_project()`, a process-wide cache of projects opened for querying,
@@ -125,6 +128,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `query_async()` and `query_with_answer()` await keyword extraction instead of
   blocking the event loop, which had stalled every other request in an ASGI
   worker for the duration of the call
+- The package is laid out by layer rather than by file: `konte.domain` (chunks,
+  requests, responses, project config, corpus), `konte.ingest` (loading,
+  chunking, source naming), `konte.contextualize` (context generation and the
+  build pipeline), `konte.index` (FAISS, BM25, and the filter index they share),
+  `konte.retrieval` (retriever, fusion, response, reranker, query processing),
+  `konte.persistence` (repository, storage, checkpoint, integrity) and
+  `konte.runtime` (settings, chat clients, project cache). Every name exported
+  from `konte` is unchanged; code that imported a submodule directly —
+  `konte.models`, `konte.stores`, `konte.config`, `konte.chunker`,
+  `konte.context`, `konte.generator` — follows the move
+- **Breaking:** `Retriever` answers one `RetrievalRequest` through `retrieve()`
+  or `aretrieve()`. `retrieve_semantic()`, `retrieve_lexical()`,
+  `retrieve_hybrid()`, `retrieve_async()` and `retrieve_with_rerank()` are gone:
+  they were five spellings of the same parameter list, repeated down every layer
+  it passed through. `Project.query()`, `query_async()` and `query_with_answer()`
+  are unchanged. Reranking sends a request per candidate, so it has no blocking
+  form: `retrieve()` raises `ValueError` on a request that asks for it
+- `Project` is a facade over those layers. `ProjectRepository` owns the on-disk
+  layout, `IndexBundle` holds the two indexes and the retriever over them, and
+  `BuildPipeline` runs the contextualization pass. The deferred parse of the
+  stored corpus moved with it, from a descriptor on `Project` to the `Corpus`
+  the repository hands back, and reads the same way
+- Both stores resolve their filters through one shared inverted index rather
+  than a near-copy each, so a filter cannot select one set of chunks in the
+  vector index and a different set in the lexical one. What a filter selects is
+  unchanged
 
 ### Removed
 

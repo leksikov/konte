@@ -5,8 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from konte.cache import ProjectCache, clear_project_cache, get_shared_project, invalidate_project
 from konte.project import Project
+from konte.runtime.cache import (
+    ProjectCache,
+    clear_project_cache,
+    get_shared_project,
+    invalidate_project,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -95,9 +100,9 @@ class TestProjectCacheStaleness:
         cache = ProjectCache()
         first = cache.get("proj", tmp_path)
 
-        from konte.models import Chunk
+        from konte.domain import Chunk
 
-        project._chunks = [
+        project.corpus.chunks = [
             Chunk(chunk_id="c1", content="new", source="doc.pdf", segment_idx=0, chunk_idx=0)
         ]
         project.save()
@@ -105,7 +110,7 @@ class TestProjectCacheStaleness:
         second = cache.get("proj", tmp_path)
 
         assert second is not first
-        assert len(second._chunks) == 1
+        assert len(second.corpus.chunks) == 1
 
     def test_untouched_project_is_not_reopened(self, tmp_path):
         """Test that merely checking for staleness does not reopen anything."""
@@ -158,7 +163,7 @@ class TestProjectCacheEviction:
 
     def test_limit_follows_settings(self, tmp_path, monkeypatch):
         """Test that a cache without an explicit size follows configuration."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         monkeypatch.setattr(settings, "PROJECT_CACHE_SIZE", 1)
         _make_project(tmp_path, name="a")

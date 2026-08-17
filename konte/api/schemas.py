@@ -2,8 +2,8 @@
 
 from pydantic import BaseModel, Field
 
-from konte.generator import GeneratedAnswer
-from konte.models import RetrievalMode, RetrievalResponse
+from konte.answer import GeneratedAnswer
+from konte.domain.models import RetrievalMode, RetrievalResponse
 
 _KEYWORD_EXTRACTION_DESCRIPTION = (
     "Reduce the query to keywords before BM25 search, improving Korean lexical "

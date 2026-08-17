@@ -1,13 +1,16 @@
 """Query preprocessing for better BM25 retrieval (Korean and English)."""
 
+from collections.abc import Sequence
 from functools import lru_cache
+from typing import NamedTuple
 
 import structlog
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
-from konte.config import settings
-from konte.llm import get_llm
+from konte.domain.models import RetrievalRequest
+from konte.runtime.llm import get_llm
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 
@@ -182,3 +185,81 @@ async def extract_search_keywords_async(query: str) -> list[str]:
         return _fallback_tokenize(query)
 
     return _remember(query, result, "keywords_extracted_async")
+
+
+class Queries(NamedTuple):
+    """The text each index is asked to rank against.
+
+    `semantic` is the query exactly as the caller wrote it — an embedding model
+    reads a natural-language question better than a bag of keywords. `lexical`
+    is the same string unless keyword extraction reduced it for BM25.
+
+    Resolving both up front lifts the one network-bound step out of the ranking
+    helpers, leaving those pure and the async entry point an await apart.
+    """
+
+    semantic: str
+    lexical: str
+
+
+def _lexical_query(query: str, keywords: Sequence[str]) -> str:
+    """Assemble the string BM25 will tokenize from an extraction result.
+
+    An extraction that keeps nothing — an empty list from the model, or a
+    question made entirely of stopwords reaching the fallback — would search
+    for the empty string, scoring every chunk zero. The original query stands in.
+    """
+    search_query = " ".join(keywords)
+    logger.debug(
+        "bm25_keyword_extraction",
+        original_query=query,
+        keywords=keywords,
+        search_query=search_query,
+    )
+    return search_query or query
+
+
+def _extraction_applies(request: RetrievalRequest, has_lexical: bool) -> bool:
+    """True when extraction would change what this retrieval actually reads.
+
+    Semantic mode never reads the lexical query, and a project without a
+    lexical index degrades to semantic whatever the mode asked for; neither
+    should pay for a keyword call whose result is discarded.
+    """
+    if request.mode == "semantic" or not has_lexical:
+        return False
+    override = request.keyword_extraction
+    return settings.BM25_KEYWORD_EXTRACTION if override is None else override
+
+
+def resolve_queries(request: RetrievalRequest, has_lexical: bool) -> Queries:
+    """Resolve the per-index query text, extracting keywords when asked to.
+
+    Args:
+        request: What this retrieval was asked for.
+        has_lexical: Whether a non-empty lexical index is attached.
+
+    Returns:
+        The text each index searches. Blocks on the extraction call;
+        resolve_queries_async is the variant that does not.
+    """
+    if not _extraction_applies(request, has_lexical):
+        return Queries(request.query, request.query)
+    keywords = extract_search_keywords(request.query)
+    return Queries(request.query, _lexical_query(request.query, keywords))
+
+
+async def resolve_queries_async(request: RetrievalRequest, has_lexical: bool) -> Queries:
+    """Async twin of resolve_queries; the extraction call is the only difference.
+
+    Args:
+        request: What this retrieval was asked for.
+        has_lexical: Whether a non-empty lexical index is attached.
+
+    Returns:
+        The text each index searches.
+    """
+    if not _extraction_applies(request, has_lexical):
+        return Queries(request.query, request.query)
+    keywords = await extract_search_keywords_async(request.query)
+    return Queries(request.query, _lexical_query(request.query, keywords))

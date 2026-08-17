@@ -9,8 +9,8 @@ import structlog
 import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from konte.config import settings
-from konte.models import Chunk, SegmentKey
+from konte.domain.models import Chunk, SegmentKey
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

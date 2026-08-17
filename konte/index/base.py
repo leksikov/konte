@@ -1,28 +1,9 @@
-"""Shared protocol and filter semantics for retrieval stores."""
+"""Shared protocol for retrieval stores."""
 
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
-from konte.models import ContextualizedChunk, MetadataFilter
-
-
-def matches_filter_value(actual: Any, expected: Any) -> bool:
-    """Check one metadata field against one filter value.
-
-    A list on the filter side means "match any"; any other value is compared for
-    equality. Both stores route through this so a filter cannot mean one thing
-    in the vector index and another in the lexical one.
-
-    Args:
-        actual: Value read from the chunk.
-        expected: Value supplied in the filter.
-
-    Returns:
-        True if the field satisfies the filter.
-    """
-    if isinstance(expected, list):
-        return actual in expected
-    return actual == expected
+from konte.domain.models import ContextualizedChunk, MetadataFilter
 
 
 class Store(Protocol):

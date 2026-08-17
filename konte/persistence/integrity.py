@@ -20,8 +20,8 @@ from typing import Any
 
 import structlog
 
-from konte.config import settings
-from konte.storage import atomic_writer, read_json, write_json
+from konte.persistence.storage import atomic_writer, read_json, write_json
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

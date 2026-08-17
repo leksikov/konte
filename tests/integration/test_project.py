@@ -287,12 +287,12 @@ class TestProjectCheckpoint:
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
         # Get the segments that will be created
-        segments_count = len(project._segments)
+        segments_count = len(project.corpus.segments)
         assert segments_count >= 1
 
-        first_seg_key = list(project._segments.keys())[0]
+        first_seg_key = list(project.corpus.segments.keys())[0]
         seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
-        first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
+        first_chunk = [c for c in project.corpus.chunks if c.segment_idx == first_seg_key[1]][0]
 
         with project._checkpoint.appending() as log:
             log.append(
@@ -304,11 +304,11 @@ class TestProjectCheckpoint:
         await project.build(skip_context=True, resume=True)
 
         # Should have contextualized chunks
-        assert len(project._contextualized_chunks) > 0
+        assert len(project.corpus.contextualized_chunks) > 0
 
         # First chunk should have the pre-existing context
         first_ctx_chunk = next(
-            c for c in project._contextualized_chunks
+            c for c in project.corpus.contextualized_chunks
             if c.chunk.chunk_id == first_chunk.chunk_id
         )
         assert first_ctx_chunk.context == "Pre-existing context"
@@ -320,9 +320,9 @@ class TestProjectCheckpoint:
         project = Project.create(name="no_resume_test", storage_path=tmp_path)
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
-        first_seg_key = list(project._segments.keys())[0]
+        first_seg_key = list(project.corpus.segments.keys())[0]
         seg_key_str = f"{first_seg_key[0]}|{first_seg_key[1]}"
-        first_chunk = [c for c in project._chunks if c.segment_idx == first_seg_key[1]][0]
+        first_chunk = [c for c in project.corpus.chunks if c.segment_idx == first_seg_key[1]][0]
 
         with project._checkpoint.appending() as log:
             log.append(
@@ -335,7 +335,7 @@ class TestProjectCheckpoint:
 
         # First chunk should NOT have the pre-existing context
         first_ctx_chunk = next(
-            c for c in project._contextualized_chunks
+            c for c in project.corpus.contextualized_chunks
             if c.chunk.chunk_id == first_chunk.chunk_id
         )
         # skip_context=True means context should be empty, not "Should be ignored"
@@ -353,11 +353,11 @@ class TestProjectCheckpoint:
 
         await project.build(skip_context=True, resume=False)
 
-        assert all(c.chunk.chunk_id != "stale" for c in project._contextualized_chunks)
+        assert all(c.chunk.chunk_id != "stale" for c in project.corpus.contextualized_chunks)
 
     def test_checkpoint_path_is_the_log(self, tmp_path):
         """Test that the checkpoint lives beside the project's other artifacts."""
-        from konte.checkpoint import CHECKPOINT_FILENAME
+        from konte.persistence.checkpoint import CHECKPOINT_FILENAME
         from konte.project import Project
 
         project = Project.create(name="path_test", storage_path=tmp_path)
@@ -402,7 +402,7 @@ class TestProjectSegmentStorage:
 
     def test_segments_stored_not_full_document(self, tmp_path):
         """Verify segments map contains segment text, not full document."""
-        from konte.chunker import count_tokens
+        from konte.ingest.chunker import count_tokens
         from konte.project import Project
 
         project = Project.create(
@@ -418,7 +418,7 @@ class TestProjectSegmentStorage:
         doc_content = (FIXTURES_DIR / "sample.txt").read_text()
         doc_tokens = count_tokens(doc_content)
 
-        for seg_key, segment_text in project._segments.items():
+        for seg_key, segment_text in project.corpus.segments.items():
             segment_tokens = count_tokens(segment_text)
             # Segment should be around segment_size, not the full document
             # Allow 2x margin for word boundary adjustments
@@ -447,14 +447,14 @@ class TestProjectSegmentStorage:
         project.add_documents([FIXTURES_DIR / "sample.txt"])
 
         # Each chunk should have a corresponding segment
-        for chunk in project._chunks:
+        for chunk in project.corpus.chunks:
             key = (chunk.source, chunk.segment_idx)
-            assert key in project._segments, (
+            assert key in project.corpus.segments, (
                 f"Chunk {chunk.chunk_id} has key {key} "
                 f"not in segments map"
             )
             # Chunk content should appear in its segment
-            segment_text = project._segments[key]
+            segment_text = project.corpus.segments[key]
             # Due to overlap, chunk might be in adjacent segments too,
             # but should be findable in declared segment
             assert chunk.content[:50] in segment_text or segment_text[:50] in chunk.content, (

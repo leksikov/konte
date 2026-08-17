@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from konte.cache import ProjectCache
+from konte.domain import ProjectConfig, validate_project_name
 from konte.manager import (
     create_project,
     delete_project,
@@ -12,8 +12,8 @@ from konte.manager import (
     project_exists,
     trust_project,
 )
-from konte.models import ProjectConfig, validate_project_name
 from konte.project import Project
+from konte.runtime.cache import ProjectCache
 
 ESCAPING_NAMES = [
     "../SECRET",

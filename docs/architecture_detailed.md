@@ -48,7 +48,7 @@ flowchart TB
     subgraph ContextGen["🧠 Context Generation"]
         Y --> Z{Skip Context?}
         Z -->|Yes| AA[Empty context]
-        Z -->|No| AB[Load prompt template<br/>from konte/prompts/]
+        Z -->|No| AB[Load prompt template<br/>from konte/contextualize/prompts/]
         AB --> AC[For each segment's chunks]
         AC --> AD[Build prompt:<br/>1. Segment text ~8000 tokens<br/>2. Chunk text ~800 tokens]
         AD --> AE[Parallel abatch<br/>per-segment concurrency]

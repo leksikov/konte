@@ -15,9 +15,9 @@ from openai import (
     RateLimitError,
 )
 
-from konte.config import settings
-from konte.llm import get_llm, response_text, was_truncated
-from konte.models import Chunk, ContextualizedChunk
+from konte.domain.models import Chunk, ContextualizedChunk
+from konte.runtime.llm import get_llm, response_text, was_truncated
+from konte.runtime.settings import settings
 
 __all__ = [
     "ContextBatch",
@@ -77,12 +77,12 @@ def load_prompt_template(prompt_path: Path | None = None) -> str:
         except FileNotFoundError as e:
             raise FileNotFoundError(
                 f"Context prompt not found: {path}. The packaged default lives "
-                "at konte/prompts/context_prompt.txt and domain examples at "
-                "examples/prompts/; update PROMPT_PATH or the project's "
-                "context_prompt_path in config.json."
+                "at konte/contextualize/prompts/context_prompt.txt and domain "
+                "examples at examples/prompts/; update PROMPT_PATH or the "
+                "project's context_prompt_path in config.json."
             ) from e
     # Packaged default - read via importlib.resources so zip/frozen installs work
-    ref = importlib.resources.files("konte") / "prompts" / "context_prompt.txt"
+    ref = importlib.resources.files("konte.contextualize") / "prompts" / "context_prompt.txt"
     return ref.read_text(encoding="utf-8")
 
 

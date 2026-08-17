@@ -25,11 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib
 
 from benchmarks.build import open_project
 from benchmarks.corpus import available_real_projects, document_excerpt, real_project
-from benchmarks.harness import Context, pin_keyword_extraction
+from benchmarks.harness import Context, konte_module, pin_keyword_extraction
 
 DEFAULT_PROJECT = "wco_korean_feb2026"
 CHUNKING_CHUNKS = 40
@@ -50,7 +49,7 @@ def _digest(text: str) -> str:
 
 def _chunking(ctx: Context) -> dict:
     """Fingerprint how a document is segmented and chunked."""
-    chunker = importlib.import_module("konte.chunker")
+    chunker = konte_module("chunker")
     document = document_excerpt(CHUNKING_CHUNKS)
     text = document.read_text()
 

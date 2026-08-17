@@ -10,7 +10,7 @@ class TestChunk:
 
     def test_chunk_creation(self):
         """Test creating a valid Chunk."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
 
         chunk = Chunk(
             chunk_id="doc1_s0_c0",
@@ -27,7 +27,7 @@ class TestChunk:
 
     def test_chunk_requires_content(self):
         """Test that content is required."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
 
         with pytest.raises(ValidationError):
             Chunk(
@@ -39,7 +39,7 @@ class TestChunk:
 
     def test_chunk_metadata_optional(self):
         """Test that metadata is optional and defaults to empty dict."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
 
         chunk = Chunk(
             chunk_id="id1",
@@ -57,7 +57,7 @@ class TestContextualizedChunk:
 
     def test_contextualized_chunk_creation(self):
         """Test creating a valid ContextualizedChunk."""
-        from konte.models import Chunk, ContextualizedChunk
+        from konte.domain import Chunk, ContextualizedChunk
 
         chunk = Chunk(
             chunk_id="id1",
@@ -77,7 +77,7 @@ class TestContextualizedChunk:
 
     def test_contextualized_content_computation(self):
         """Test that contextualized_content is computed correctly."""
-        from konte.models import Chunk, ContextualizedChunk
+        from konte.domain import Chunk, ContextualizedChunk
 
         chunk = Chunk(
             chunk_id="id1",
@@ -94,7 +94,7 @@ class TestContextualizedChunk:
 
     def test_empty_context(self):
         """Test ContextualizedChunk with empty context."""
-        from konte.models import Chunk, ContextualizedChunk
+        from konte.domain import Chunk, ContextualizedChunk
 
         chunk = Chunk(
             chunk_id="id1",
@@ -116,7 +116,7 @@ class TestRetrievalResult:
 
     def test_retrieval_result_creation(self):
         """Test creating a valid RetrievalResult."""
-        from konte.models import RetrievalResult
+        from konte.domain import RetrievalResult
 
         result = RetrievalResult(
             content="Original chunk content.",
@@ -134,7 +134,7 @@ class TestRetrievalResult:
 
     def test_score_bounds(self):
         """Test that score is between 0 and 1."""
-        from konte.models import RetrievalResult
+        from konte.domain import RetrievalResult
 
         with pytest.raises(ValidationError):
             RetrievalResult(
@@ -161,7 +161,7 @@ class TestRetrievalResponse:
 
     def test_retrieval_response_creation(self):
         """Test creating a valid RetrievalResponse."""
-        from konte.models import RetrievalResponse, RetrievalResult
+        from konte.domain import RetrievalResponse, RetrievalResult
 
         results = [
             RetrievalResult(
@@ -198,7 +198,7 @@ class TestRetrievalResponse:
 
     def test_suggested_action_values(self):
         """Test that suggested_action is one of valid values."""
-        from konte.models import RetrievalResponse
+        from konte.domain import RetrievalResponse
 
         for action in ["deliver", "query_more", "refine_query"]:
             response = RetrievalResponse(
@@ -214,7 +214,7 @@ class TestRetrievalResponse:
 
     def test_invalid_suggested_action(self):
         """Test that invalid suggested_action raises error."""
-        from konte.models import RetrievalResponse
+        from konte.domain import RetrievalResponse
 
         with pytest.raises(ValidationError):
             RetrievalResponse(
@@ -234,7 +234,7 @@ class TestBuildCheckpoint:
 
     def test_checkpoint_creation_defaults(self):
         """Test creating a BuildCheckpoint with defaults."""
-        from konte.models import BuildCheckpoint
+        from konte.persistence.checkpoint import BuildCheckpoint
 
         checkpoint = BuildCheckpoint()
         assert checkpoint.completed_segments == []
@@ -242,7 +242,7 @@ class TestBuildCheckpoint:
 
     def test_checkpoint_creation_with_data(self):
         """Test creating a BuildCheckpoint with data."""
-        from konte.models import BuildCheckpoint
+        from konte.persistence.checkpoint import BuildCheckpoint
 
         checkpoint = BuildCheckpoint(
             completed_segments=["doc.pdf|0", "doc.pdf|1"],
@@ -258,7 +258,7 @@ class TestBuildCheckpoint:
         """Test that BuildCheckpoint can be serialized to JSON."""
         import json
 
-        from konte.models import BuildCheckpoint
+        from konte.persistence.checkpoint import BuildCheckpoint
 
         checkpoint = BuildCheckpoint(
             completed_segments=["doc.pdf|0"],
@@ -273,7 +273,7 @@ class TestBuildCheckpoint:
 
     def test_checkpoint_deserialization(self):
         """Test that BuildCheckpoint can be deserialized from dict."""
-        from konte.models import BuildCheckpoint
+        from konte.persistence.checkpoint import BuildCheckpoint
 
         data = {
             "completed_segments": ["doc.pdf|0", "doc.pdf|1"],
@@ -295,7 +295,7 @@ class TestProjectConfig:
         """Test ProjectConfig with default values."""
         from pathlib import Path
 
-        from konte.models import ProjectConfig
+        from konte.domain import ProjectConfig
 
         config = ProjectConfig(
             name="test_project",
@@ -318,7 +318,7 @@ class TestProjectConfig:
         """Test ProjectConfig with custom values."""
         from pathlib import Path
 
-        from konte.models import ProjectConfig
+        from konte.domain import ProjectConfig
 
         config = ProjectConfig(
             name="custom_project",
@@ -339,7 +339,7 @@ class TestProjectConfig:
         import json
         from pathlib import Path
 
-        from konte.models import ProjectConfig
+        from konte.domain import ProjectConfig
 
         config = ProjectConfig(
             name="test",

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from langchain_core.messages import AIMessage
 
-from konte import llm
+from konte.runtime import llm
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +19,7 @@ def _empty_client_cache():
 @pytest.fixture
 def chat_openai():
     """Patch the client class so no credentials or network are involved."""
-    with patch("konte.llm.ChatOpenAI") as cls:
+    with patch("konte.runtime.llm.ChatOpenAI") as cls:
         cls.side_effect = lambda **kwargs: kwargs
         yield cls
 

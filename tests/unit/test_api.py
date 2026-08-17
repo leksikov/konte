@@ -333,7 +333,7 @@ class TestProjectLoading:
 
     def test_preload_targets_expands_wildcard(self):
         """Test that PRELOAD_PROJECTS="*" means every project on disk."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         with patch.object(settings, "PRELOAD_PROJECTS", "*"):
             with patch.object(api_app, "list_projects", return_value=["a", "b"]):
@@ -341,14 +341,14 @@ class TestProjectLoading:
 
     def test_preload_targets_parses_a_list(self):
         """Test that names are taken as written, minus the spacing."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         with patch.object(settings, "PRELOAD_PROJECTS", " a , b "):
             assert api_app._preload_targets() == ["a", "b"]
 
     def test_preload_targets_empty_by_default(self):
         """Test that an unset setting preloads nothing."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         with patch.object(settings, "PRELOAD_PROJECTS", ""):
             assert api_app._preload_targets() == []

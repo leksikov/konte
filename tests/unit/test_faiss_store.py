@@ -3,9 +3,9 @@
 import pytest
 from langchain_core.embeddings import Embeddings
 
-from konte.models import Chunk, ContextualizedChunk
-from konte.stores import FAISSStore
-from konte.stores.faiss_store import DOCSTORE_FILENAME, INDEX_FILENAME
+from konte.domain import Chunk, ContextualizedChunk
+from konte.index import FAISSStore
+from konte.index.faiss_store import DOCSTORE_FILENAME, INDEX_FILENAME
 
 _DIMENSIONS = 8
 
@@ -56,7 +56,7 @@ def chunks():
 def store(monkeypatch):
     """A store whose embeddings never leave the process."""
     monkeypatch.setattr(
-        "konte.stores.faiss_store.OpenAIEmbeddings",
+        "konte.index.faiss_store.OpenAIEmbeddings",
         lambda **kwargs: _StubEmbeddings(),
     )
     return FAISSStore()
@@ -144,8 +144,8 @@ class TestFAISSStorePersistence:
         """Test that a payload this version does not read is refused."""
         import json
 
-        from konte.integrity import sign
-        from konte.stores.faiss_store import SIGNED_FILENAMES
+        from konte.index.faiss_store import SIGNED_FILENAMES
+        from konte.persistence.integrity import sign
 
         store.build_index(chunks)
         store.save(tmp_path)

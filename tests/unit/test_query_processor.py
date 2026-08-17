@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from konte.query_processor import (
+from konte.retrieval.query_processor import (
     ExtractedKeywords,
     clear_keyword_cache,
     extract_search_keywords,
@@ -23,7 +23,7 @@ def _empty_cache():
 @pytest.fixture
 def structured_llm():
     """Patch the extraction client and yield the structured-output stub."""
-    with patch("konte.query_processor.get_llm") as get_llm:
+    with patch("konte.retrieval.query_processor.get_llm") as get_llm:
         stub = MagicMock()
         stub.invoke.return_value = ExtractedKeywords(keywords=["HS 코드", "분류"])
         stub.ainvoke = AsyncMock(return_value=ExtractedKeywords(keywords=["HS 코드", "분류"]))
@@ -38,7 +38,7 @@ class TestExtractionRequest:
 
     def test_runs_on_a_short_budget(self, structured_llm):
         """Extraction must not inherit the batch-sized context timeout."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         extract_search_keywords("의류 탈수기는 어느 HS 코드에 분류되나요?")
 

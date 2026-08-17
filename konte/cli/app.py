@@ -22,7 +22,7 @@ from konte import (
     settings,
     trust_project,
 )
-from konte.models import MetadataFilter, RetrievalMode
+from konte.domain.models import MetadataFilter, RetrievalMode
 
 app = typer.Typer(
     name="konte",

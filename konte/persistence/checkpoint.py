@@ -8,14 +8,21 @@ from pathlib import Path
 from typing import IO, Any
 
 import structlog
+from pydantic import BaseModel, Field
 
-from konte.models import BuildCheckpoint
-from konte.storage import atomic_writer, read_jsonl
+from konte.persistence.storage import atomic_writer, read_jsonl
 
 logger = structlog.get_logger()
 
 CHECKPOINT_FILENAME = "context_checkpoint.jsonl"
 LEGACY_CHECKPOINT_FILENAME = "context_checkpoint.json"
+
+
+class BuildCheckpoint(BaseModel):
+    """Checkpoint state for build process resumption."""
+
+    completed_segments: list[str] = Field(default_factory=list)
+    contextualized_chunks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _encode_record(segments: Sequence[str], chunks: Sequence[dict[str, Any]]) -> str:

@@ -275,7 +275,7 @@ await project.build(skip_context=True)
 
 ## Custom Context Prompts
 
-The context-generation prompt is a plain text template with two placeholders: `{segment}` (the ~8000-token surrounding segment) and `{chunk}` (the chunk to contextualize). The default prompt (`konte/prompts/context_prompt.txt`) is domain-neutral and responds in the document's language.
+The context-generation prompt is a plain text template with two placeholders: `{segment}` (the ~8000-token surrounding segment) and `{chunk}` (the chunk to contextualize). The default prompt (`konte/contextualize/prompts/context_prompt.txt`) is domain-neutral and responds in the document's language.
 
 Domain-specific prompts substantially improve retrieval for specialized corpora. Override per project:
 

@@ -2,10 +2,10 @@
 
 import pytest
 
-from konte.models import Chunk
+from konte.domain import Chunk
 from konte.project import Project
 
-_CORPUS_ARTIFACTS = ("_chunks", "_segments", "_contextualized_chunks")
+_CORPUS_ARTIFACTS = frozenset({"chunks", "segments", "contextualized_chunks"})
 
 
 def _chunk(index: int, content: str) -> Chunk:
@@ -22,11 +22,11 @@ def _chunk(index: int, content: str) -> Chunk:
 async def _built_project(tmp_path, name="persist_test", **config):
     """Create, build and save a lexical-only project."""
     project = Project.create(name=name, storage_path=tmp_path, enable_faiss=False, **config)
-    project._chunks = [
+    project.corpus.chunks = [
         _chunk(0, "Import duty rates for electronic integrated circuits"),
         _chunk(1, "Tariff classification of clothing dryers"),
     ]
-    project._segments = {("doc.txt", 0): "Full segment text about tariffs"}
+    project.corpus.segments = {("doc.txt", 0): "Full segment text about tariffs"}
 
     await project.build(skip_context=True, enable_faiss=False)
     project.save()
@@ -53,9 +53,9 @@ class TestRoundTrip:
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
 
-        assert [c.chunk_id for c in reopened._chunks] == ["id0", "id1"]
-        assert reopened._segments == {("doc.txt", 0): "Full segment text about tariffs"}
-        assert len(reopened._contextualized_chunks) == 2
+        assert [c.chunk_id for c in reopened.corpus.chunks] == ["id0", "id1"]
+        assert reopened.corpus.segments == {("doc.txt", 0): "Full segment text about tariffs"}
+        assert len(reopened.corpus.contextualized_chunks) == 2
 
     async def test_configured_fusion_weights_reach_the_retriever(self, tmp_path):
         """Test the stored fusion weights reach the retriever."""
@@ -68,7 +68,7 @@ class TestRoundTrip:
 
         reopened = Project.open("weighted", storage_path=tmp_path)
 
-        assert reopened._retriever._fusion_weights == (0.8, 0.2)
+        assert reopened._indexes._retriever._fusion_weights == (0.8, 0.2)
 
 
 @pytest.mark.unit
@@ -81,7 +81,7 @@ class TestDeferredArtifacts:
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
 
-        assert not any(name in reopened.__dict__ for name in _CORPUS_ARTIFACTS)
+        assert not reopened.corpus.loaded & _CORPUS_ARTIFACTS
 
     async def test_querying_parses_only_the_index_payload(self, tmp_path):
         """Test that a lexical query reads its own chunks and nothing else."""
@@ -90,9 +90,7 @@ class TestDeferredArtifacts:
         reopened = Project.open("persist_test", storage_path=tmp_path)
         reopened.query("tariff", mode="lexical")
 
-        assert "_contextualized_chunks" in reopened.__dict__
-        assert "_chunks" not in reopened.__dict__
-        assert "_segments" not in reopened.__dict__
+        assert reopened.corpus.loaded == {"contextualized_chunks"}
 
     async def test_the_corpus_is_parsed_once_for_every_query(self, tmp_path):
         """Test that repeated queries do not re-read the chunks each time."""
@@ -100,21 +98,20 @@ class TestDeferredArtifacts:
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
         reopened.query("tariff", mode="lexical")
-        parsed = reopened._contextualized_chunks
+        parsed = reopened.corpus.contextualized_chunks
 
         reopened.query("circuits", mode="lexical")
 
-        assert reopened._contextualized_chunks is parsed
+        assert reopened.corpus.contextualized_chunks is parsed
 
     async def test_reading_an_artifact_parses_only_that_one(self, tmp_path):
         """Test that touching one artifact does not drag in the others."""
         await _built_project(tmp_path)
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
-        assert len(reopened._chunks) == 2
+        assert len(reopened.corpus.chunks) == 2
 
-        assert "_chunks" in reopened.__dict__
-        assert "_contextualized_chunks" not in reopened.__dict__
+        assert reopened.corpus.loaded == {"chunks"}
 
     async def test_parsing_happens_once(self, tmp_path):
         """Test that the deferred parse is not repeated on every read."""
@@ -122,16 +119,16 @@ class TestDeferredArtifacts:
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
 
-        assert reopened._chunks is reopened._chunks
+        assert reopened.corpus.chunks is reopened.corpus.chunks
 
     async def test_assignment_wins_over_a_pending_parse(self, tmp_path):
         """Test that writing an artifact before it is read discards the file."""
         await _built_project(tmp_path)
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
-        reopened._chunks = []
+        reopened.corpus.chunks = []
 
-        assert reopened._chunks == []
+        assert reopened.corpus.chunks == []
 
     async def test_a_damaged_artifact_surfaces_at_first_use(self, tmp_path):
         """Test that a build-only artifact is not parsed, damaged or not."""
@@ -142,7 +139,7 @@ class TestDeferredArtifacts:
 
         assert reopened.query("tariff", mode="lexical").total_found > 0
         with pytest.raises(ValueError):
-            _ = reopened._chunks
+            _ = reopened.corpus.chunks
 
 
 @pytest.mark.unit
@@ -161,12 +158,12 @@ class TestSaveDurability:
         """Test that a second save leaves no trace of the first."""
         project = await _built_project(tmp_path)
 
-        project._chunks = [_chunk(0, "Only chunk that remains")]
+        project.corpus.chunks = [_chunk(0, "Only chunk that remains")]
         project.save()
 
         reopened = Project.open("persist_test", storage_path=tmp_path)
-        assert [c.chunk_id for c in reopened._chunks] == ["id0"]
-        assert reopened._chunks[0].content == "Only chunk that remains"
+        assert [c.chunk_id for c in reopened.corpus.chunks] == ["id0"]
+        assert reopened.corpus.chunks[0].content == "Only chunk that remains"
 
 
 def _document(directory, name, body):
@@ -195,7 +192,7 @@ class TestDocumentsAreNamedApart:
             ]
         )
 
-        assert {chunk.source for chunk in project._chunks} == {"report.md", "us/report.md"}
+        assert {chunk.source for chunk in project.corpus.chunks} == {"report.md", "us/report.md"}
 
     def test_chunk_ids_stay_unique(self, tmp_path):
         """Test no two chunks share an id, which fusion reads as one chunk."""
@@ -207,7 +204,7 @@ class TestDocumentsAreNamedApart:
             ]
         )
 
-        ids = [chunk.chunk_id for chunk in project._chunks]
+        ids = [chunk.chunk_id for chunk in project.corpus.chunks]
         assert len(ids) == len(set(ids))
 
     def test_neither_document_loses_its_segments(self, tmp_path):
@@ -220,15 +217,15 @@ class TestDocumentsAreNamedApart:
             ]
         )
 
-        assert "Hwaseong" in project._segments[("report.md", 0)]
-        assert "Taylor" in project._segments[("us/report.md", 0)]
+        assert "Hwaseong" in project.corpus.segments[("report.md", 0)]
+        assert "Taylor" in project.corpus.segments[("us/report.md", 0)]
 
     def test_a_lone_filename_is_left_alone(self, tmp_path):
         """Test the common case still files under the bare name callers filter on."""
         project = Project.create(name="named", storage_path=tmp_path / "store")
         project.add_documents([_document(tmp_path / "kr", "report.md", "Hwaseong output rose.")])
 
-        assert {chunk.source for chunk in project._chunks} == {"report.md"}
+        assert {chunk.source for chunk in project.corpus.chunks} == {"report.md"}
 
     def test_a_reopened_project_still_names_documents_apart(self, tmp_path):
         """Test the names already on disk are what a later add avoids."""
@@ -239,7 +236,7 @@ class TestDocumentsAreNamedApart:
         reopened = Project.open("named", storage_path=tmp_path / "store")
         reopened.add_documents([_document(tmp_path / "us", "report.md", "Taylor output fell.")])
 
-        assert {chunk.source for chunk in reopened._chunks} == {"report.md", "us/report.md"}
+        assert {chunk.source for chunk in reopened.corpus.chunks} == {"report.md", "us/report.md"}
 
 
 @pytest.mark.unit
@@ -272,8 +269,8 @@ class TestReAddingADocumentIsRefused:
         with pytest.raises(ValueError):
             project.add_documents([path])
 
-        assert len(project._chunks) == added
-        assert {chunk.source for chunk in project._chunks} == {"report.md"}
+        assert len(project.corpus.chunks) == added
+        assert {chunk.source for chunk in project.corpus.chunks} == {"report.md"}
 
     def test_a_different_document_is_still_accepted(self, tmp_path):
         """Test the check refuses copies, not same-named neighbours."""

@@ -9,13 +9,13 @@ class TestTokenCounting:
 
     def test_count_tokens_empty(self):
         """Test counting tokens in empty string."""
-        from konte.chunker import count_tokens
+        from konte.ingest.chunker import count_tokens
 
         assert count_tokens("") == 0
 
     def test_count_tokens_simple(self):
         """Test counting tokens in simple text."""
-        from konte.chunker import count_tokens
+        from konte.ingest.chunker import count_tokens
 
         tokens = count_tokens("Hello world")
         assert tokens > 0
@@ -23,7 +23,7 @@ class TestTokenCounting:
 
     def test_count_tokens_longer_text(self):
         """Test counting tokens in longer text."""
-        from konte.chunker import count_tokens
+        from konte.ingest.chunker import count_tokens
 
         text = "The quick brown fox jumps over the lazy dog. " * 10
         tokens = count_tokens(text)
@@ -36,7 +36,7 @@ class TestSegmentSplitting:
 
     def test_segment_small_document(self):
         """Test that small documents remain as single segment."""
-        from konte.chunker import segment_document
+        from konte.ingest.chunker import segment_document
 
         text = "This is a small document."
         segments = segment_document(text, segment_size=8000, overlap=800)
@@ -45,7 +45,7 @@ class TestSegmentSplitting:
 
     def test_segment_large_document_creates_multiple(self):
         """Test that large documents are split into multiple segments."""
-        from konte.chunker import segment_document
+        from konte.ingest.chunker import segment_document
 
         text = "word " * 5000  # ~5000 tokens
         segments = segment_document(text, segment_size=1000, overlap=100)
@@ -53,7 +53,7 @@ class TestSegmentSplitting:
 
     def test_segment_overlap_exists(self):
         """Test that segments have overlapping content."""
-        from konte.chunker import segment_document
+        from konte.ingest.chunker import segment_document
 
         text = "word " * 3000
         segments = segment_document(text, segment_size=1000, overlap=100)
@@ -67,7 +67,7 @@ class TestSegmentSplitting:
 
     def test_segment_no_sentence_breakage(self):
         """Test that segments end at sentence boundaries, not mid-sentence."""
-        from konte.chunker import segment_document
+        from konte.ingest.chunker import segment_document
 
         sentences = [
             f"Sentence number {i} describes an important fact." for i in range(200)
@@ -91,7 +91,7 @@ class TestChunkSplitting:
 
     def test_chunk_small_segment(self):
         """Test that small segments remain as single chunk."""
-        from konte.chunker import chunk_segment
+        from konte.ingest.chunker import chunk_segment
 
         text = "This is a small segment."
         chunks = chunk_segment(text, chunk_size=800, overlap=80)
@@ -100,7 +100,7 @@ class TestChunkSplitting:
 
     def test_chunk_creates_multiple(self):
         """Test that larger segments create multiple chunks."""
-        from konte.chunker import chunk_segment
+        from konte.ingest.chunker import chunk_segment
 
         text = "word " * 1000  # ~1000 tokens
         chunks = chunk_segment(text, chunk_size=200, overlap=20)
@@ -108,7 +108,7 @@ class TestChunkSplitting:
 
     def test_chunk_overlap_exists(self):
         """Test that chunks have overlapping content."""
-        from konte.chunker import chunk_segment
+        from konte.ingest.chunker import chunk_segment
 
         text = "word " * 500
         chunks = chunk_segment(text, chunk_size=100, overlap=10)
@@ -120,7 +120,7 @@ class TestChunkSplitting:
 
     def test_chunk_no_sentence_breakage(self):
         """Test that chunks end at sentence boundaries, not mid-sentence."""
-        from konte.chunker import chunk_segment
+        from konte.ingest.chunker import chunk_segment
 
         sentences = [
             f"This is chunk test sentence {i} with details." for i in range(100)
@@ -144,8 +144,8 @@ class TestCreateChunks:
 
     def test_create_chunks_returns_chunk_objects(self):
         """Test that create_chunks returns Chunk objects and segments map."""
-        from konte.chunker import create_chunks
-        from konte.models import Chunk
+        from konte.domain import Chunk
+        from konte.ingest.chunker import create_chunks
 
         text = "This is test content. " * 50
         chunks, segments_map = create_chunks(
@@ -164,7 +164,7 @@ class TestCreateChunks:
 
     def test_create_chunks_has_correct_metadata(self):
         """Test that chunks have correct metadata."""
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         text = "Content here. " * 100
         chunks, segments_map = create_chunks(
@@ -187,7 +187,7 @@ class TestCreateChunks:
 
     def test_create_chunks_unique_ids(self):
         """Test that all chunk IDs are unique."""
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         text = "Some text content. " * 200
         chunks, _ = create_chunks(
@@ -209,7 +209,7 @@ class TestCreateChunksDataFlow:
 
     def test_segments_map_contains_actual_segments(self):
         """Verify segments_map contains segment text, not full document."""
-        from konte.chunker import count_tokens, create_chunks
+        from konte.ingest.chunker import count_tokens, create_chunks
 
         # Create text large enough to produce MANY segments (10x segment size)
         text = "Word " * 10000  # ~10000 tokens
@@ -242,7 +242,7 @@ class TestCreateChunksDataFlow:
 
     def test_chunk_segment_idx_maps_to_segments_map(self):
         """Verify every chunk.(source, segment_idx) has corresponding entry in segments_map."""
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         text = "Content " * 500
         chunks, segments_map = create_chunks(
@@ -263,7 +263,7 @@ class TestCreateChunksDataFlow:
 
     def test_chunk_content_exists_in_its_segment(self):
         """Verify chunk content can be found within its declared segment."""
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         text = "Unique word alpha. " * 100 + "Unique word beta. " * 100 + "Unique word gamma. " * 100
         chunks, segments_map = create_chunks(
@@ -286,7 +286,7 @@ class TestCreateChunksDataFlow:
 
     def test_segments_map_indices_are_contiguous(self):
         """Verify segments_map has contiguous indices starting from 0 for each source."""
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         text = "Test content. " * 300
         _, segments_map = create_chunks(
@@ -312,7 +312,7 @@ class TestChunkerMeasurement:
 
     def test_a_text_that_fits_is_kept_whole(self):
         """Test a text under the budget survives a splitter that would cut it."""
-        from konte.chunker import chunk_segment, count_tokens
+        from konte.ingest.chunker import chunk_segment, count_tokens
 
         text = " ".join(f"Sentence {i} about tariff valuation." for i in range(7))
 
@@ -326,7 +326,7 @@ class TestChunkerMeasurement:
 
         import tiktoken
 
-        from konte.chunker import create_chunks
+        from konte.ingest.chunker import create_chunks
 
         encoded = Counter()
         original = tiktoken.Encoding.encode
@@ -356,35 +356,35 @@ class TestExtractMetadataFromSource:
 
     def test_single_word_company(self):
         """Test single word company name."""
-        from konte.chunker import extract_metadata_from_source
+        from konte.ingest.chunker import extract_metadata_from_source
 
         result = extract_metadata_from_source("ADOBE_2022_10K.md")
         assert result == {"company": "ADOBE", "year": "2022"}
 
     def test_multi_word_company(self):
         """Test multi-word company name with underscores."""
-        from konte.chunker import extract_metadata_from_source
+        from konte.ingest.chunker import extract_metadata_from_source
 
         result = extract_metadata_from_source("JOHNSON_JOHNSON_2022_10K.md")
         assert result == {"company": "JOHNSON_JOHNSON", "year": "2022"}
 
     def test_numeric_company(self):
         """Test company name starting with number."""
-        from konte.chunker import extract_metadata_from_source
+        from konte.ingest.chunker import extract_metadata_from_source
 
         result = extract_metadata_from_source("3M_2018_10K.md")
         assert result == {"company": "3M", "year": "2018"}
 
     def test_no_match(self):
         """Test filename that doesn't match pattern."""
-        from konte.chunker import extract_metadata_from_source
+        from konte.ingest.chunker import extract_metadata_from_source
 
         result = extract_metadata_from_source("readme.md")
         assert result == {}
 
     def test_lowercase_filename(self):
         """Test lowercase filename."""
-        from konte.chunker import extract_metadata_from_source
+        from konte.ingest.chunker import extract_metadata_from_source
 
         result = extract_metadata_from_source("apple_2023_annual.txt")
         assert result == {"company": "APPLE", "year": "2023"}

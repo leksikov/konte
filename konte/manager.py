@@ -5,13 +5,13 @@ from pathlib import Path
 
 import structlog
 
-from konte.cache import invalidate_project
-from konte.config import settings
-from konte.integrity import sign
-from konte.models import validate_project_name
+from konte.domain.config import validate_project_name
+from konte.index.bm25_store import SIGNED_FILENAMES as _BM25_FILENAMES
+from konte.index.faiss_store import SIGNED_FILENAMES as _FAISS_FILENAMES
+from konte.persistence.integrity import sign
 from konte.project import Project
-from konte.stores.bm25_store import SIGNED_FILENAMES as _BM25_FILENAMES
-from konte.stores.faiss_store import SIGNED_FILENAMES as _FAISS_FILENAMES
+from konte.runtime.cache import invalidate_project
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

@@ -13,7 +13,7 @@ class TestSettings:
     def test_default_values(self):
         """Test that default settings are applied correctly."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.config import Settings
+            from konte.runtime import Settings
 
             # _env_file=None so a developer's local .env cannot mask a default
             s = Settings(_env_file=None)
@@ -36,7 +36,7 @@ class TestSettings:
         fallback, so a long default trades graceful degradation for a stall.
         """
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.config import Settings
+            from konte.runtime import Settings
 
             s = Settings(_env_file=None)
             assert 0 < s.KEYWORD_EXTRACTION_TIMEOUT <= 5.0
@@ -48,7 +48,7 @@ class TestSettings:
             {"OPENAI_API_KEY": "test-key", "STORAGE_PATH": "~/.konte"},
             clear=False,
         ):
-            from konte.config import Settings
+            from konte.runtime import Settings
 
             s = Settings()
             assert "~" not in str(s.STORAGE_PATH)
@@ -56,7 +56,7 @@ class TestSettings:
 
     def test_prompt_path_defaults_to_none(self):
         """Test that PROMPT_PATH defaults to None (resolved at usage time)."""
-        from konte.config import Settings
+        from konte.runtime import Settings
 
         # Check the field default itself so a reintroduced concrete default
         # (pointing at a nonexistent file) fails this test
@@ -66,7 +66,7 @@ class TestSettings:
     def test_prompt_path_coerced_to_path(self):
         """Test that a configured PROMPT_PATH becomes a Path object."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.config import Settings
+            from konte.runtime import Settings
 
             s = Settings(PROMPT_PATH="custom/context_prompt.txt")
             assert isinstance(s.PROMPT_PATH, Path)
@@ -74,7 +74,7 @@ class TestSettings:
 
     def test_openai_api_key_optional(self):
         """Test that OPENAI_API_KEY is optional (a custom endpoint may replace it)."""
-        from konte.config import Settings
+        from konte.runtime import Settings
 
         # Verify the field has default=None (making it optional)
         field_info = Settings.model_fields["OPENAI_API_KEY"]
@@ -83,7 +83,7 @@ class TestSettings:
     def test_overlap_less_than_size(self):
         """Test segment overlap is less than segment size."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False):
-            from konte.config import Settings
+            from konte.runtime import Settings
 
             s = Settings()
             assert s.SEGMENT_OVERLAP < s.SEGMENT_SIZE

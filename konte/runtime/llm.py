@@ -12,7 +12,7 @@ import structlog
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 
-from konte.config import settings
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

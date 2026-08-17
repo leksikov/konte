@@ -6,8 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage
 from openai import APITimeoutError
 
-from konte.context import generate_contexts_batch
-from konte.models import Chunk
+from konte.contextualize.generator import generate_contexts_batch
+from konte.domain import Chunk
 
 PROMPT = "{segment} :: {chunk}"
 
@@ -30,7 +30,7 @@ def _replies(*responses):
     """Patch the chat client so each chunk gets the next scripted response."""
     client = AsyncMock()
     client.ainvoke.side_effect = list(responses)
-    return patch("konte.context.get_llm", return_value=client)
+    return patch("konte.contextualize.generator.get_llm", return_value=client)
 
 
 def _answers(reply):
@@ -40,8 +40,8 @@ def _answers(reply):
     """
     client = AsyncMock()
     client.ainvoke.side_effect = lambda prompt: reply(prompt)
-    return patch("konte.context.get_llm", return_value=client), patch(
-        "konte.context.MAX_RETRIES", 1
+    return patch("konte.contextualize.generator.get_llm", return_value=client), patch(
+        "konte.contextualize.generator.MAX_RETRIES", 1
     )
 
 

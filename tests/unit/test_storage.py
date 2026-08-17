@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from konte.storage import atomic_writer, read_json, read_jsonl, write_json
+from konte.persistence.storage import atomic_writer, read_json, read_jsonl, write_json
 
 
 @pytest.mark.unit

@@ -5,8 +5,8 @@ from typing import Any
 import structlog
 from pydantic import BaseModel
 
-from konte.llm import active_answer_model, get_answer_llm, response_text
-from konte.models import RetrievalResponse
+from konte.domain.models import RetrievalResponse
+from konte.runtime.llm import active_answer_model, get_answer_llm, response_text
 
 logger = structlog.get_logger()
 

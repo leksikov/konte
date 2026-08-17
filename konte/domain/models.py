@@ -1,9 +1,9 @@
-"""Pydantic models for Konte contextual RAG library."""
+"""The chunks a project holds and the shape of a retrieval against them."""
 
-from pathlib import Path, PurePath
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field
 
 MetadataFilter = dict[str, Any]  # simple equality filter, AND logic across keys
 RetrievalMode = Literal["hybrid", "semantic", "lexical"]
@@ -81,6 +81,56 @@ class ContextualizedChunk(BaseModel):
         return cls(chunk=Chunk(**data["chunk"]), context=data["context"])
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalRequest:
+    """Everything one retrieval is asked for.
+
+    A dataclass rather than a model: it is handed from the project down to the
+    stores rather than serialized, and carrying it whole is what keeps the
+    retrieval path from repeating these ten parameters at every step.
+
+    Args:
+        query: Query string, as the caller wrote it.
+        mode: Retrieval mode - "hybrid", "semantic", or "lexical".
+        top_k: Number of results. None follows settings.DEFAULT_TOP_K.
+        use_keyword_extraction: Extract keywords before BM25 search, at the
+            cost of one LLM call. None follows settings.BM25_KEYWORD_EXTRACTION,
+            except where `keyword_extraction` below says otherwise.
+        metadata_filter: Filter results by metadata (equality match, AND logic).
+            Example: {"source": "doc.pdf", "company": "ACME", "year": 2024}
+        source_filter: Substring match on chunk source field.
+            Example: "JOHNSON" matches "JOHNSON_JOHNSON_2022_10K.md"
+        rerank: Rerank via the configured RERANKER_BASE_URL endpoint. Only the
+            async entry point can serve this.
+        rerank_initial_k: Candidates to retrieve before reranking.
+        inject_evidence: For ablation study - inject this text.
+        inject_position: Position to inject (0=top, None=random).
+    """
+
+    query: str
+    mode: RetrievalMode = "hybrid"
+    top_k: int | None = None
+    use_keyword_extraction: bool | None = None
+    metadata_filter: MetadataFilter | None = None
+    source_filter: str | None = None
+    rerank: bool = False
+    rerank_initial_k: int = 50
+    inject_evidence: str | None = None
+    inject_position: int | None = None
+
+    @property
+    def keyword_extraction(self) -> bool | None:
+        """bool | None: The extraction flag the lexical index is actually read with.
+
+        Deliberate: reranked hybrid has always fed BM25 the raw query, so an
+        unset flag stays off there instead of following the configured default.
+        Enabling it would shift every reranked hybrid result.
+        """
+        if self.use_keyword_extraction is None and self.rerank and self.mode == "hybrid":
+            return False
+        return self.use_keyword_extraction
+
+
 class RetrievalResult(BaseModel):
     """A single retrieval result with score."""
 
@@ -144,66 +194,3 @@ class RetrievalResponse(BaseModel):
             has_high_confidence=False,
             suggested_action="refine_query",
         )
-
-
-class BuildCheckpoint(BaseModel):
-    """Checkpoint state for build process resumption."""
-
-    completed_segments: list[str] = Field(default_factory=list)
-    contextualized_chunks: list[dict[str, Any]] = Field(default_factory=list)
-
-
-def validate_project_name(name: str) -> str:
-    """Return the name if it names one directory under the storage root.
-
-    Callers join the name onto the storage path, so one the filesystem reads
-    as more than a single component reaches outside the root — where
-    delete_project() would remove whatever it found.
-
-    Raises:
-        ValueError: If the name is not a single path component.
-    """
-    if not name or name == ".." or "\0" in name or PurePath(name).name != name:
-        raise ValueError(
-            f"Invalid project name: {name!r}. A project name is one directory "
-            "name under the storage root: no path separators, no '..', not absolute."
-        )
-    return name
-
-
-class ProjectConfig(BaseModel):
-    """Configuration for a project."""
-
-    name: str
-    storage_path: Path
-
-    # Segmentation
-    segment_size: int = 8000
-    segment_overlap: int = 800
-
-    # Chunking
-    chunk_size: int = 800
-    chunk_overlap: int = 80
-
-    # Context
-    context_prompt_path: Path | None = None  # Per-project prompt override
-
-    # Models
-    embedding_model: str = "text-embedding-3-small"
-    context_model: str | None = None  # Defaults to settings.LLM_MODEL or CONTEXT_MODEL
-
-    # Index options
-    enable_faiss: bool = True
-    enable_bm25: bool = True
-
-    # Fusion weights. Only their ratio matters, not their scale.
-    fusion_weight_semantic: float = Field(default=0.5, ge=0.0)
-    fusion_weight_lexical: float = Field(default=0.5, ge=0.0)
-
-    model_config = ConfigDict(ser_json_path="str")
-
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, value: str) -> str:
-        """A name read back from config.json is checked like any other."""
-        return validate_project_name(value)

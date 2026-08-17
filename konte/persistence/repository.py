@@ -1,25 +1,23 @@
-"""On-disk layout of a project directory."""
+"""The one place that knows what a project looks like on disk."""
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from konte.models import (
+from konte.domain.config import ProjectConfig
+from konte.domain.corpus import Corpus
+from konte.domain.models import (
     Chunk,
     ContextualizedChunk,
-    ProjectConfig,
     SegmentKey,
     decode_segment_key,
     encode_segment_key,
 )
-from konte.storage import read_json, write_json
-from konte.stores import BM25Store, FAISSStore
-from konte.stores.bm25_store import INDEX_FILENAME as BM25_INDEX_FILENAME
-from konte.stores.bm25_store import LEGACY_INDEX_FILENAME as LEGACY_BM25_INDEX_FILENAME
-from konte.stores.faiss_store import INDEX_FILENAME as FAISS_INDEX_FILENAME
+from konte.persistence.checkpoint import CheckpointLog
+from konte.persistence.storage import read_json, write_json
+from konte.retrieval.bundle import IndexBundle
 
 logger = structlog.get_logger()
 
@@ -31,8 +29,8 @@ CHUNKS_FILENAME = "chunks.json"
 _CONFIG_INDENT = 2  # config.json is the one artifact people open by hand
 
 
-class ProjectStore:
-    """The artifacts a project keeps in one directory.
+class ProjectRepository:
+    """The artifacts one project keeps in one directory.
 
     Every corpus artifact reads back empty rather than raising when its file is
     absent, so a directory holding only some of them still opens.
@@ -41,36 +39,38 @@ class ProjectStore:
         directory: Directory the project's artifacts live in.
     """
 
-    __slots__ = ("_directory",)
+    __slots__ = ("_checkpoint", "_directory")
 
     def __init__(self, directory: Path) -> None:
         self._directory = directory
+        self._checkpoint = CheckpointLog(directory)
 
     @property
     def directory(self) -> Path:
-        """Path: The directory this store reads and writes."""
+        """Path: The directory this repository reads and writes."""
         return self._directory
+
+    @property
+    def checkpoint(self) -> CheckpointLog:
+        """CheckpointLog: The log a build in this directory resumes from."""
+        return self._checkpoint
 
     def exists(self) -> bool:
         """Whether the project directory is there to be read."""
         return self._directory.exists()
 
-    def write(
-        self,
-        config: ProjectConfig,
-        *,
-        chunks: list[Chunk],
-        segments: dict[SegmentKey, str],
-        contextualized_chunks: list[ContextualizedChunk],
-        faiss: FAISSStore | None,
-        bm25: BM25Store | None,
-    ) -> None:
+    def write(self, config: ProjectConfig, corpus: Corpus, indexes: IndexBundle) -> None:
         """Replace every artifact of a project with the state passed in.
 
         Each file is replaced in one step, but the set of them is not
         transactional: a crash partway through leaves newer artifacts beside
-        older ones, which a rebuild resolves. An index passed as None is left
-        on disk as it stands.
+        older ones, which a rebuild resolves. An index the project does not
+        hold is left on disk as it stands.
+
+        Args:
+            config: The project's configuration.
+            corpus: The chunks to store; reading them runs any deferred parse.
+            indexes: The indexes to write beside them.
         """
         directory = self._directory
         directory.mkdir(parents=True, exist_ok=True)
@@ -80,21 +80,17 @@ class ProjectStore:
             self._portable_config(config),
             indent=_CONFIG_INDENT,
         )
-        write_json(directory / RAW_CHUNKS_FILENAME, [c.model_dump() for c in chunks])
+        write_json(directory / RAW_CHUNKS_FILENAME, [c.model_dump() for c in corpus.chunks])
         write_json(
             directory / SEGMENTS_FILENAME,
-            {encode_segment_key(key): text for key, text in segments.items()},
+            {encode_segment_key(key): text for key, text in corpus.segments.items()},
         )
         write_json(
             directory / CHUNKS_FILENAME,
-            [c.to_storage_dict() for c in contextualized_chunks],
+            [c.to_storage_dict() for c in corpus.contextualized_chunks],
         )
 
-        if faiss is not None:
-            faiss.save(directory)
-
-        if bm25 is not None:
-            bm25.save(directory)
+        indexes.save(directory)
 
         logger.info("project_saved", path=str(directory))
 
@@ -120,6 +116,18 @@ class ProjectStore:
 
         return ProjectConfig(**data)
 
+    def read_corpus(self) -> Corpus:
+        """Return the stored corpus, with every artifact left to a deferred parse.
+
+        Only building and saving read the corpus-sized artifacts, so a
+        query-only caller never pays to parse them.
+        """
+        return Corpus.deferred(
+            chunks=self.read_chunks,
+            segments=self.read_segments,
+            contextualized_chunks=self.read_contextualized_chunks,
+        )
+
     def read_chunks(self) -> list[Chunk]:
         """Rebuild the raw chunk list, empty when the artifact is absent."""
         data = read_json(self._directory / RAW_CHUNKS_FILENAME)
@@ -139,40 +147,18 @@ class ProjectStore:
             return []
         return [ContextualizedChunk.from_storage_dict(item) for item in data]
 
-    def read_indexes(
-        self,
-        config: ProjectConfig,
-        contextualized_chunks: Callable[[], list[ContextualizedChunk]],
-    ) -> tuple[FAISSStore | None, BM25Store | None]:
-        """Attach whichever indexes exist on disk and are enabled in config.
-
-        A pickled index counts as present so the caller can refuse it by name,
-        rather than the project opening quietly without one.
+    def read_indexes(self, config: ProjectConfig, corpus: Corpus) -> IndexBundle:
+        """Attach whichever indexes are on disk, over the corpus they were built from.
 
         Args:
             config: The project's configuration.
-            contextualized_chunks: Called only if the lexical index needs its
-                payload, so an unread corpus stays unparsed.
+            corpus: Read only if the lexical index needs its payload, so an
+                unread corpus stays unparsed.
 
         Returns:
-            The (semantic, lexical) pair, each None where absent.
+            The bundle a query goes through.
         """
-        directory = self._directory
-        faiss: FAISSStore | None = None
-        bm25: BM25Store | None = None
-
-        if config.enable_faiss and (directory / FAISS_INDEX_FILENAME).exists():
-            faiss = FAISSStore(embedding_model=config.embedding_model)
-            faiss.load(directory)
-
-        if config.enable_bm25 and (
-            (directory / BM25_INDEX_FILENAME).exists()
-            or (directory / LEGACY_BM25_INDEX_FILENAME).exists()
-        ):
-            bm25 = BM25Store()
-            bm25.load(directory, contextualized_chunks)
-
-        return faiss, bm25
+        return IndexBundle.load(self._directory, config, corpus)
 
     def _portable_config(self, config: ProjectConfig) -> dict[str, Any]:
         """Serialize the config with absolute paths made relative where possible.

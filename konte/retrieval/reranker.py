@@ -6,8 +6,8 @@ from typing import NamedTuple
 import httpx
 import structlog
 
-from konte.config import settings
-from konte.models import ContextualizedChunk
+from konte.domain.models import ContextualizedChunk
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 

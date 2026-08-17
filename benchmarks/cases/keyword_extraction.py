@@ -14,10 +14,9 @@ a real endpoint and both are counts and timeouts rather than throughput.
 
 from __future__ import annotations
 
-import importlib
 import time
 
-from benchmarks.harness import Context, point_llm_at, summarize
+from benchmarks.harness import Context, konte_module, point_llm_at, summarize
 from benchmarks.stub_endpoint import MODEL_NAME, stub_endpoint
 
 QUERY = "Which heading covers parts of electrical machinery?"
@@ -26,12 +25,12 @@ REPEATS = 8
 
 def _extractor():
     """Return this revision's synchronous keyword extraction entry point."""
-    return importlib.import_module("konte.query_processor").extract_search_keywords
+    return konte_module("query_processor").extract_search_keywords
 
 
 def _clear_keyword_cache() -> bool:
     """Clear the extraction cache if this revision has one."""
-    module = importlib.import_module("konte.query_processor")
+    module = konte_module("query_processor")
     clear = getattr(module, "clear_keyword_cache", None)
     if clear is None:
         return False

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from konte.chunker import count_tokens
+from konte.ingest.chunker import count_tokens
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -43,7 +43,7 @@ class TestFullPipelineWithContext:
         await project.build(skip_context=False)
 
         # Verify context was generated
-        for ctx_chunk in project._contextualized_chunks:
+        for ctx_chunk in project.corpus.contextualized_chunks:
             # Context should not be empty (unless rate limited)
             # Just verify the structure is correct
             assert ctx_chunk.chunk is not None
@@ -71,13 +71,13 @@ class TestFullPipelineWithContext:
 
         # Check that at least some contexts have content
         contexts_with_content = [
-            c for c in project._contextualized_chunks
+            c for c in project.corpus.contextualized_chunks
             if c.context and len(c.context) > 10
         ]
 
         # At least 50% should have context (allowing for some failures)
-        assert len(contexts_with_content) >= len(project._contextualized_chunks) * 0.5, (
-            f"Only {len(contexts_with_content)} of {len(project._contextualized_chunks)} "
+        assert len(contexts_with_content) >= len(project.corpus.contextualized_chunks) * 0.5, (
+            f"Only {len(contexts_with_content)} of {len(project.corpus.contextualized_chunks)} "
             "chunks have context"
         )
 
@@ -106,7 +106,7 @@ class TestSegmentSizesInPipeline:
         doc_tokens = count_tokens(doc_content)
 
         # Each segment should be significantly smaller than full document
-        for seg_idx, segment_text in project._segments.items():
+        for seg_idx, segment_text in project.corpus.segments.items():
             segment_tokens = count_tokens(segment_text)
 
             # Segment should be bounded (not the full document)

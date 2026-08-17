@@ -1,9 +1,8 @@
 """FAISS vector store for semantic search using LangChain."""
 
 import asyncio
-from collections import defaultdict, deque
-from collections.abc import Sequence
-from itertools import chain
+from collections import deque
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +14,11 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
-from konte.config import settings
-from konte.integrity import SIGNATURE_SUFFIX, sign, verify
-from konte.models import Chunk, ContextualizedChunk, MetadataFilter
-from konte.storage import read_json, write_json
-from konte.stores.base import matches_filter_value
+from konte.domain.models import Chunk, ContextualizedChunk, MetadataFilter
+from konte.index.filter_index import FilterIndex, matches_filter_value
+from konte.persistence.integrity import SIGNATURE_SUFFIX, sign, verify
+from konte.persistence.storage import read_json, write_json
+from konte.runtime.settings import settings
 
 logger = structlog.get_logger()
 
@@ -225,105 +224,25 @@ def _select_matching_ids(
     vectorstore: FAISS,
     metadata_filter: MetadataFilter | None,
     source_filter: str | None,
-) -> list[int]:
+) -> np.ndarray:
     """Return the FAISS internal ids whose documents satisfy the filters."""
-    return [
-        faiss_id
-        for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
-        if (doc := _lookup_document(vectorstore, docstore_id)) is not None
-        and _document_passes(doc, metadata_filter, source_filter)
-    ]
+    return np.fromiter(
+        (
+            faiss_id
+            for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items()
+            if (doc := _lookup_document(vectorstore, docstore_id)) is not None
+            and _document_passes(doc, metadata_filter, source_filter)
+        ),
+        dtype=np.intp,
+    )
 
 
-class _FilterIndex:
-    """Inverted index over a docstore: field value -> the FAISS ids carrying it."""
-
-    __slots__ = ("_absent", "_all_ids", "_postings", "_unposted")
-
-    def __init__(self, vectorstore: FAISS) -> None:
-        postings: dict[str, dict[Any, list[int]]] = defaultdict(lambda: defaultdict(list))
-        unposted = set(_UNPOSTED_METADATA_FIELDS)
-        all_ids: list[int] = []
-
-        for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items():
-            doc = _lookup_document(vectorstore, docstore_id)
-            if doc is None:
-                continue
-            all_ids.append(faiss_id)
-            for key, value in doc.metadata.items():
-                if key in unposted:
-                    continue
-                try:
-                    postings[key][value].append(faiss_id)
-                except TypeError:
-                    unposted.add(key)
-
-        self._all_ids = all_ids
-        self._postings = {key: dict(values) for key, values in postings.items()}
-        self._unposted = unposted
-        self._absent: dict[str, frozenset[int]] = {}
-
-    def select(
-        self,
-        metadata_filter: MetadataFilter | None,
-        source_filter: str | None,
-    ) -> list[int] | None:
-        """Return the ids satisfying both filters, or None if the index cannot answer.
-
-        None (a filtered field has no posting list) means the caller must fall
-        back to scanning; an empty list means the filters matched nothing.
-        """
-        fields = set(metadata_filter or ())
-        if source_filter:
-            fields.add("source")
-        if fields & self._unposted:
-            return None
-
-        matches = [self._ids_for(key, value) for key, value in (metadata_filter or {}).items()]
-        if source_filter:
-            matches.append(self._ids_matching_source(source_filter))
-        if not matches:
-            return list(self._all_ids)
-
-        # set.intersection walks its receiver, so lead with the smallest.
-        matches.sort(key=len)
-        return sorted(set.intersection(*matches))
-
-    def _ids_for(self, field: str, expected: Any) -> set[int]:
-        """Ids whose field satisfies one filter value; a list means match-any."""
-        postings = self._postings.get(field, {})
-        wanted = expected if isinstance(expected, list) else (expected,)
-
-        matched: set[int] = set()
-        for value in wanted:
-            try:
-                posted = postings.get(value)
-            except TypeError:  # an unhashable filter value equals no posted one
-                continue
-            if posted:
-                matched.update(posted)
-            if value is None:
-                matched.update(self._absent_from(field))
-        return matched
-
-    def _ids_matching_source(self, needle: str) -> set[int]:
-        """Ids whose source contains the needle."""
-        return set(
-            chain.from_iterable(
-                ids
-                for source, ids in self._postings.get("source", {}).items()
-                if isinstance(source, str) and needle in source
-            )
-        )
-
-    def _absent_from(self, field: str) -> frozenset[int]:
-        """Ids of documents carrying no such field — metadata.get() reads them as None."""
-        absent = self._absent.get(field)
-        if absent is None:
-            posted = chain.from_iterable(self._postings.get(field, {}).values())
-            absent = frozenset(self._all_ids).difference(posted)
-            self._absent[field] = absent
-        return absent
+def _filter_entries(vectorstore: FAISS) -> Iterator[tuple[int, Any]]:
+    """Yield each stored document's FAISS id and the metadata to post it on."""
+    for faiss_id, docstore_id in vectorstore.index_to_docstore_id.items():
+        doc = _lookup_document(vectorstore, docstore_id)
+        if doc is not None:
+            yield faiss_id, doc.metadata.items()
 
 
 class FAISSStore:
@@ -345,7 +264,7 @@ class FAISSStore:
             kwargs["api_key"] = settings.OPENAI_API_KEY
         self._embeddings = OpenAIEmbeddings(**kwargs)
         self._vectorstore: FAISS | None = None
-        self._filter_index: _FilterIndex | None = None
+        self._filter_index: FilterIndex | None = None
 
     def build_index(
         self,
@@ -577,14 +496,16 @@ class FAISSStore:
         however many happen to survive from a global top-k.
         """
         valid_ids = self._matching_ids(vectorstore, metadata_filter, source_filter)
-        if not valid_ids:
+        if not valid_ids.size:
             return []
 
-        selector = faiss.IDSelectorArray(np.array(valid_ids, dtype=np.int64))
+        # Bound to a name: the selector reads the buffer during the search.
+        selected = valid_ids.astype(np.int64)
+        selector = faiss.IDSelectorArray(selected)
         query_vector = np.array([self._embeddings.embed_query(query)], dtype=np.float32)
         distances, indices = vectorstore.index.search(
             query_vector,
-            min(k, len(valid_ids)),
+            min(k, selected.size),
             params=faiss.SearchParametersIVF(sel=selector),
         )
 
@@ -603,10 +524,12 @@ class FAISSStore:
         vectorstore: FAISS,
         metadata_filter: MetadataFilter | None,
         source_filter: str | None,
-    ) -> list[int]:
+    ) -> np.ndarray:
         """Resolve the filters to FAISS ids, indexing the docstore on first use."""
         if self._filter_index is None:
-            self._filter_index = _FilterIndex(vectorstore)
+            self._filter_index = FilterIndex(
+                _filter_entries(vectorstore), _UNPOSTED_METADATA_FIELDS
+            )
         selected = self._filter_index.select(metadata_filter, source_filter)
         if selected is None:
             return _select_matching_ids(vectorstore, metadata_filter, source_filter)

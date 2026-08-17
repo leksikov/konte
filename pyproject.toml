@@ -77,7 +77,8 @@ where = ["."]
 include = ["konte*"]
 
 [tool.setuptools.package-data]
-konte = ["prompts/*.txt", "py.typed"]
+konte = ["py.typed"]
+"konte.contextualize" = ["prompts/*.txt"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

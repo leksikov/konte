@@ -99,16 +99,16 @@ class TestSaveAndReload:
         project1.add_documents([FIXTURES_DIR / "sample.txt"])
         await project1.build(skip_context=False)
 
-        num_chunks_before = len(project1._contextualized_chunks)
-        chunk_ids_before = {c.chunk.chunk_id for c in project1._contextualized_chunks}
+        num_chunks_before = len(project1.corpus.contextualized_chunks)
+        chunk_ids_before = {c.chunk.chunk_id for c in project1.corpus.contextualized_chunks}
 
         project1.save()
 
         # Reload
         project2 = Project.open(name="e2e_chunks_persist", storage_path=tmp_path)
 
-        num_chunks_after = len(project2._contextualized_chunks)
-        chunk_ids_after = {c.chunk.chunk_id for c in project2._contextualized_chunks}
+        num_chunks_after = len(project2.corpus.contextualized_chunks)
+        chunk_ids_after = {c.chunk.chunk_id for c in project2.corpus.contextualized_chunks}
 
         # Same number of chunks
         assert num_chunks_before == num_chunks_after
@@ -208,8 +208,8 @@ class TestContextPersistence:
         await project1.build(skip_context=False)  # Generate context
 
         # Get context for first chunk
-        if project1._contextualized_chunks:
-            context_before = project1._contextualized_chunks[0].context
+        if project1.corpus.contextualized_chunks:
+            context_before = project1.corpus.contextualized_chunks[0].context
 
         project1.save()
 
@@ -217,6 +217,6 @@ class TestContextPersistence:
         project2 = Project.open(name="e2e_context_persist", storage_path=tmp_path)
 
         # Context should be preserved
-        if project2._contextualized_chunks:
-            context_after = project2._contextualized_chunks[0].context
+        if project2.corpus.contextualized_chunks:
+            context_after = project2.corpus.contextualized_chunks[0].context
             assert context_before == context_after

@@ -33,7 +33,7 @@ def load_contexts_from_project(project_name: str) -> list[list[str]]:
     Returns:
         List of context lists (each context is a list of strings for multi-context).
     """
-    from konte.config.settings import settings
+    from konte.runtime.settings import settings
 
     project_dir = settings.STORAGE_PATH / project_name
     chunks_path = project_dir / "chunks.json"
@@ -192,7 +192,7 @@ def generate_goldens(
 
     styling_config = StylingConfig(**STYLING_BY_LANGUAGE[language])
 
-    from konte.config.settings import settings as _settings
+    from konte.runtime.settings import settings as _settings
     if _settings.use_custom_llm:
         from evaluation.custom_llm import ConfiguredLLM
         synth_model = ConfiguredLLM()

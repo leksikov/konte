@@ -2,15 +2,18 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from konte.cache import (
-    clear_project_cache,
-    get_shared_project,
-    invalidate_project,
-    preload_projects,
+from konte.answer import GeneratedAnswer, generate_answer
+from konte.domain.config import ProjectConfig
+from konte.domain.corpus import Corpus
+from konte.domain.models import (
+    Chunk,
+    ContextualizedChunk,
+    MetadataFilter,
+    RetrievalMode,
+    RetrievalRequest,
+    RetrievalResponse,
+    RetrievalResult,
 )
-from konte.config import settings
-from konte.generator import GeneratedAnswer, generate_answer
-from konte.integrity import IntegrityError
 from konte.manager import (
     create_project,
     delete_project,
@@ -19,22 +22,21 @@ from konte.manager import (
     project_exists,
     trust_project,
 )
-from konte.models import (
-    BuildCheckpoint,
-    Chunk,
-    ContextualizedChunk,
-    MetadataFilter,
-    ProjectConfig,
-    RetrievalMode,
-    RetrievalResponse,
-    RetrievalResult,
-)
+from konte.persistence.checkpoint import BuildCheckpoint
+from konte.persistence.integrity import IntegrityError
 from konte.project import Project
-from konte.query_processor import (
+from konte.retrieval.query_processor import (
     clear_keyword_cache,
     extract_search_keywords,
     extract_search_keywords_async,
 )
+from konte.runtime.cache import (
+    clear_project_cache,
+    get_shared_project,
+    invalidate_project,
+    preload_projects,
+)
+from konte.runtime.settings import settings
 
 # Single source of truth is pyproject.toml, read from installed metadata
 try:
@@ -48,8 +50,10 @@ __all__ = [
     "BuildCheckpoint",
     "Chunk",
     "ContextualizedChunk",
+    "Corpus",
     "MetadataFilter",
     "RetrievalMode",
+    "RetrievalRequest",
     "RetrievalResult",
     "RetrievalResponse",
     "ProjectConfig",

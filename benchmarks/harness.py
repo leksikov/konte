@@ -289,6 +289,53 @@ def assert_scratch_storage(path: Path | str) -> Path:
     return resolved
 
 
+#: Where each konte module lives, newest layout first. The package was split
+#: into layers partway through the range under test, so a case asks for the role
+#: it needs and gets whichever module the revision it is running under has.
+_MODULE_ALIASES = {
+    "settings": ("konte.runtime.settings", "konte.config.settings"),
+    "llm": ("konte.runtime.llm", "konte.llm"),
+    "cache": ("konte.runtime.cache", "konte.cache"),
+    "models": ("konte.domain.models", "konte.models"),
+    "chunker": ("konte.ingest.chunker", "konte.chunker"),
+    "loader": ("konte.ingest.loader", "konte.loader"),
+    "context": ("konte.contextualize.generator", "konte.context"),
+    "faiss_store": ("konte.index.faiss_store", "konte.stores.faiss_store"),
+    "bm25_store": ("konte.index.bm25_store", "konte.stores.bm25_store"),
+    "retriever": ("konte.retrieval.retriever", "konte.stores.retriever"),
+    "query_processor": ("konte.retrieval.query_processor", "konte.query_processor"),
+    "storage": ("konte.persistence.storage", "konte.storage"),
+    "checkpoint": ("konte.persistence.checkpoint", "konte.checkpoint"),
+}
+
+
+def konte_module(role: str, required: bool = True):
+    """Import one konte module by role, whichever layout this revision uses.
+
+    Args:
+        role: Key into _MODULE_ALIASES.
+        required: Raise when no revision has the module, rather than answering None.
+
+    Returns:
+        The imported module, or None when it is absent and not required.
+
+    Raises:
+        KeyError: If the role is not one this harness knows.
+        ImportError: If no candidate module imports and `required` is set.
+    """
+    import importlib
+
+    candidates = _MODULE_ALIASES[role]
+    for name in candidates:
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    if required:
+        raise ImportError(f"no module for {role!r} on this revision; tried {candidates}")
+    return None
+
+
 #: Settings fields are discovered by shape rather than named, because the two
 #: revisions call the chat endpoint's settings different things. Discovery keeps
 #: the harness working across the rename without encoding either name.
@@ -311,7 +358,7 @@ def point_llm_at(base_url: str, model: str) -> Iterator[list[str]]:
 
     Yields the field names that were changed.
     """
-    from konte.config import settings
+    settings = konte_module("settings").settings
 
     previous: dict[str, object] = {}
     changed = []
@@ -341,7 +388,7 @@ def point_llm_at(base_url: str, model: str) -> Iterator[list[str]]:
 
 def active_chat_endpoint() -> str | None:
     """The chat endpoint konte would use right now, on either revision."""
-    from konte.config import settings
+    settings = konte_module("settings").settings
 
     for name in type(settings).model_fields:
         if name.startswith(_NOT_CHAT) or not name.endswith(_ENDPOINT_SUFFIXES):
@@ -381,12 +428,9 @@ def clear_llm_clients() -> None:
     Both revisions memoize constructed clients; they just keep the cache in
     different modules.
     """
-    import importlib
-
-    for module_name, attr in (("konte.llm", "_client_cache"), ("konte.context", "_llm_cache")):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
+    for role, attr in (("llm", "_client_cache"), ("context", "_llm_cache")):
+        module = konte_module(role, required=False)
+        if module is None:
             continue
         cache = getattr(module, attr, None)
         if isinstance(cache, dict):
@@ -398,13 +442,11 @@ def pin_keyword_extraction() -> None:
 
     The older revision has no way to turn extraction off - it runs on every
     lexical and hybrid query - so a like-for-like comparison of the ranking code
-    has to neutralize it on both sides. Both revisions import the function into
-    the retriever's namespace, which is what gets replaced here, leaving each
-    revision's own call sites and control flow intact.
+    has to neutralize it on both sides. The replacement goes into every module
+    that calls the extractor by name - the retriever on the older revision, the
+    query processor on the newer one - leaving each revision's own call sites
+    and control flow intact.
     """
-    import importlib
-
-    retriever = importlib.import_module("konte.stores.retriever")
 
     def local(query: str) -> list[str]:
         return [token for token in query.replace("?", " ").split() if len(token) > 1]
@@ -412,9 +454,14 @@ def pin_keyword_extraction() -> None:
     async def local_async(query: str) -> list[str]:
         return local(query)
 
-    retriever.extract_search_keywords = local
-    if hasattr(retriever, "extract_search_keywords_async"):
-        retriever.extract_search_keywords_async = local_async
+    for role in ("retriever", "query_processor"):
+        module = konte_module(role, required=False)
+        if module is None:
+            continue
+        if hasattr(module, "extract_search_keywords"):
+            module.extract_search_keywords = local
+        if hasattr(module, "extract_search_keywords_async"):
+            module.extract_search_keywords_async = local_async
 
 
 class _CountingHandle:
@@ -529,12 +576,14 @@ def capabilities() -> dict[str, bool]:
     """
     import importlib
 
-    def has_module(name: str) -> bool:
-        try:
-            importlib.import_module(name)
-        except ImportError:
-            return False
-        return True
+    def has_role(role: str) -> bool:
+        return konte_module(role, required=False) is not None
+
+    def class_has(role: str, class_name: str, *methods: str) -> bool:
+        """Whether this revision's class carries any of these methods."""
+        module = konte_module(role, required=False)
+        target = getattr(module, class_name, None) if module is not None else None
+        return target is not None and any(hasattr(target, method) for method in methods)
 
     def has_attr(module: str, attr: str) -> bool:
         try:
@@ -543,20 +592,13 @@ def capabilities() -> dict[str, bool]:
             return False
 
     return {
-        "project_cache": has_module("konte.cache"),
-        "atomic_storage": has_module("konte.storage"),
-        "checkpoint_log": has_module("konte.checkpoint"),
-        "llm_factory": has_module("konte.llm"),
-        "retrieve_async": has_attr("konte.stores.retriever", "Retriever")
-        and hasattr(
-            importlib.import_module("konte.stores.retriever").Retriever,
-            "retrieve_async",
-        ),
-        "async_faiss_build": has_attr("konte.stores.faiss_store", "FAISSStore")
-        and hasattr(
-            importlib.import_module("konte.stores.faiss_store").FAISSStore,
-            "abuild_index",
-        ),
+        "project_cache": has_role("cache"),
+        "atomic_storage": has_role("storage"),
+        "checkpoint_log": has_role("checkpoint"),
+        "llm_factory": has_role("llm"),
+        # Renamed to aretrieve() when the entry points were reduced to two.
+        "retrieve_async": class_has("retriever", "Retriever", "aretrieve", "retrieve_async"),
+        "async_faiss_build": class_has("faiss_store", "FAISSStore", "abuild_index"),
         "keyword_cache": has_attr("konte", "clear_keyword_cache"),
         "shared_project": has_attr("konte", "get_shared_project"),
     }

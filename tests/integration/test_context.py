@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from konte.models import Chunk
+from konte.domain import Chunk
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -22,7 +22,7 @@ class TestLoadPromptTemplate:
 
     def test_load_default_prompt(self):
         """Test loading the default prompt template."""
-        from konte.context import load_prompt_template
+        from konte.contextualize.generator import load_prompt_template
 
         template = load_prompt_template()
         assert "{segment}" in template
@@ -30,7 +30,7 @@ class TestLoadPromptTemplate:
 
     def test_load_custom_prompt(self, tmp_path):
         """Test loading a custom prompt template."""
-        from konte.context import load_prompt_template
+        from konte.contextualize.generator import load_prompt_template
 
         custom_prompt = "Segment: {segment}\nChunk: {chunk}\nGenerate context."
         prompt_file = tmp_path / "custom_prompt.txt"
@@ -63,7 +63,7 @@ class TestGenerateContext:
 
     async def test_generate_context_returns_string(self, sample_segment, sample_chunk):
         """Test that generate_context returns a non-empty string."""
-        from konte.context import generate_context
+        from konte.contextualize.generator import generate_context
 
         context = await generate_context(
             segment=sample_segment,
@@ -75,7 +75,7 @@ class TestGenerateContext:
 
     async def test_generate_context_is_relevant(self, sample_segment, sample_chunk):
         """Test that generated context is relevant to the content."""
-        from konte.context import generate_context
+        from konte.contextualize.generator import generate_context
 
         context = await generate_context(
             segment=sample_segment,
@@ -126,8 +126,8 @@ class TestGenerateContextsBatch:
         self, sample_segment, sample_chunks
     ):
         """Test that batch generation returns ContextualizedChunk objects."""
-        from konte.context import generate_contexts_batch
-        from konte.models import ContextualizedChunk
+        from konte.contextualize.generator import generate_contexts_batch
+        from konte.domain import ContextualizedChunk
 
         batch = await generate_contexts_batch(
             segment=sample_segment,
@@ -142,7 +142,7 @@ class TestGenerateContextsBatch:
         self, sample_segment, sample_chunks
     ):
         """Test that skip_context=True returns chunks with empty context."""
-        from konte.context import generate_contexts_batch
+        from konte.contextualize.generator import generate_contexts_batch
 
         batch = await generate_contexts_batch(
             segment=sample_segment,
@@ -158,7 +158,7 @@ class TestGenerateContextsBatch:
 
     async def test_batch_preserves_chunk_order(self, sample_segment, sample_chunks):
         """Test that batch results maintain chunk order."""
-        from konte.context import generate_contexts_batch
+        from konte.contextualize.generator import generate_contexts_batch
 
         batch = await generate_contexts_batch(
             segment=sample_segment,

@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from konte.config.settings import settings
-from konte.models import Chunk, ContextualizedChunk
-from konte.stores.reranker import _resolve_score_endpoint, rerank_chunks_with_score
+from konte.domain import Chunk, ContextualizedChunk
+from konte.retrieval.reranker import _resolve_score_endpoint, rerank_chunks_with_score
+from konte.runtime.settings import settings
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ class TestRerankerConfiguration:
             sent.append(model)
             return (idx, 0.5)
 
-        with patch("konte.stores.reranker._score_single_chunk", side_effect=score):
+        with patch("konte.retrieval.reranker._score_single_chunk", side_effect=score):
             outcome = await rerank_chunks_with_score("query", sample_chunks, model="explicit-model")
 
         assert outcome.scored is True
@@ -95,7 +95,7 @@ class TestRerankerFailureModes:
         async def fail_all(client, query, chunk, idx, model, semaphore, endpoint, max_chars=0):
             return (idx, None)
 
-        with patch("konte.stores.reranker._score_single_chunk", side_effect=fail_all):
+        with patch("konte.retrieval.reranker._score_single_chunk", side_effect=fail_all):
             outcome = await rerank_chunks_with_score("query", sample_chunks)
 
         assert outcome.results == sample_chunks  # original order, original retrieval scores
@@ -112,7 +112,7 @@ class TestRerankerFailureModes:
                 return (idx, None)
             return (idx, 0.5 + idx * 0.1)
 
-        with patch("konte.stores.reranker._score_single_chunk", side_effect=fail_first):
+        with patch("konte.retrieval.reranker._score_single_chunk", side_effect=fail_first):
             outcome = await rerank_chunks_with_score("query", sample_chunks)
 
         assert outcome.scored is True

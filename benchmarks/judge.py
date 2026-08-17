@@ -62,7 +62,9 @@ def _criteria(name: str) -> str:
 
 
 async def _grade_all(items: list[dict], criteria: str) -> list[dict]:
-    from konte.llm import get_llm
+    from benchmarks.harness import konte_module
+
+    get_llm = konte_module("llm").get_llm
 
     judge = get_llm(timeout=JUDGE_TIMEOUT, max_tokens=400).with_structured_output(Verdict)
     limiter = asyncio.Semaphore(JUDGE_CONCURRENCY)

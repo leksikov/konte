@@ -6,7 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
-from konte.checkpoint import CHECKPOINT_FILENAME, LEGACY_CHECKPOINT_FILENAME, CheckpointLog
+from konte.persistence.checkpoint import (
+    CHECKPOINT_FILENAME,
+    LEGACY_CHECKPOINT_FILENAME,
+    CheckpointLog,
+)
 
 
 def _record(segment: str, chunk_id: str) -> dict:
@@ -27,7 +31,7 @@ class TestCheckpointPath:
 
         project = Project.create(name="test_project", storage_path=tmp_path)
 
-        assert project._checkpoint.path == tmp_path / "test_project" / CHECKPOINT_FILENAME
+        assert project._repository.checkpoint.path == tmp_path / "test_project" / CHECKPOINT_FILENAME
 
 
 @pytest.mark.unit
@@ -232,7 +236,7 @@ class TestBuildResume:
 
     async def test_build_resume_false_ignores_checkpoint(self, tmp_path):
         """Test that resume=False ignores existing checkpoint."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
@@ -244,15 +248,15 @@ class TestBuildResume:
             segment_idx=0,
             chunk_idx=0,
         )
-        project._chunks = [chunk]
-        project._segments = {("doc.pdf", 0): "Full segment text"}
+        project.corpus.chunks = [chunk]
+        project.corpus.segments = {("doc.pdf", 0): "Full segment text"}
 
-        with project._checkpoint.appending() as appender:
+        with project._repository.checkpoint.appending() as appender:
             appender.append("doc.pdf|0", [{"chunk": chunk.model_dump(), "context": "old context"}])
 
-        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
-            from konte.context import ContextBatch
-            from konte.models import ContextualizedChunk
+        with patch("konte.contextualize.pipeline.generate_contexts_batch") as mock_gen:
+            from konte.contextualize.generator import ContextBatch
+            from konte.domain import ContextualizedChunk
 
             mock_gen.return_value = ContextBatch(
                 [ContextualizedChunk(chunk=chunk, context="new context")], 0, 0
@@ -262,11 +266,11 @@ class TestBuildResume:
             await project.build(skip_context=True, enable_faiss=False, resume=False)
 
             assert mock_gen.called
-            assert len(project._contextualized_chunks) == 1
+            assert len(project.corpus.contextualized_chunks) == 1
 
     async def test_build_resume_true_uses_checkpoint(self, tmp_path):
         """Test that resume=True uses existing checkpoint."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
@@ -279,18 +283,18 @@ class TestBuildResume:
             chunk_id="id2", content="Content 2", source="doc.pdf",
             segment_idx=1, chunk_idx=0,
         )
-        project._chunks = [chunk1, chunk2]
-        project._segments = {
+        project.corpus.chunks = [chunk1, chunk2]
+        project.corpus.segments = {
             ("doc.pdf", 0): "Segment 0 text",
             ("doc.pdf", 1): "Segment 1 text",
         }
 
-        with project._checkpoint.appending() as appender:
+        with project._repository.checkpoint.appending() as appender:
             appender.append("doc.pdf|0", [{"chunk": chunk1.model_dump(), "context": "ctx1"}])
 
-        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
-            from konte.context import ContextBatch
-            from konte.models import ContextualizedChunk
+        with patch("konte.contextualize.pipeline.generate_contexts_batch") as mock_gen:
+            from konte.contextualize.generator import ContextBatch
+            from konte.domain import ContextualizedChunk
 
             mock_gen.return_value = ContextBatch(
                 [ContextualizedChunk(chunk=chunk2, context="ctx2")], 0, 0
@@ -300,29 +304,29 @@ class TestBuildResume:
             await project.build(skip_context=True, enable_faiss=False, resume=True)
 
             assert mock_gen.call_count == 1
-            assert len(project._contextualized_chunks) == 2
+            assert len(project.corpus.contextualized_chunks) == 2
 
     async def test_build_clears_checkpoint_on_success(self, tmp_path):
         """Test that a finished build leaves no checkpoint to resume from."""
-        from konte.models import Chunk, ContextualizedChunk
+        from konte.domain import Chunk, ContextualizedChunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
         chunk = Chunk(
             chunk_id="id1", content="Content", source="doc.pdf", segment_idx=0, chunk_idx=0
         )
-        project._chunks = [chunk]
-        project._segments = {("doc.pdf", 0): "Segment text"}
+        project.corpus.chunks = [chunk]
+        project.corpus.segments = {("doc.pdf", 0): "Segment text"}
 
-        with patch("konte.project.builder.generate_contexts_batch") as mock_gen:
-            from konte.context import ContextBatch
+        with patch("konte.contextualize.pipeline.generate_contexts_batch") as mock_gen:
+            from konte.contextualize.generator import ContextBatch
 
             mock_gen.return_value = ContextBatch(
                 [ContextualizedChunk(chunk=chunk, context="")], 0, 0
             )
             await project.build(skip_context=True, enable_faiss=False)
 
-        assert not project._checkpoint.path.exists()
+        assert not project._repository.checkpoint.path.exists()
 
 
 @pytest.mark.unit
@@ -331,11 +335,11 @@ class TestContextCoverage:
 
     def _project(self, tmp_path, segments):
         """Build a project of `segments` one-chunk segments, ready to build."""
-        from konte.models import Chunk
+        from konte.domain import Chunk
         from konte.project import Project
 
         project = Project.create(name="test_project", storage_path=tmp_path)
-        project._chunks = [
+        project.corpus.chunks = [
             Chunk(
                 chunk_id=f"id{i}",
                 content=f"Content {i}",
@@ -345,13 +349,13 @@ class TestContextCoverage:
             )
             for i in range(segments)
         ]
-        project._segments = {("doc.pdf", i): f"Segment {i}" for i in range(segments)}
+        project.corpus.segments = {("doc.pdf", i): f"Segment {i}" for i in range(segments)}
         return project
 
     def _batches(self, project, failed_segments):
         """Answer each segment's request, failing the ones named."""
-        from konte.context import ContextBatch
-        from konte.models import ContextualizedChunk
+        from konte.contextualize.generator import ContextBatch
+        from konte.domain import ContextualizedChunk
 
         def batch(segment, chunks, **kwargs):
             failed = chunks[0].segment_idx in failed_segments
@@ -361,7 +365,7 @@ class TestContextCoverage:
                 0,
             )
 
-        return patch("konte.project.builder.generate_contexts_batch", side_effect=batch)
+        return patch("konte.contextualize.pipeline.generate_contexts_batch", side_effect=batch)
 
     async def test_losing_most_contexts_fails_the_build(self, tmp_path):
         """Test a corpus mostly without context is reported, not indexed."""
@@ -373,11 +377,11 @@ class TestContextCoverage:
         ):
             await project.build(enable_faiss=False)
 
-        assert project._bm25 is None
+        assert project._indexes.bm25 is None
 
     async def test_a_loss_under_the_threshold_still_builds(self, tmp_path):
         """Test one unlucky chunk does not throw away an otherwise good corpus."""
-        from konte.config import settings
+        from konte.runtime import settings
 
         project = self._project(tmp_path, segments=100)
 
@@ -385,8 +389,8 @@ class TestContextCoverage:
             with self._batches(project, failed_segments={7}):
                 await project.build(enable_faiss=False)
 
-        assert project._bm25 is not None
-        assert len(project._contextualized_chunks) == 100
+        assert project._indexes.bm25 is not None
+        assert len(project.corpus.contextualized_chunks) == 100
 
     async def test_a_failed_segment_is_not_checkpointed(self, tmp_path):
         """Test a resumed build retries the segments that lost their contexts.
@@ -399,7 +403,7 @@ class TestContextCoverage:
         with self._batches(project, failed_segments={0, 1, 2}), pytest.raises(RuntimeError):
             await project.build(enable_faiss=False)
 
-        checkpoint = project._checkpoint.read()
+        checkpoint = project._repository.checkpoint.read()
         assert checkpoint.completed_segments == ["doc.pdf|3"]
 
     async def test_resuming_retries_only_what_failed(self, tmp_path):
@@ -413,8 +417,8 @@ class TestContextCoverage:
             await project.build(enable_faiss=False, resume=True)
 
         assert retry.call_count == 3
-        assert len(project._contextualized_chunks) == 4
-        assert all(c.context == "ctx" for c in project._contextualized_chunks)
+        assert len(project.corpus.contextualized_chunks) == 4
+        assert all(c.context == "ctx" for c in project.corpus.contextualized_chunks)
 
     async def test_skip_context_is_not_read_as_total_loss(self, tmp_path):
         """Test standard-RAG mode still builds, though every context is empty."""
@@ -422,4 +426,4 @@ class TestContextCoverage:
 
         await project.build(skip_context=True, enable_faiss=False)
 
-        assert project._bm25 is not None
+        assert project._indexes.bm25 is not None

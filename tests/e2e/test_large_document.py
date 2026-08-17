@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from konte.chunker import count_tokens
+from konte.ingest.chunker import count_tokens
 
 # Skip all tests if OPENAI_API_KEY is not set
 pytestmark = [
@@ -95,7 +95,7 @@ class TestLargeDocumentProcessing:
         assert num_chunks > 50, f"Expected >50 chunks, got {num_chunks}"
 
         # Should create multiple segments
-        assert len(project._segments) > 5, f"Expected >5 segments, got {len(project._segments)}"
+        assert len(project.corpus.segments) > 5, f"Expected >5 segments, got {len(project.corpus.segments)}"
 
         # Build without context (skip LLM calls for speed)
         await project.build(skip_context=False)
@@ -125,7 +125,7 @@ class TestLargeDocumentProcessing:
         project.add_documents([large_doc_path])
 
         # All segments should be bounded
-        for seg_idx, segment_text in project._segments.items():
+        for seg_idx, segment_text in project.corpus.segments.items():
             segment_tokens = count_tokens(segment_text)
 
             # Segment should be much smaller than full document
@@ -158,9 +158,9 @@ class TestLargeDocumentProcessing:
 
         # Every chunk must have a valid segment reference
         # Segment keys are (source, segment_idx) tuples
-        for chunk in project._chunks:
+        for chunk in project.corpus.chunks:
             segment_key = (chunk.source, chunk.segment_idx)
-            assert segment_key in project._segments, (
+            assert segment_key in project.corpus.segments, (
                 f"Chunk {chunk.chunk_id} references segment {segment_key} "
                 f"which doesn't exist in segments map"
             )
@@ -196,7 +196,7 @@ class TestLargeDocumentWithContext:
 
         # Verify some chunks got context
         chunks_with_context = [
-            c for c in project._contextualized_chunks
+            c for c in project.corpus.contextualized_chunks
             if c.context and len(c.context) > 10
         ]
 
@@ -229,7 +229,7 @@ class TestLargeDocumentSaveLoad:
         project1.add_documents([large_doc_path])
         await project1.build(skip_context=False)
 
-        num_chunks = len(project1._contextualized_chunks)
+        num_chunks = len(project1.corpus.contextualized_chunks)
 
         # Save
         project1.save()
@@ -244,7 +244,7 @@ class TestLargeDocumentSaveLoad:
         project2 = Project.open(name="e2e_large_persist", storage_path=tmp_path)
 
         # Verify data preserved
-        assert len(project2._contextualized_chunks) == num_chunks
+        assert len(project2.corpus.contextualized_chunks) == num_chunks
 
         # Query should work
         response = project2.query("customs valuation")

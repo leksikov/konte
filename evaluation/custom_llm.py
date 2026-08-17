@@ -7,7 +7,7 @@ from deepeval.models import DeepEvalBaseLLM
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from konte.config.settings import settings
+from konte.runtime.settings import settings
 
 
 class ConfiguredLLM(DeepEvalBaseLLM):

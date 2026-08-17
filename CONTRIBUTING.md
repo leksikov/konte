@@ -37,7 +37,7 @@ On macOS, if FAISS crashes with an OpenMP error, set `KMP_DUPLICATE_LIB_OK=TRUE`
 - Python 3.10+, fully type-hinted
 - Pydantic V2 for all models (no dataclasses)
 - Async-first: no threads, no mixing sync into async paths
-- `pathlib` for paths; configuration through `konte/config/settings.py` (env vars / `.env`)
+- `pathlib` for paths; configuration through `konte/runtime/settings.py` (env vars / `.env`)
 - `structlog` for logging
 - Lint with `uv run ruff check .` before submitting
 

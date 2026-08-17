@@ -16,11 +16,10 @@ probe works on either revision.
 
 from __future__ import annotations
 
-import importlib
 import time
 
 from benchmarks.corpus import synthetic_document
-from benchmarks.harness import Context, counting, summarize
+from benchmarks.harness import Context, counting, konte_module, summarize
 
 DEFAULT_CHUNKS = 500
 TIMED_TRIALS = 3
@@ -30,7 +29,7 @@ def run(ctx: Context) -> dict:
     import tiktoken
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-    chunker = importlib.import_module("konte.chunker")
+    chunker = konte_module("chunker")
     size = int(ctx.options.get("chunks", DEFAULT_CHUNKS))
     document = synthetic_document(size)
     text = document.read_text()
