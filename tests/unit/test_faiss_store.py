@@ -13,6 +13,9 @@ _DIMENSIONS = 8
 class _StubEmbeddings(Embeddings):
     """Deterministic vectors, so a query reaches the text it came from."""
 
+    def __init__(self):
+        self.queries: list[str] = []
+
     def _vector(self, text: str) -> list[float]:
         vector = [0.0] * _DIMENSIONS
         for token in text.lower().split():
@@ -24,7 +27,8 @@ class _StubEmbeddings(Embeddings):
         return [self._vector(text) for text in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed one query."""
+        """Embed one query, recording the request."""
+        self.queries.append(text)
         return self._vector(text)
 
 
@@ -53,12 +57,16 @@ def chunks():
 
 
 @pytest.fixture
-def store(monkeypatch):
+def embeddings(monkeypatch):
+    """Point every store built in a test at one in-process embedder."""
+    stub = _StubEmbeddings()
+    monkeypatch.setattr("konte.index.faiss_store.OpenAIEmbeddings", lambda **kwargs: stub)
+    return stub
+
+
+@pytest.fixture
+def store(embeddings):
     """A store whose embeddings never leave the process."""
-    monkeypatch.setattr(
-        "konte.index.faiss_store.OpenAIEmbeddings",
-        lambda **kwargs: _StubEmbeddings(),
-    )
     return FAISSStore()
 
 
@@ -157,3 +165,53 @@ class TestFAISSStorePersistence:
 
         with pytest.raises(ValueError, match="version"):
             FAISSStore().load(tmp_path)
+
+
+@pytest.mark.unit
+class TestFAISSStoreQueryEmbedding:
+    """Test that ranking asks for a query's vector once, not once per search."""
+
+    def test_repeated_query_embeds_once(self, store, embeddings, chunks):
+        """Test that a repeated search costs the round trip once."""
+        store.build_index(chunks)
+        embeddings.queries.clear()
+
+        for _ in range(8):
+            store.query("Adobe revenue", top_k=2)
+
+        assert embeddings.queries == ["Adobe revenue"]
+
+    def test_filtered_query_shares_the_cache(self, store, embeddings, chunks):
+        """Test that adding a filter does not put the same query back on the wire."""
+        store.build_index(chunks)
+        embeddings.queries.clear()
+
+        store.query("Adobe revenue", top_k=2)
+        store.query("Adobe revenue", top_k=2, metadata_filter={"company": "ADOBE"})
+        store.query("Adobe revenue", top_k=2, source_filter="ADOBE")
+
+        assert embeddings.queries == ["Adobe revenue"]
+
+    def test_separate_stores_embed_once(self, store, embeddings, chunks):
+        """Test that one query fanned out across projects embeds once."""
+        store.build_index(chunks)
+        other = FAISSStore()
+        other.build_index(chunks)
+        embeddings.queries.clear()
+
+        store.query("Adobe revenue", top_k=2)
+        other.query("Adobe revenue", top_k=2)
+
+        assert embeddings.queries == ["Adobe revenue"]
+
+    def test_cached_query_ranks_the_same(self, store, embeddings, chunks):
+        """Test that the second search of a query returns what the first did."""
+        store.build_index(chunks)
+
+        first = store.query("Adobe cloud segment", top_k=3)
+        second = store.query("Adobe cloud segment", top_k=3)
+
+        assert [chunk.chunk.chunk_id for chunk, _ in second] == [
+            chunk.chunk.chunk_id for chunk, _ in first
+        ]
+        assert [score for _, score in second] == pytest.approx([score for _, score in first])

@@ -24,6 +24,7 @@ OFFLINE_CASES = (
     "open_cache",
     "query_bm25",
     "query_faiss_filter",
+    "query_embedding",
     "keyword_extraction",
     "retrieval_parity",
     # Local stub endpoint, no embeddings.

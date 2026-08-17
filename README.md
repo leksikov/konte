@@ -553,6 +553,10 @@ measures whether a given endpoint rewards that arrival pattern.
 ### Other Optimizations
 
 - **LLM Instance Caching**: Reuses ChatOpenAI instance across calls
+- **Query Embedding Cache**: Embedding the query is the one round trip a search
+  pays for; the vector is kept per embedding model and query text, so the same
+  question asked again — refined in a session, fanned out across projects, or
+  narrowed by a filter — costs that request once
 - **Build Checkpointing**: Each finished segment appends one line to a checkpoint
   log, so an interrupted build resumes at a segment boundary and the log costs
   one write per segment rather than one rewrite of everything so far

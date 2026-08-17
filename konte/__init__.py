@@ -14,6 +14,7 @@ from konte.domain.models import (
     RetrievalResponse,
     RetrievalResult,
 )
+from konte.index.embeddings import clear_query_embedding_cache
 from konte.manager import (
     create_project,
     delete_project,
@@ -81,4 +82,6 @@ __all__ = [
     "extract_search_keywords",
     "extract_search_keywords_async",
     "clear_keyword_cache",
+    # Query embeddings
+    "clear_query_embedding_cache",
 ]

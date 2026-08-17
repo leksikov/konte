@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `Project.retrieve()` and `Project.aretrieve()` taking it directly
 - `Project.corpus`, the chunks and segments a project holds
 - `clear_keyword_cache()` and `extract_search_keywords_async()` are now exported
+- `clear_query_embedding_cache()`, which forgets the cached query vectors
 - `max_retries` on `get_llm()`, for callers that cannot afford a retry storm
 - `get_shared_project()`, a process-wide cache of projects opened for querying,
   with `preload_projects()`, `invalidate_project()` and `clear_project_cache()`
@@ -148,6 +149,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worst case a stalled endpoint can impose on one query from ~360s to 5s
 - Extraction results are cached per query and shared by the sync and async
   paths, so a repeated or refined search no longer repeats the round trip
+- Query vectors are cached per embedding model and query text, the one network
+  round trip on an otherwise in-memory ranking path. Keyword extraction was
+  already cached while the costlier call beside it was not, so one question
+  asked eight times cost eight embedding requests, fanned out across three
+  projects cost three, and a filtered search cost one more again — the filtered
+  and unfiltered paths reached the endpoint separately. Each of those costs one
+  request now: both paths search through the same cached vector, held as the
+  float32 row FAISS takes, so a full 512-entry cache is a few megabytes.
+  `clear_query_embedding_cache()` empties it, which a process repointed at
+  another endpoint under the same model name needs
 - `query_async()` and `query_with_answer()` await keyword extraction instead of
   blocking the event loop, which had stalled every other request in an ASGI
   worker for the duration of the call

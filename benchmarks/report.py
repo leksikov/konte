@@ -220,6 +220,24 @@ CLAIMS = [
         ),
     ),
     Claim(
+        "query_embedding",
+        "Embedding requests for 8 searches of one query",
+        "cached after the first",
+        lambda m: (
+            _get(m, "repeated_query", "requests_sent"),
+            lambda v: "-" if v is None else str(v),
+        ),
+    ),
+    Claim(
+        "query_embedding",
+        "Embedding requests for one query across 3 projects",
+        "one, shared by every store",
+        lambda m: (
+            _get(m, "one_query_across_projects", "requests_sent"),
+            lambda v: "-" if v is None else str(v),
+        ),
+    ),
+    Claim(
         "build_concurrency",
         "Requests resent by a single rate limit",
         "the whole segment -> the one chunk",

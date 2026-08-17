@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
 from konte.domain.models import Chunk, ContextualizedChunk, MetadataFilter
+from konte.index.embeddings import query_vector
 from konte.index.filter_index import FilterIndex, matches_filter_value
 from konte.persistence.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.persistence.storage import read_json, write_json
@@ -454,6 +455,9 @@ class FAISSStore:
     ) -> list[tuple[ContextualizedChunk, float]]:
         """Query the FAISS index.
 
+        The query is embedded once per model and text for the process; see
+        konte.index.embeddings.
+
         Args:
             query: Query string.
             top_k: Number of results to return. Defaults to settings.DEFAULT_TOP_K.
@@ -465,48 +469,49 @@ class FAISSStore:
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
         """
-        if self._vectorstore is None:
+        vectorstore = self._vectorstore
+        if vectorstore is None:
             logger.warning("faiss_query_empty_index")
             return []
 
         k = top_k or settings.DEFAULT_TOP_K
 
-        if metadata_filter or source_filter:
-            return self._query_filtered(
-                self._vectorstore, query, k, metadata_filter, source_filter
-            )
+        if not metadata_filter and not source_filter:
+            return self._search(vectorstore, query, k)
 
-        return [
-            (_from_document(doc), _to_similarity(distance))
-            for doc, distance in self._vectorstore.similarity_search_with_score(query, k=k)
-        ]
-
-    def _query_filtered(
-        self,
-        vectorstore: FAISS,
-        query: str,
-        k: int,
-        metadata_filter: MetadataFilter | None,
-        source_filter: str | None,
-    ) -> list[tuple[ContextualizedChunk, float]]:
-        """Search only the documents that satisfy the filters.
-
-        Filtering runs before the vector search via a FAISS id selector rather
-        than after it, so a restrictive filter still yields k results instead of
-        however many happen to survive from a global top-k.
-        """
+        # Filtered before the search rather than after it, so a restrictive
+        # filter still yields k results instead of whatever survives a global top-k.
         valid_ids = self._matching_ids(vectorstore, metadata_filter, source_filter)
         if not valid_ids.size:
             return []
 
-        # Bound to a name: the selector reads the buffer during the search.
+        # Both bound to names: the selector reads the buffer during the search.
         selected = valid_ids.astype(np.int64)
         selector = faiss.IDSelectorArray(selected)
-        query_vector = np.array([self._embeddings.embed_query(query)], dtype=np.float32)
-        distances, indices = vectorstore.index.search(
-            query_vector,
+        return self._search(
+            vectorstore,
+            query,
             min(k, selected.size),
-            params=faiss.SearchParametersIVF(sel=selector),
+            faiss.SearchParametersIVF(sel=selector),
+        )
+
+    def _search(
+        self,
+        vectorstore: FAISS,
+        query: str,
+        k: int,
+        params: faiss.SearchParameters | None = None,
+    ) -> list[tuple[ContextualizedChunk, float]]:
+        """Rank the index against one query, through a selector where given.
+
+        Searched directly rather than through LangChain's
+        similarity_search_with_score, which embeds the string itself and so
+        reaches the endpoint around the cache.
+        """
+        distances, indices = vectorstore.index.search(
+            query_vector(self._embeddings, self._embedding_model, query),
+            k,
+            params=params,
         )
 
         results = []

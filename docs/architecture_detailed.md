@@ -96,7 +96,7 @@ flowchart TB
     end
 
     subgraph Query["❓ Query Input"]
-        BF[User Query] --> BG[Embed query<br/>text-embedding-3-small]
+        BF[User Query] --> BG[Embed query<br/>text-embedding-3-small<br/>cached per model + text]
     end
 
     subgraph RetrievalProcess["🔍 Retrieval Process"]

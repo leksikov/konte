@@ -300,6 +300,7 @@ _MODULE_ALIASES = {
     "chunker": ("konte.ingest.chunker", "konte.chunker"),
     "loader": ("konte.ingest.loader", "konte.loader"),
     "context": ("konte.contextualize.generator", "konte.context"),
+    "embeddings": ("konte.index.embeddings",),
     "faiss_store": ("konte.index.faiss_store", "konte.stores.faiss_store"),
     "bm25_store": ("konte.index.bm25_store", "konte.stores.bm25_store"),
     "retriever": ("konte.retrieval.retriever", "konte.stores.retriever"),
@@ -514,8 +515,23 @@ def counting_writes(match: str) -> Iterator[list[int]]:
         Path.open = original_open
 
 
+@dataclass
+class EmbeddingTally:
+    """What the stub was asked to embed, in the order it was asked."""
+
+    queries: list[str] = field(default_factory=list)
+
+    #: Flattened across batches, one entry per document rather than per request.
+    documents: list[str] = field(default_factory=list)
+
+    def reset(self) -> None:
+        """Forget everything counted so far."""
+        self.queries.clear()
+        self.documents.clear()
+
+
 @contextmanager
-def stub_embeddings(dim: int = 1536, latency: float = 0.0) -> Iterator[None]:
+def stub_embeddings(dim: int = 1536, latency: float = 0.0) -> Iterator[EmbeddingTally]:
     """Answer embedding requests locally, deterministically, for the block.
 
     The vector-search cases measure how matching ids are selected, which is
@@ -527,10 +543,20 @@ def stub_embeddings(dim: int = 1536, latency: float = 0.0) -> Iterator[None]:
 
     Patched on the class, before the index is loaded, so a vector store that
     captures the embeddings object still sees the stub.
+
+    Yields:
+        The tally of what was asked for.
     """
     import hashlib
 
     from langchain_openai import OpenAIEmbeddings
+
+    tally = EmbeddingTally()
+
+    # The client is still constructed, and refuses to be without a credential.
+    placeholder_key = not os.environ.get("OPENAI_API_KEY")
+    if placeholder_key:
+        os.environ["OPENAI_API_KEY"] = "not-needed"
 
     def vector_for(text: str) -> list[float]:
         seed = hashlib.blake2b(text.encode(), digest_size=8).digest()
@@ -543,12 +569,18 @@ def stub_embeddings(dim: int = 1536, latency: float = 0.0) -> Iterator[None]:
         if hasattr(OpenAIEmbeddings, name)
     }
 
+    def embed_query(self, text):
+        tally.queries.append(text)
+        return vector_for(text)
+
     def embed_documents(self, texts):
+        tally.documents.extend(texts)
         if latency:
             time.sleep(latency)
         return [vector_for(text) for text in texts]
 
     async def aembed_documents(self, texts):
+        tally.documents.extend(texts)
         # asyncio.sleep, not time.sleep: a blocking sleep here would serialize
         # the very overlap the index-build case exists to measure.
         if latency:
@@ -557,15 +589,17 @@ def stub_embeddings(dim: int = 1536, latency: float = 0.0) -> Iterator[None]:
             await asyncio.sleep(latency)
         return [vector_for(text) for text in texts]
 
-    OpenAIEmbeddings.embed_query = lambda self, text: vector_for(text)
+    OpenAIEmbeddings.embed_query = embed_query
     OpenAIEmbeddings.embed_documents = embed_documents
     if "aembed_documents" in originals:
         OpenAIEmbeddings.aembed_documents = aembed_documents
     try:
-        yield
+        yield tally
     finally:
         for name, original in originals.items():
             setattr(OpenAIEmbeddings, name, original)
+        if placeholder_key:
+            os.environ.pop("OPENAI_API_KEY", None)
 
 
 def capabilities() -> dict[str, bool]:
@@ -600,6 +634,7 @@ def capabilities() -> dict[str, bool]:
         "retrieve_async": class_has("retriever", "Retriever", "aretrieve", "retrieve_async"),
         "async_faiss_build": class_has("faiss_store", "FAISSStore", "abuild_index"),
         "keyword_cache": has_attr("konte", "clear_keyword_cache"),
+        "query_embedding_cache": has_attr("konte", "clear_query_embedding_cache"),
         "shared_project": has_attr("konte", "get_shared_project"),
     }
 
