@@ -7,10 +7,13 @@ the index they are packed into.
 """
 
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import numpy as np
 import structlog
-from langchain_core.embeddings import Embeddings
+
+if TYPE_CHECKING:
+    from langchain_core.embeddings import Embeddings
 
 logger = structlog.get_logger()
 
@@ -47,7 +50,7 @@ def clear_query_embedding_cache() -> None:
     _vector_slot.cache_clear()
 
 
-def query_vector(embeddings: Embeddings, model: str, query: str) -> np.ndarray:
+def query_vector(embeddings: "Embeddings", model: str, query: str) -> np.ndarray:
     """Return the row FAISS searches with for one query, embedding it once.
 
     Args:

@@ -1,15 +1,15 @@
 """FAISS vector store for semantic search."""
 
+from __future__ import annotations
+
 import asyncio
 from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import faiss
 import numpy as np
 import structlog
-from langchain_openai import OpenAIEmbeddings
 
 from konte.domain.models import ContextualizedChunk, MetadataFilter
 from konte.index.chunks import ChunkSource
@@ -18,7 +18,33 @@ from konte.persistence.integrity import SIGNATURE_SUFFIX, sign, verify
 from konte.persistence.storage import read_json, write_json
 from konte.runtime.settings import settings
 
+if TYPE_CHECKING:
+    import faiss
+    from langchain_openai import OpenAIEmbeddings
+
 logger = structlog.get_logger()
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve OpenAIEmbeddings on first use, so importing this module stays cheap.
+
+    Bound into the module rather than into the constructor, which keeps
+    konte.index.faiss_store.OpenAIEmbeddings the one name to patch.
+    """
+    if name != "OpenAIEmbeddings":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    from langchain_openai import OpenAIEmbeddings
+
+    globals()[name] = OpenAIEmbeddings
+    return OpenAIEmbeddings
+
+
+def _embeddings_class() -> type[OpenAIEmbeddings]:
+    """Return the embedding client class bound to this module."""
+    cls = globals().get("OpenAIEmbeddings")
+    return __getattr__("OpenAIEmbeddings") if cls is None else cls
+
 
 INDEX_FILENAME = "faiss.faiss"
 DOCSTORE_FILENAME = "faiss_docstore.json"
@@ -109,7 +135,7 @@ class FAISSStore:
         kwargs: dict[str, Any] = {"model": self._embedding_model}
         if settings.OPENAI_API_KEY:
             kwargs["api_key"] = settings.OPENAI_API_KEY
-        self._embeddings = OpenAIEmbeddings(**kwargs)
+        self._embeddings = _embeddings_class()(**kwargs)
         self._index: faiss.Index | None = None
         self._chunks = ChunkSource.holding()
 
@@ -187,7 +213,7 @@ class FAISSStore:
 
         logger.info("faiss_index_built", num_chunks=len(chunks))
 
-    async def _absorb_oldest(self, pending: "_PendingBatches", total_batches: int) -> None:
+    async def _absorb_oldest(self, pending: _PendingBatches, total_batches: int) -> None:
         """Wait for the longest-outstanding request and fold it into the index."""
         number, task = pending.popleft()
         self._absorb(number, total_batches, await task)
@@ -199,6 +225,8 @@ class FAISSStore:
         vectors: list[list[float]],
     ) -> None:
         """Add one embedded batch, creating the index on the first."""
+        import faiss
+
         if total_batches > 1:
             logger.info("faiss_building_batch", batch=number, total_batches=total_batches)
 
@@ -221,6 +249,8 @@ class FAISSStore:
         Args:
             directory: Directory to save index files.
         """
+        import faiss
+
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -256,6 +286,8 @@ class FAISSStore:
             ValueError: If the docstore is not a version this reads, or accounts
                 for a different number of vectors than the index holds.
         """
+        import faiss
+
         directory = Path(directory)
 
         index_path = directory / INDEX_FILENAME
@@ -315,6 +347,8 @@ class FAISSStore:
         Returns:
             List of (chunk, score) tuples, sorted by score descending.
         """
+        import faiss
+
         index = self._index
         if index is None:
             logger.warning("faiss_query_empty_index")

@@ -1,13 +1,15 @@
 """Reranker module using a vLLM /score endpoint."""
 
 import asyncio
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-import httpx
 import structlog
 
 from konte.domain.models import ContextualizedChunk
 from konte.runtime.settings import settings
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = structlog.get_logger()
 
@@ -45,7 +47,7 @@ def _resolve_score_endpoint() -> str:
 
 
 async def _score_single_chunk(
-    client: httpx.AsyncClient,
+    client: "httpx.AsyncClient",
     query: str,
     chunk: ContextualizedChunk,
     idx: int,
@@ -126,6 +128,9 @@ async def rerank_chunks_with_score(
             "Reranking requires a model name. Set RERANKER_MODEL to the model "
             "your /score endpoint serves, or pass model= explicitly."
         )
+
+    import httpx
+
     k = top_k or len(chunks)
     semaphore = asyncio.Semaphore(concurrency)
 

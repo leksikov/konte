@@ -2,15 +2,17 @@
 
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import structlog
-from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
 from konte.domain.models import RetrievalRequest
 from konte.runtime.llm import get_llm
 from konte.runtime.settings import settings
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import Runnable
 
 logger = structlog.get_logger()
 
@@ -101,7 +103,7 @@ def _remember(query: str, result: ExtractedKeywords, event: str) -> list[str]:
     return list(keywords)
 
 
-def _extraction_request(query: str) -> tuple[Runnable, str]:
+def _extraction_request(query: str) -> tuple["Runnable", str]:
     """Build the structured-output client and prompt for a keyword extraction.
 
     Unlike context generation, which runs once per chunk at build time, this

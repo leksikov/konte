@@ -1,28 +1,26 @@
 """Context generation module using LLM to generate chunk context."""
 
+from __future__ import annotations
+
 import asyncio
 import importlib.resources
 import re
 from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from weakref import WeakKeyDictionary
 
 import structlog
-from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    RateLimitError,
-)
 
 from konte.domain.config import ContextStrategy
 from konte.domain.models import Chunk, ContextualizedChunk, encode_segment_key
 from konte.runtime.llm import get_llm, response_text, was_truncated
 from konte.runtime.settings import settings
+
+if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage
+    from langchain_openai import ChatOpenAI
 
 __all__ = [
     "ContextBatch",
@@ -50,7 +48,18 @@ BATCH_TOKENS_PER_CHUNK = 400
 BATCH_TOKENS_OVERHEAD = 256
 BATCH_TOKEN_BUCKET = 512
 
-_RETRYABLE_API_ERRORS = (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
+
+@cache
+def _retryable_api_errors() -> tuple[type[Exception], ...]:
+    """The API failures worth another attempt.
+
+    Read on first use: only a request that reaches the endpoint needs the
+    client stack behind these.
+    """
+    from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+
+    return (RateLimitError, APIStatusError, APITimeoutError, APIConnectionError)
+
 
 _PACKAGED_PROMPTS: dict[ContextStrategy, str] = {
     "per_chunk": "context_prompt.txt",
@@ -236,7 +245,7 @@ async def _send(
         try:
             async with limiter:
                 return await llm.ainvoke(build_prompt())
-        except _RETRYABLE_API_ERRORS as e:
+        except _retryable_api_errors() as e:
             error_type = type(e).__name__
             status_code = getattr(e, "status_code", None)
             if attempt == max_attempts:

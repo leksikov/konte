@@ -215,6 +215,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than a near-copy each, so a filter cannot select one set of chunks in the
   vector index and a different set in the lexical one. What a filter selects is
   unchanged
+- Importing `konte` no longer imports what it exports. The package bound every
+  public name at import time, so `import konte` reached `Project`, both stores
+  and through them faiss, langchain_openai and the OpenAI client stack, whether
+  or not the process went on to open a project — 585ms, and every submodule paid
+  it too, since importing one runs the package first. Exported names now resolve
+  on first access (PEP 562), and each module's third-party clients are imported
+  by the call that needs them. `import konte` is 585ms → 15ms, `konte --version`
+  585ms → 83ms, `konte list` 585ms → 130ms, and opening a project 585ms → 128ms
+  up to the point a client is actually wanted, where the import is paid once and
+  cached as before. Every exported name resolves to the same object, and every
+  submodule reachable as an attribute of `konte` still is
 
 ### Removed
 

@@ -3,14 +3,16 @@
 import re
 from functools import cache
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import structlog
-import tiktoken
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from konte.domain.models import Chunk, SegmentKey
 from konte.runtime.settings import settings
+
+if TYPE_CHECKING:
+    import tiktoken
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = structlog.get_logger()
 
@@ -32,13 +34,15 @@ _SOURCE_METADATA_PATTERN = re.compile(r"^(.+?)_(\d{4})", re.IGNORECASE)
 
 
 @cache
-def _get_encoding() -> tiktoken.Encoding:
+def _get_encoding() -> "tiktoken.Encoding":
     """Return the shared tiktoken encoding, loading it on first use.
 
     tiktoken downloads and caches the BPE table the first time an encoding is
     resolved. Doing that at import time would make `import konte` reach out to
     the network, so the cost is deferred to the first token count instead.
     """
+    import tiktoken
+
     return tiktoken.get_encoding(TOKEN_ENCODING_NAME)
 
 
@@ -149,12 +153,14 @@ class _SplitSpec(NamedTuple):
         return _Split(_make_splitter(self, measure).split_text(text), total_tokens)
 
 
-def _make_splitter(spec: _SplitSpec, measure: _Measured) -> RecursiveCharacterTextSplitter:
+def _make_splitter(spec: _SplitSpec, measure: _Measured) -> "RecursiveCharacterTextSplitter":
     """Return a sentence-boundary-aware splitter for a token budget.
 
     `measure` counts what from_tiktoken_encoder's length function would: the
     same encoding, and tiktoken's default handling of special tokens.
     """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     return RecursiveCharacterTextSplitter(
         chunk_size=spec.max_tokens,
         chunk_overlap=spec.overlap_tokens,

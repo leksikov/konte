@@ -5,19 +5,44 @@ custom-endpoint override, the client retry budget and the instance cache are
 each configured in exactly one place.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
 
 from konte.runtime.settings import settings
+
+if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage
+    from langchain_openai import ChatOpenAI
 
 logger = structlog.get_logger()
 
 CLIENT_MAX_RETRIES = 2
 _client_cache: dict[str, ChatOpenAI] = {}
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve ChatOpenAI on first use, so importing this module stays cheap.
+
+    Bound into the module rather than into the factory, which keeps
+    konte.runtime.llm.ChatOpenAI the one name to patch.
+    """
+    if name != "ChatOpenAI":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    from langchain_openai import ChatOpenAI
+
+    globals()[name] = ChatOpenAI
+    return ChatOpenAI
+
+
+def _client_class() -> type[ChatOpenAI]:
+    """Return the client class bound to this module."""
+    cls = globals().get("ChatOpenAI")
+    return __getattr__("ChatOpenAI") if cls is None else cls
 
 
 def _build_client(
@@ -64,7 +89,7 @@ def _build_client(
     ):
         if value is not None:
             kwargs[name] = value
-    return ChatOpenAI(**kwargs)
+    return _client_class()(**kwargs)
 
 
 def _build_custom_client(

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import aiofiles
 import structlog
-from pypdf import PdfReader
 
 logger = structlog.get_logger()
 
@@ -60,6 +59,8 @@ def load_pdf(file_path: Path) -> str:
     Raises:
         FileNotFoundError: If file does not exist.
     """
+    from pypdf import PdfReader
+
     file_path = Path(file_path)
     logger.debug("document_loading", path=str(file_path), file_type="pdf")
     if not file_path.exists():

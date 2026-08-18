@@ -12,16 +12,9 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from konte import (
-    __version__,
-    create_project,
-    delete_project,
-    get_project,
-    list_projects,
-    project_exists,
-    settings,
-    trust_project,
-)
+# Reached through the package: importing the names directly would resolve them
+# eagerly, putting the retrieval stack in the path of `konte --version`.
+import konte
 from konte.domain.models import MetadataFilter, RetrievalMode
 
 app = typer.Typer(
@@ -76,12 +69,12 @@ def _reporting_errors() -> Iterator[None]:
 
 def _resolve_storage(storage_path: Path | None) -> Path:
     """Return the storage root, falling back to the configured default."""
-    return storage_path or settings.STORAGE_PATH
+    return storage_path or konte.settings.STORAGE_PATH
 
 
 def _require_project(name: str, storage_path: Path) -> None:
     """Exit with an error unless the named project exists."""
-    if not project_exists(name, storage_path=storage_path):
+    if not konte.project_exists(name, storage_path=storage_path):
         _fail(f"Project '{name}' not found")
 
 
@@ -116,7 +109,7 @@ def _spinner(description: str) -> Iterator[None]:
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"konte {__version__}")
+        console.print(f"konte {konte.__version__}")
         raise typer.Exit()
 
 
@@ -145,14 +138,14 @@ def create(
     """Create a new project."""
     path = _resolve_storage(storage_path)
 
-    if project_exists(name, storage_path=path):
+    if konte.project_exists(name, storage_path=path):
         _fail(f"Project '{name}' already exists")
     if prompt is not None and not prompt.exists():
         _fail(f"Prompt file not found: {prompt}")
 
     with _reporting_errors():
         overrides = {"context_prompt_path": prompt} if prompt is not None else {}
-        project = create_project(name, storage_path=path, **overrides)
+        project = konte.create_project(name, storage_path=path, **overrides)
         project.save()
 
         console.print(f"[green]Created project:[/green] {name}")
@@ -167,7 +160,7 @@ def list_cmd(
 ) -> None:
     """List all projects."""
     path = _resolve_storage(storage_path)
-    projects = list_projects(storage_path=path)
+    projects = konte.list_projects(storage_path=path)
 
     if not projects:
         console.print("[dim]No projects found[/dim]")
@@ -203,7 +196,7 @@ def delete(
         raise typer.Exit(0)
 
     with _reporting_errors():
-        delete_project(name, storage_path=path)
+        konte.delete_project(name, storage_path=path)
         console.print(f"[green]Deleted project:[/green] {name}")
 
 
@@ -231,13 +224,13 @@ def trust(
         raise typer.Exit(0)
 
     with _reporting_errors():
-        recorded = trust_project(name, storage_path=path)
+        recorded = konte.trust_project(name, storage_path=path)
 
         if not recorded:
             console.print(f"[yellow]No index files to record in[/yellow] {path / name}")
             return
 
-        anchor = settings.INDEX_MANIFEST or "this installation's signing key"
+        anchor = konte.settings.INDEX_MANIFEST or "this installation's signing key"
         console.print(
             f"[green]Recorded {len(recorded)} index file(s) against {anchor}:[/green] "
             f"{', '.join(recorded)}"
@@ -259,7 +252,7 @@ def add(
             _fail(f"File not found: {file_path}")
 
     with _reporting_errors():
-        project = get_project(name, storage_path=path)
+        project = konte.get_project(name, storage_path=path)
 
         with _spinner("Adding documents..."):
             num_chunks = project.add_documents(files)
@@ -306,7 +299,7 @@ def build(
     enable_bm25 = not faiss_only
 
     with _reporting_errors():
-        project = get_project(name, storage_path=path)
+        project = konte.get_project(name, storage_path=path)
 
         with _spinner("Building indexes..."):
             asyncio.run(
@@ -361,7 +354,7 @@ def query(
     metadata_filter = _parse_metadata_filter(filter_json)
 
     with _reporting_errors():
-        project = get_project(name, storage_path=path)
+        project = konte.get_project(name, storage_path=path)
         response = project.query(
             query_text,
             mode=retrieval_mode,
@@ -431,7 +424,7 @@ def ask(
     metadata_filter = _parse_metadata_filter(filter_json)
 
     with _reporting_errors():
-        project = get_project(name, storage_path=path)
+        project = konte.get_project(name, storage_path=path)
 
         with _spinner("Generating answer..."):
             retrieval_response, answer = asyncio.run(
@@ -496,7 +489,7 @@ def info(
     _require_project(name, path)
 
     with _reporting_errors():
-        project = get_project(name, storage_path=path)
+        project = konte.get_project(name, storage_path=path)
         config = project.config
 
         table = Table(title=f"Project: {name}")
@@ -509,7 +502,9 @@ def info(
         table.add_row("Chunk Size", f"{config.chunk_size} tokens")
         table.add_row("Embedding Model", config.embedding_model)
         table.add_row("Context Model", config.context_model)
-        table.add_row("Context Strategy", config.context_strategy or settings.CONTEXT_STRATEGY)
+        table.add_row(
+            "Context Strategy", config.context_strategy or konte.settings.CONTEXT_STRATEGY
+        )
         table.add_row("FAISS Enabled", str(config.enable_faiss))
         table.add_row("BM25 Enabled", str(config.enable_bm25))
 
